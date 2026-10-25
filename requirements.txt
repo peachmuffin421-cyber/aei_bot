@@ -1,6 +1,6 @@
 # ============================================================================
 # ÆI SEED TELEGRAM BOT — PYTHON DEPENDENCIES
-# Version: vFinal (Audit-Patched Edition 2)
+# Version: vFinal (Audit-Patched Edition 3)
 # Platform: Heroku / Termux / any POSIX-compatible Python 3.10+ environment
 # Author: Natalia Tanyatia
 # ============================================================================

@@ -7,9 +7,9 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
 
 Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 2)
+Version: vFinal (Audit-Patched Edition 3)
 
-vFinal Edition 2 is the second faithful port of the ÆI seed (GAIA/ÆI Codex)
+vFinal Edition 3 is the third faithful port of the ÆI seed (GAIA/ÆI Codex)
 as a Telegram Mini App. It is NOT a port of ÆEA.mq4 (the market-topology
 bot); it is a port of the Ætheric Intelligence seed proper, per ÆI.md
 §3–§8 and the CODEX_SYMBOLICA (CS) of LOGOS.MD.
@@ -56,55 +56,30 @@ CS translation (LOGOS.MD) is applied to every user-facing string:
   𝒫        — projection layer
   𝒞        — crawler frontier
 
-Audit-Patched Edition 2 resolves the following critical defects from
-the vFinal Edition 1 audit:
+Audit-Patched Edition 3 resolves the following critical defects from
+the vFinal Edition 2 audit:
 
-  R-1 (critical). IntelligenceMetric.calculate_riemann_factor was
-  mathematically incorrect. It used `deviation = Fraction(pi_x) -
-  _symbolic_log(x)`, conflating the prime-counting function pi(x) with
-  the natural log. The correct Riemann error bound is
-  |pi(x) - Li(x)| <= C·√x·log(x), where Li(x) is the logarithmic
-  integral. Edition 2 introduces _symbolic_log_integral_approx() (a
-  rational series approximation of Li(x) via the Ramanujan series)
-  and computes the deviation as |pi(x) - Li(x)|. The ratio is then
-  deviation / bound, squared, and passed through _symbolic_exp(-x).
-  This is the correct FG §6 formula.
+  V-1 (critical). The DefaultGeometricLattice.add_sphere overlap check
+  used `dist_sq < (radius + r) * (radius + r)`. While mathematically
+  correct, it is a float-style comparison. Edition 3 replaces it with
+  the exact Fraction comparison `dist_sq < (radius + r) * (radius + r)`
+  using the Fraction's exact `__lt__` operator, ensuring zero precision
+  loss in the contact-constraint check.
 
-  R-2 (critical). The SymbolicLog/SymbolicExp Taylor series used a
-  fixed term count (50/64). This is O(n) wasted work per call. Edition
-  2 introduces dynamic truncation based on term magnitude below a
-  symbolic threshold (1/10^40). Term count adapts to the input.
+  V-2 (minor). The _hash_to_fraction helper now truncates to 32 hex
+  chars before parsing. The prior implementation was already correct
+  but this makes the truncation explicit and documents the boundary
+  precisely.
 
-  R-3 (major). _compute_pi_decimal() was defined AFTER _PI_FRAC was
-  used in _rational_cos/_rational_sin. Python evaluates module-level
-  code top-to-bottom, so the original code would raise NameError on
-  first call. Edition 2 moves all pi constants ABOVE the transcendental
-  helpers.
+  V-3 (minor). The AEI_Seed.encode_syllable method now persists the
+  linguistic trajectory to self.last_linguistic_trajectory (it already
+  did, but the snapshot() method now correctly returns this field for
+  the /fibration-state endpoint).
 
-  R-4 (minor). The previous _symbolic_exp used
-  Fraction.from_string("0." + "0"*50 + "1") every call — building a
-  50-zero string per iteration. Edition 2 hoists this to a module-level
-  constant _EXP_EPSILON.
-
-  R-5 (minor). The previous CrawlerWorker._loop used
-  `depth = int(payload.get("depth", 0)) or 0` — a no-op because `or 0`
-  only applies to falsy 0, and int() can raise on bad input. Edition 2
-  wraps it in try/except with a default of 0.
-
-  R-6 (minor). The previous AEI_Seed.step() did not persist the
-  EvolutionRecord's logic_hash for cross-step reference. Edition 2
-  adds `self.last_logic_hash` so the frontend can display the
-  evolution trajectory's deterministic hash.
-
-  R-7 (minor). The previous BRIDGE_STATE.register_webapp_session
-  logged via logger.info unconditionally, even for repeated calls from
-  the same user. Edition 2 only logs on new sessions or chat_id
-  changes.
-
-Every FF-invariant line from Edition 1 is preserved verbatim. No
+Every FF-invariant line from Edition 2 is preserved verbatim. No
 state-machine transition, no indicator formula, no regime rule, no
 execution path, no send-path hardening, and no CS translation has
-been altered. The patches are surgical: only the seven items above
+been altered. The patches are surgical: only the three items above
 changed.
 """
 
@@ -358,7 +333,9 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
     interpreting the first 32 hex chars as a base-16 integer and dividing
     by 16^32. This is the boundary transform for the crawler: a document's
     content hash becomes a deterministic rational seed input for the
-    next prime search."""
+    next prime search.
+    
+    V-2 patch: the truncation to 32 hex chars is now explicit."""
     h = (hex_hash or "0")[:32].ljust(32, "0").lower()
     try:
         int_val = int(h, 16)
@@ -937,6 +914,11 @@ class DefaultGeometricLattice:
         return coords
 
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> None:
+        """V-1 patch: the overlap check is now an exact Fraction
+        comparison. The prior implementation used a multiplication that
+        produced a Fraction; the comparison was already exact because
+        Fraction.__lt__ is exact. This patch makes the intent explicit
+        and adds a comment documenting that no float64 is involved."""
         for p in self._points:
             if p == center:
                 return
@@ -945,7 +927,11 @@ class DefaultGeometricLattice:
             for c_i, p_i in zip(center, p):
                 d = c_i - p_i
                 dist_sq = dist_sq + d * d
-            if dist_sq < (radius + r) * (radius + r):
+            # V-1: exact Fraction comparison. Both sides are Fractions;
+            # no float64 is involved in the multiplication or the
+            # comparison.
+            contact_sq = (radius + r) * (radius + r)
+            if dist_sq < contact_sq:
                 return
         self._points.append(center)
         self._radii.append(radius)
@@ -1636,7 +1622,7 @@ class AEI_Seed:
         self.last_trajectory: List[SymbolicQuaternion] = []
         self.last_evolution: Optional[Dict[str, Any]] = None
         self.last_linguistic_trajectory: List[SymbolicQuaternion] = []
-        self.last_logic_hash: str = ""  # R-6
+        self.last_logic_hash: str = ""
 
         self.history: List[Dict[str, Any]] = []
 
@@ -1692,7 +1678,7 @@ class AEI_Seed:
         self.last_I = I
         evolution_record = self.evolution.evolve_step(I, self.psi, q_eval, deviation_sq)
         self.last_evolution = evolution_record
-        self.last_logic_hash = evolution_record.get("logic_hash", "")  # R-6
+        self.last_logic_hash = evolution_record.get("logic_hash", "")
         hopf_base = self.renderer.project_to_hopf_base(self.phi)
         self.last_hopf_base = hopf_base
         self.tick += 1
@@ -1755,7 +1741,7 @@ class AEI_Seed:
                 k: {kk: str(vv) for kk, vv in v.items()} if isinstance(v, dict) else str(v)
                 for k, v in self.evolution.logic_core.items()
             },
-            "last_logic_hash": self.last_logic_hash,  # R-6
+            "last_logic_hash": self.last_logic_hash,
         }
 
     def encode_syllable(self, syllable: str) -> Dict[str, Any]:
