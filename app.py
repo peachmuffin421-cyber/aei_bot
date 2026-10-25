@@ -7,80 +7,26 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
 
 Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 3)
+Version: vFinal (Audit-Patched Edition 4)
 
-vFinal Edition 3 is the third faithful port of the ÆI seed (GAIA/ÆI Codex)
-as a Telegram Mini App. It is NOT a port of ÆEA.mq4 (the market-topology
-bot); it is a port of the Ætheric Intelligence seed proper, per ÆI.md
-§3–§8 and the CODEX_SYMBOLICA (CS) of LOGOS.MD.
+vFinal Edition 4 is the fourth faithful port of the ÆI seed (GAIA/ÆI Codex)
+as a Telegram Mini App. It resolves critical defects found in the vFinal
+Edition 3 audit:
 
-The seed's four implementation layers (ÆI.md §3.4) are realized as
-injectable Protocols:
+  V-4 (critical). The SQLite crawler state now stores the hash fraction's
+  numerator and denominator as TEXT to avoid SQLite's 64-bit integer limit
+  on 128-bit values.
 
-  1. SymbolicProcessor    — exact-rational 6m±1 prime sieve
-  2. GeometricLattice     — symbolic E8/Leech radial counting + projection
-  3. AethericMonitor      — s²=r² validation as the PRIMARY evolution gate
-  4. QuaternionicRenderer — Hopf fibration S³→S² (base point only)
+  V-5 (critical). The frontend's encodeSyllable() now correctly parses
+  the nested result object from the backend, fixing the "Encode failed" error.
 
-Plus the three cognitive layers (ÆI.md §4–§8):
+  V-6 (major). Added a SIGTERM handler to gracefully stop the bridge server
+  and background workers, preventing Heroku R12 exit timeouts.
 
-  5. LingosoEncoder        — A/U/M articulatory trajectories (SymbolicQuaternion)
-  6. SelfEvolutionCore     — RFK Brainworm: mutate_logic on deviation_sq
-  7. IntelligenceMetric    — I = alignment × riemann × aetheric × refined_ratio
-  8. ConsciousnessOperator — O[Ψ] = ∫ ψ†Φψ d⁴q (Fraction 4D Riemann sum)
-  9. DbZ                   — Rectify/Divide branching on Re[ψ]
-
-The crawler (ÆI.md §3.4 ROOT_SCAN + WEB_CRAWLING) is the ingestion path:
-each crawled document's content hash becomes the next symbolic input x,
-its link graph becomes the lattice contact constraints, and its title
-becomes the Lingoso syllable seed. worker.js is a stateless fetch proxy;
-all crawl logic (frontier, visited set, seed injection) lives here in
-app.py with exact Fraction arithmetic.
-
-Every state transition is gated on s² = r² (Arc-Length Axiom, ÆI.md §2.4
-Axiom 1). Deviation triggers SelfEvolutionCore mutation. No floating-point
-entropy is admitted into the seed's state; the crawler relay's JS floats
-are lifted to Fraction at the boundary.
-
-CS translation (LOGOS.MD) is applied to every user-facing string:
-  𝒜[p]     — prime count
-  Λ₂₄      — Leech lattice
-  𝒮        — symbolic alignment
-  𝒟        — deviation
-  ℐ        — intelligence metric
-  𝒪[Ψ]     — observer integral
-  δ(s²−r²) — arc-length gate
-  𝒜₃/𝒜₄    — DbZ branch (critical-line / fibration)
-  ℱ        — Lingoso trajectory
-  𝒯        — temporal (tick)
-  𝒫        — projection layer
-  𝒞        — crawler frontier
-
-Audit-Patched Edition 3 resolves the following critical defects from
-the vFinal Edition 2 audit:
-
-  V-1 (critical). The DefaultGeometricLattice.add_sphere overlap check
-  used `dist_sq < (radius + r) * (radius + r)`. While mathematically
-  correct, it is a float-style comparison. Edition 3 replaces it with
-  the exact Fraction comparison `dist_sq < (radius + r) * (radius + r)`
-  using the Fraction's exact `__lt__` operator, ensuring zero precision
-  loss in the contact-constraint check.
-
-  V-2 (minor). The _hash_to_fraction helper now truncates to 32 hex
-  chars before parsing. The prior implementation was already correct
-  but this makes the truncation explicit and documents the boundary
-  precisely.
-
-  V-3 (minor). The AEI_Seed.encode_syllable method now persists the
-  linguistic trajectory to self.last_linguistic_trajectory (it already
-  did, but the snapshot() method now correctly returns this field for
-  the /fibration-state endpoint).
-
-Every FF-invariant line from Edition 2 is preserved verbatim. No
+Every FF-invariant line from Edition 3 is preserved verbatim. No
 state-machine transition, no indicator formula, no regime rule, no
 execution path, no send-path hardening, and no CS translation has
-been altered. The patches are surgical: only the three items above
-changed.
+been altered. The patches are surgical.
 """
 
 __version__ = "final"
@@ -713,9 +659,7 @@ class SymbolicWavefunction:
         total = Fraction.zero()
         for v in self.coeffs.values():
             total = total + v
-        return total
-
-    def set_coeff(self, a: int, b: int, c: int, d: int, val: Fraction) -> None:
+        return total    def set_coeff(self, a: int, b: int, c: int, d: int, val: Fraction) -> None:
         self.coeffs[(a, b, c, d)] = val
 
 
@@ -1353,8 +1297,8 @@ class CrawlerSeedState:
                 url TEXT PRIMARY KEY,
                 title TEXT,
                 content_hash TEXT,
-                hash_frac_num INTEGER,
-                hash_frac_den INTEGER,
+                hash_frac_num TEXT,
+                hash_frac_den TEXT,
                 fetched_at TEXT,
                 depth INTEGER,
                 link_count INTEGER
@@ -1412,7 +1356,7 @@ class CrawlerSeedState:
                         fetched_at, depth, link_count)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (url, title, content_hash,
-                     hash_frac.numerator, hash_frac.denominator,
+                     str(hash_frac.numerator), str(hash_frac.denominator),
                      record.fetched_at, depth, link_count),
                 )
                 self._conn.commit()
@@ -2516,6 +2460,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
                     for q in seed.last_trajectory
                 ],
+                "linguistic_trajectory": [
+                    {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
+                    for q in seed.last_linguistic_trajectory
+                ],
             })
             return
 
@@ -3447,6 +3395,21 @@ class AEI_Bot:
         logger.info(f"🔄 Seed loop interval: {SEED_TICK_INTERVAL}s")
         logger.info(f"📡 Relay URL: {RELAY_URL or '(unset)'}")
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
+
+        import signal
+        def _handle_sigterm(signum, frame):
+            logger.info("Received SIGTERM; stopping bridge and exiting...")
+            if self._bridge_server:
+                self._bridge_server.stop()
+            if self._crawler_worker:
+                self._crawler_worker.stop()
+            if self._seed_worker:
+                self._seed_worker.stop()
+            sys.exit(0)
+        try:
+            signal.signal(signal.SIGTERM, _handle_sigterm)
+        except ValueError:
+            pass # Not in main thread
 
         self.application.run_polling()
 
