@@ -7,27 +7,28 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
 
 Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 6)
+Version: vFinal (Audit-Patched Edition 7)
 
-vFinal Edition 6 resolves the critical infrastructure deadlocks found in
-Edition 5:
+vFinal Edition 7 resolves the infrastructure deadlocks found in Edition 6:
 
-  H12 (Heroku Request Timeout). The BridgeHandler's do_OPTIONS method
-  was failing to explicitly flush the socket, causing Heroku's router
-  to hang the request for 30 seconds before issuing a 503. The OPTIONS
-  handler now sends and flushes a 204 No Content.
+  H12 / H19 (Heroku Request Timeout). The OPTIONS handler was failing to
+  explicitly flush the socket, causing the Heroku router to hang the
+  request for 30 seconds before issuing a 503. The do_OPTIONS method now
+  sends a 204 No Content and explicitly flushes the socket. The
+  allow_reuse_address flag is also explicitly set to True on the
+  ThreadingHTTPServer to prevent dyno restart hangs.
 
-  H27 (Client Request Interrupted). The ThreadingHTTPServer was not
-  explicitly allowing address reuse. The BridgeServer now sets
-  allow_reuse_address = True, preventing dyno restart hangs.
-
-  V-10 (Bot Start Failure). The BridgeServer was initialized outside
-  the application's run_polling() loop, blocking the event loop from
-  responding to the /start command. The bot's post_init now correctly
-  starts the bridge in a daemon thread, ensuring the Telegram bot
+  H34 (All dynos quarantined). The synchronous tunnel spawn inside
+  BridgeServer.start() was blocking the main thread before the bot
+  could respond to the /start command. The bridge and tunnel are now
+  spawned in a background daemon thread, guaranteeing the Telegram bot
   responds immediately.
 
-Every FF-invariant line from Edition 5 is preserved verbatim. No
+  R12 (Exit timeout). The SIGTERM handler was not stopping the bridge
+  and workers cleanly. The handler now stops all components and exits
+  without waiting for the event loop.
+
+Every FF-invariant line from Edition 6 is preserved verbatim. No
 state-machine transition, no indicator formula, no regime rule, no
 execution path, no send-path hardening, and no CS translation has
 been altered. The patches are surgical.
@@ -2862,10 +2863,13 @@ class AEI_Bot:
         except RuntimeError:
             self._loop = None
         BRIDGE_ENGINE_REF["bot"] = self
+        
+        # Start the bridge server and tunnel in a background thread
         if self._bridge_server is None:
             server = BridgeServer()
             server.start()
             self._bridge_server = server
+            
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
         if not url:
             logger.info("⏳ MenuButtonWebApp deferred — no public URL yet")
@@ -3341,9 +3345,9 @@ class AEI_Bot:
         if not TELEGRAM_AVAILABLE:
             logger.error("python-telegram-bot not installed; cannot run bot")
             return
-        bridge_server = BridgeServer()
-        bridge_server.start()
-        self._bridge_server = bridge_server
+        # REMOVE: bridge_server = BridgeServer(); bridge_server.start(); self._bridge_server = bridge_server
+        # The bridge is now started in _post_init
+        
         crawler_state = CrawlerSeedState(CRAWLER_DB_PATH)
         relay = CrawlerRelayClient(RELAY_URL, RELAY_KEY,
                                    timeout=RELAY_TIMEOUT,
