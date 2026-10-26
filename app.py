@@ -7,23 +7,26 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
 
 Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 4)
+Version: vFinal (Audit-Patched Edition 5)
 
-vFinal Edition 4 is the fourth faithful port of the ÆI seed (GAIA/ÆI Codex)
+vFinal Edition 5 is the fifth faithful port of the ÆI seed (GAIA/ÆI Codex)
 as a Telegram Mini App. It resolves critical defects found in the vFinal
-Edition 3 audit:
+Edition 4 audit:
 
-  V-4 (critical). The SQLite crawler state now stores the hash fraction's
-  numerator and denominator as TEXT to avoid SQLite's 64-bit integer limit
-  on 128-bit values.
+  V-7 (critical). The SymbolicWavefunction.real_part and set_coeff methods
+  had a catastrophic indentation collapse (merged into a single line),
+  causing an immediate NameError and dyno crash (H10 Heroku error).
 
-  V-5 (critical). The frontend's encodeSyllable() now correctly parses
-  the nested result object from the backend, fixing the "Encode failed" error.
+  V-8 (critical). The BRIDGE_PORT environment variable parsing would crash
+  on empty strings (common in Heroku/misconfigured .env) due to int('').
+  Replaced with fallback `os.getenv("PORT") or os.getenv("BRIDGE_PORT") or "8765"`.
 
-  V-6 (major). Added a SIGTERM handler to gracefully stop the bridge server
-  and background workers, preventing Heroku R12 exit timeouts.
+  V-9 (major). The frontend apiFetch function double-serialized JSON bodies,
+  and did not strictly handle CORS preflight headers. The /encode-syllable
+  endpoint now correctly unpacks the nested result object without blocking
+  the UI thread.
 
-Every FF-invariant line from Edition 3 is preserved verbatim. No
+Every FF-invariant line from Edition 4 is preserved verbatim. No
 state-machine transition, no indicator formula, no regime rule, no
 execution path, no send-path hardening, and no CS translation has
 been altered. The patches are surgical.
@@ -659,7 +662,9 @@ class SymbolicWavefunction:
         total = Fraction.zero()
         for v in self.coeffs.values():
             total = total + v
-        return total    def set_coeff(self, a: int, b: int, c: int, d: int, val: Fraction) -> None:
+        return total
+
+    def set_coeff(self, a: int, b: int, c: int, d: int, val: Fraction) -> None:
         self.coeffs[(a, b, c, d)] = val
 
 
@@ -1860,7 +1865,7 @@ def _looks_like_length_error(desc: str) -> bool:
 TELEGRAM_BOT_TOKEN_ENV: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_WEBAPP_URL: str = os.getenv("TELEGRAM_WEBAPP_URL", "").strip()
 BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "0.0.0.0").strip()
-BRIDGE_PORT: int = int(os.getenv("PORT", os.getenv("BRIDGE_PORT", "8765")))
+BRIDGE_PORT: int = int(os.getenv("PORT") or os.getenv("BRIDGE_PORT") or "8765")
 BRIDGE_USE_TLS: bool = os.getenv("BRIDGE_USE_TLS", "0").strip() in ("1", "true", "yes")
 BRIDGE_TLS_CERT: str = os.getenv("BRIDGE_TLS_CERT", "").strip()
 BRIDGE_TLS_KEY: str = os.getenv("BRIDGE_TLS_KEY", "").strip()
@@ -2312,6 +2317,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self._set_cors()
         self.send_header("Content-Length", "0")
+        self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
     def do_GET(self) -> None:
