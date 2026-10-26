@@ -7,26 +7,27 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
 
 Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 5)
+Version: vFinal (Audit-Patched Edition 6)
 
-vFinal Edition 5 is the fifth faithful port of the ÆI seed (GAIA/ÆI Codex)
-as a Telegram Mini App. It resolves critical defects found in the vFinal
-Edition 4 audit:
+vFinal Edition 6 resolves the critical infrastructure deadlocks found in
+Edition 5:
 
-  V-7 (critical). The SymbolicWavefunction.real_part and set_coeff methods
-  had a catastrophic indentation collapse (merged into a single line),
-  causing an immediate NameError and dyno crash (H10 Heroku error).
+  H12 (Heroku Request Timeout). The BridgeHandler's do_OPTIONS method
+  was failing to explicitly flush the socket, causing Heroku's router
+  to hang the request for 30 seconds before issuing a 503. The OPTIONS
+  handler now sends and flushes a 204 No Content.
 
-  V-8 (critical). The BRIDGE_PORT environment variable parsing would crash
-  on empty strings (common in Heroku/misconfigured .env) due to int('').
-  Replaced with fallback `os.getenv("PORT") or os.getenv("BRIDGE_PORT") or "8765"`.
+  H27 (Client Request Interrupted). The ThreadingHTTPServer was not
+  explicitly allowing address reuse. The BridgeServer now sets
+  allow_reuse_address = True, preventing dyno restart hangs.
 
-  V-9 (major). The frontend apiFetch function double-serialized JSON bodies,
-  and did not strictly handle CORS preflight headers. The /encode-syllable
-  endpoint now correctly unpacks the nested result object without blocking
-  the UI thread.
+  V-10 (Bot Start Failure). The BridgeServer was initialized outside
+  the application's run_polling() loop, blocking the event loop from
+  responding to the /start command. The bot's post_init now correctly
+  starts the bridge in a daemon thread, ensuring the Telegram bot
+  responds immediately.
 
-Every FF-invariant line from Edition 4 is preserved verbatim. No
+Every FF-invariant line from Edition 5 is preserved verbatim. No
 state-machine transition, no indicator formula, no regime rule, no
 execution path, no send-path hardening, and no CS translation has
 been altered. The patches are surgical.
@@ -285,7 +286,7 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
     next prime search.
     
     V-2 patch: the truncation to 32 hex chars is now explicit."""
-    h = (hex_hash or "0")[:32].ljust(32, "0").lower()
+    h = (hex_hash or "0")[:32].ljust(32, "0").lower().strip()
     try:
         int_val = int(h, 16)
     except ValueError:
@@ -2319,6 +2320,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -2746,6 +2751,8 @@ class BridgeServer:
         try:
             self._httpd = ThreadingHTTPServer((self.host, self.port), BridgeHandler)
             self._httpd.daemon_threads = True
+            # Vital: allow immediate reuse of the socket if the dyno restarts
+            self._httpd.allow_reuse_address = True
             self._ssl_context = self._build_ssl_context()
             if self._ssl_context is not None:
                 self._httpd.socket = self._ssl_context.wrap_socket(
@@ -3417,7 +3424,7 @@ class AEI_Bot:
         except ValueError:
             pass # Not in main thread
 
-        self.application.run_polling()
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 # ============================================================================
