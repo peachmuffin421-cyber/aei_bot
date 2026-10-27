@@ -2260,6 +2260,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.flush()
+            self.wfile.close()
         except Exception:
             pass
         self.close_connection = True
@@ -3388,12 +3389,18 @@ class AEI_Bot:
 def main():
     import signal
     import os
+    import threading
+    import time
     
-    # Register the SIGTERM handler at the absolute top level.
-    # This guarantees Heroku's shutdown signal is caught immediately,
-    # bypassing any blocking threads in PTB or the bridge server.
     def _handle_sigterm(signum, frame):
         print("Received SIGTERM; forcing immediate exit.", flush=True)
+        # Start a watchdog thread that force-kills after 5 seconds
+        def force_kill():
+            time.sleep(5)
+            print("Watchdog: forcing exit after 5s timeout.", flush=True)
+            os._exit(1)
+        threading.Thread(target=force_kill, daemon=True).start()
+        # Try the normal cleanup path first
         os._exit(0)
         
     try:
