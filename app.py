@@ -3386,10 +3386,27 @@ class AEI_Bot:
 # MAIN
 # ============================================================================
 def main():
+    import signal
+    import os
+    
+    # Register the SIGTERM handler at the absolute top level.
+    # This guarantees Heroku's shutdown signal is caught immediately,
+    # bypassing any blocking threads in PTB or the bridge server.
+    def _handle_sigterm(signum, frame):
+        print("Received SIGTERM; forcing immediate exit.", flush=True)
+        os._exit(0)
+        
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+        signal.signal(signal.SIGINT, _handle_sigterm)
+    except ValueError:
+        pass
+
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         logger.error("   export TELEGRAM_BOT_TOKEN='YOUR_BOT_TOKEN'")
         sys.exit(1)
+        
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
     bot.run()
 
