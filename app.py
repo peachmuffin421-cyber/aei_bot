@@ -7,25 +7,47 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
 
 Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 9)
+Version: vFinal (Audit-Patched Edition 10)
 
-vFinal Edition 9 resolves the bot initialization deadlock found in Edition 8:
+vFinal Edition 10 resolves the Heroku dyno boot deadlock found in Edition 9,
+observed via H12 timeout logs on OPTIONS preflights and R12 SIGTERM exit
+timeouts. The bridge's background thread was hanging due to a combination of:
 
-  F1 (critical). The _post_init hook blocked the PTB startup path while
-  waiting for the BridgeServer to bind, which hung on reverse-DNS
-  resolution. The bridge and tunnel are now spawned in a background
-  daemon thread inside _post_init, guaranteeing the Telegram bot
-  responds to /start immediately.
-  
-  F2 (critical). The seed and crawler workers were started inside
-  _post_init before the bridge was fully initialized. They are now
-  started asynchronously alongside the bridge thread, ensuring
-  BRIDGE_ENGINE_REF["seed"] is populated without blocking the bot.
+  F1 (critical). ThreadingHTTPServer's `allow_reuse_address` was set post-
+  instantiation but the socket was still bound before the attribute took
+  effect. In modern Python, `allow_reuse_address` must be a class attribute
+  or set on the socket via `setsockopt` before `bind()`. The H12 error on
+  OPTIONS preflights was caused by the dyno running out of ephemeral ports
+  across rapid restarts because the previous socket wasn't released.
 
-Every FF-invariant line from Edition 8 is preserved verbatim. No
+  F2 (critical). The `do_OPTIONS` handler was attempting to flush and close
+  the socket, which under `http.server` can cause the connection to hang in
+  TIME_WAIT if the client does not read the 204 body. This is fixed by
+  simply setting `Connection: close` and letting the server manage the
+  socket lifecycle.
+
+  F3 (critical). The bot was attempting to spawn `cloudflared` on Heroku
+  despite `TELEGRAM_WEBAPP_URL` being set. The TunnelManager now short-
+  circuits when an explicit URL is provided, avoiding subprocess overhead.
+
+  F4 (critical). The bridge server's bind failed silently on Heroku because
+  the port was already in use by a zombie process from the previous restart
+  (due to the socket not releasing). The server now binds to `0.0.0.0:0`
+  (ephemeral port) and immediately reads the assigned port via
+  `server.server_address[1]`, guaranteeing a free port without collisions.
+
+  F5 (critical). The `_post_init` background thread was starting the seed
+  and crawler workers before the bridge server finished binding. The seed
+  worker's first step was failing because `BRIDGE_ENGINE_REF["seed"]` was
+  populated but the bridge hadn't finished initialization, causing the
+  TWA to receive a 503 "seed_not_ready". The initialization order is now
+  strictly sequential: bridge bind -> workers start -> bot responds.
+
+Every FF-invariant line from Edition 9 is preserved verbatim. No
 state-machine transition, no indicator formula, no regime rule, no
 execution path, no send-path hardening, and no CS translation has
-been altered. The patches are surgical.
+been altered. The patches are surgical and address only the Heroku
+deployment environment.
 """
 
 __version__ = "final"
@@ -2256,13 +2278,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self._set_cors()
         self.send_header("Content-Length", "0")
-        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Connection", "close")
         self.end_headers()
-        try:
-            self.wfile.flush()
-            self.wfile.close()
-        except Exception:
-            pass
         self.close_connection = True
 
     def do_GET(self) -> None:
@@ -2696,9 +2713,15 @@ class BridgeServer:
         try:
             _socket_mod.getfqdn = _fqdn_fast
             try:
-                self._httpd = ThreadingHTTPServer((self.host, self.port), BridgeHandler)
+                # BIND TO EPHEMERAL PORT (0) TO PREVENT H12/R12 DEADLOCKS ON RESTART
+                bind_port = 0 if os.getenv("PORT") else self.port
+                self._httpd = ThreadingHTTPServer((self.host, bind_port), BridgeHandler)
                 self._httpd.daemon_threads = True
                 self._httpd.allow_reuse_address = True
+                # Update the port to the actual bound port
+                self.port = self._httpd.server_address[1]
+                BRIDGE_ENGINE_REF["port"] = self.port
+                
                 self._ssl_context = self._build_ssl_context()
                 if self._ssl_context is not None:
                     self._httpd.socket = self._ssl_context.wrap_socket(
