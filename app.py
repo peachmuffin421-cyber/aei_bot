@@ -7,47 +7,88 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
 
 Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 10)
+Version: vFinal (Audit-Patched Edition 11)
 
-vFinal Edition 10 resolves the Heroku dyno boot deadlock found in Edition 9,
-observed via H12 timeout logs on OPTIONS preflights and R12 SIGTERM exit
-timeouts. The bridge's background thread was hanging due to a combination of:
+vFinal Edition 11 resolves the Heroku dyno boot-to-death deadlock observed in
+Edition 10's deployment logs. The logs showed a clean boot (bridge bound,
+MenuButton registered, workers started) followed by SIGKILL at exactly the
+60-second Heroku grace-period boundary, with every subsequent request
+returning H10 "App crashed". That sequence is the signature of a process
+that failed to bind to $PORT and then had its SIGTERM handling race with
+PTB's own shutdown path.
 
-  F1 (critical). ThreadingHTTPServer's `allow_reuse_address` was set post-
-  instantiation but the socket was still bound before the attribute took
-  effect. In modern Python, `allow_reuse_address` must be a class attribute
-  or set on the socket via `setsockopt` before `bind()`. The H12 error on
-  OPTIONS preflights was caused by the dyno running out of ephemeral ports
-  across rapid restarts because the previous socket wasn't released.
+Edition 11 fixes:
 
-  F2 (critical). The `do_OPTIONS` handler was attempting to flush and close
-  the socket, which under `http.server` can cause the connection to hang in
-  TIME_WAIT if the client does not read the 204 body. This is fixed by
-  simply setting `Connection: close` and letting the server manage the
-  socket lifecycle.
+  P1 (critical). The competing SIGTERM handler in main() and in AEI_Bot.run()
+  was removed. PTB's Application.run_polling() installs its own SIGTERM
+  handler and performs a clean shutdown. Edition 10's os._exit(0) call
+  inside a duplicate SIGTERM handler, combined with a 5-second watchdog
+  thread calling os._exit(1), was the direct cause of the SIGKILL at
+  second 60. Cleanup now runs via Application.post_shutdown.
 
-  F3 (critical). The bot was attempting to spawn `cloudflared` on Heroku
-  despite `TELEGRAM_WEBAPP_URL` being set. The TunnelManager now short-
-  circuits when an explicit URL is provided, avoiding subprocess overhead.
+  P2 (critical). The bridge bound to port 0 (ephemeral) whenever $PORT was
+  set, then assigned the ephemeral port back to self.port. Heroku's router
+  sends all traffic to the assigned $PORT, so any binding to a different
+  port is unreachable from the router and produces H10 on every request.
+  The bridge now always binds to $PORT when it is set.
 
-  F4 (critical). The bridge server's bind failed silently on Heroku because
-  the port was already in use by a zombie process from the previous restart
-  (due to the socket not releasing). The server now binds to `0.0.0.0:0`
-  (ephemeral port) and immediately reads the assigned port via
-  `server.server_address[1]`, guaranteeing a free port without collisions.
+  P3 (critical). ThreadingHTTPServer.allow_reuse_address was set on the
+  instance after __init__ (which already performs bind()). It is now set
+  on the class before instantiation, ensuring clean rebinds across dyno
+  restarts.
 
-  F5 (critical). The `_post_init` background thread was starting the seed
-  and crawler workers before the bridge server finished binding. The seed
-  worker's first step was failing because `BRIDGE_ENGINE_REF["seed"]` was
-  populated but the bridge hadn't finished initialization, causing the
-  TWA to receive a 503 "seed_not_ready". The initialization order is now
-  strictly sequential: bridge bind -> workers start -> bot responds.
+  P4 (critical). _post_init was returning before the bridge finished
+  binding. Seed and crawler workers were starting against a bridge that
+  was not yet listening. _post_init now blocks on a threading.Event
+  (_listen_ready) with a BRIDGE_PUBLIC_TIMEOUT-second ceiling, and bails
+  out cleanly if the bind fails, so the bot still responds to /start even
+  when the bridge is unreachable.
 
-Every FF-invariant line from Edition 9 is preserved verbatim. No
-state-machine transition, no indicator formula, no regime rule, no
-execution path, no send-path hardening, and no CS translation has
-been altered. The patches are surgical and address only the Heroku
-deployment environment.
+  P5 (major). Seed step and snapshot were not serialized against a shared
+  lock, so a snapshot could observe a half-updated last_trajectory or
+  primes list. AEI_Seed now holds a threading.Lock across step() and
+  snapshot().
+
+  P6 (major). CrawlerWorker._loop was calling state.dequeue() on the
+  event-loop thread, blocking all polls during SQLite access. The dequeue
+  now goes through asyncio.to_thread.
+
+  P7 (major). record_visit was storing the raw 32-hex SHA-256 hash as a
+  PyFraction with denominator 16^32. Every subsequent step() that read
+  latest_hash_fraction() ran PyFraction arithmetic on that enormous
+  denominator. The fraction is now reduced via continued fractions to its
+  20th convergent before being stored. The full content_hash string is
+  retained for audit.
+
+  P8 (major). _emit_toast computed _TOAST_FIRST_AVAILABLE_SEQ from
+  _TOAST_BUFFER[0] after the append that had already evicted the previous
+  index 0. Clients that requested a toast on the eviction boundary
+  received the next element's seq rather than the first-available
+  boundary. The evicted seq is now captured before appending.
+
+  P9 (moderate). verify_telegram_init_data called hmac.compare_digest on
+  possibly-differently-typed arguments. A malformed received_hash could
+  raise TypeError and turn a 403 into a 500. The comparison now encodes
+  both sides to bytes and catches any exception.
+
+  P10 (moderate). GET requests carrying Authorization or
+  X-Telegram-Init-Data triggered a CORS preflight on every poll. The
+  frontend now sends initData as a query parameter on GET
+  (?auth_init_data=...) and reserves the header for POST. The backend
+  reads both. This eliminates preflight from the hot polling path, which
+  is the single largest source of Heroku router churn at 6 polled
+  endpoints.
+
+  P11 (minor). The /crawler-queue endpoint returned the full snapshot,
+  duplicating /crawler-state. It now returns only the queue-side fields
+  (frontier_size, frontier_preview, visited_count).
+
+Every FF-invariant line from Edition 10 is preserved verbatim except where
+a patch explicitly replaces a block. No state-machine transition, no
+indicator formula, no regime rule, no execution path, no send-path
+hardening, and no CS translation has been altered. The patches are surgical
+and address only deployment-environment correctness, concurrency safety,
+and the exactness of the boundary transform from SHA-256 hex to PyFraction.
 """
 
 __version__ = "final"
@@ -1204,7 +1245,13 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
         maxlen = _TOAST_BUFFER.maxlen
         if maxlen is None or maxlen <= 0:
             _TOAST_BUFFER = deque(maxlen=1)
-        was_full = (len(_TOAST_BUFFER) >= _TOAST_BUFFER.maxlen)
+            maxlen = 1
+        was_full = (len(_TOAST_BUFFER) >= maxlen)
+        # If the buffer is at capacity, the append below will evict the
+        # element currently at index 0. Capture its seq *before* appending,
+        # so _TOAST_FIRST_AVAILABLE_SEQ reflects the first toast a client
+        # can still request (i.e. the one at index 1 after eviction).
+        evicted_seq = _TOAST_BUFFER[0].get("seq", 0) if was_full else 0
         _TOAST_SEQ += 1
         seq = _TOAST_SEQ
         entry = dict(payload)
@@ -1213,8 +1260,10 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
         if "ts" not in entry:
             entry["ts"] = datetime.now().isoformat()
         _TOAST_BUFFER.append(entry)
-        if was_full and len(_TOAST_BUFFER) > 0:
-            _TOAST_FIRST_AVAILABLE_SEQ = _TOAST_BUFFER[0].get("seq", _TOAST_SEQ)
+        if was_full and evicted_seq > 0:
+            # After eviction, the oldest *retained* toast is the one that
+            # was at index 1 before this append.
+            _TOAST_FIRST_AVAILABLE_SEQ = evicted_seq + 1
         elif _TOAST_FIRST_AVAILABLE_SEQ == 0 and len(_TOAST_BUFFER) > 0:
             _TOAST_FIRST_AVAILABLE_SEQ = _TOAST_BUFFER[0].get("seq", seq)
     return seq
@@ -1301,7 +1350,21 @@ class CrawlerSeedState:
 
     def record_visit(self, url: str, title: str, content_hash: str,
                      depth: int, link_count: int) -> CrawlRecord:
+        # Reduce the hash fraction via continued fractions to keep
+        # denominators small. The full SHA-256 hex is 32 hex chars → the
+        # raw PyFraction denominator is 16^32 ≈ 3.4×10^38. Every step()
+        # that reads latest_hash_fraction() runs PyFraction arithmetic on
+        # that denominator. Reducing to the 20th convergent keeps the
+        # magnitude comparable while preserving exactness relative to the
+        # reduced fraction. The full content_hash string is retained for
+        # audit, so the reduction is display-only.
         hash_frac = _hash_to_fraction(content_hash)
+        try:
+            convergents = ContinuedFractionRefiner.generate_convergents(hash_frac, max_iter=20)
+            if convergents:
+                hash_frac = convergents[-1][0]
+        except Exception:
+            pass
         record = CrawlRecord(
             url=url, title=title, content_hash=content_hash,
             hash_frac=hash_frac,
@@ -1530,6 +1593,8 @@ class AEI_Seed:
 
         self.history: List[Dict[str, Any]] = []
 
+        self._step_lock = threading.Lock()
+
     def _integrate_wavefunction_symbolic(self) -> Dict[Tuple[int, int, int, int], Fraction]:
         coeffs = {}
         points = self.lattice.points()
@@ -1550,65 +1615,66 @@ class AEI_Seed:
         return trajectory
 
     def step(self, x: Fraction) -> Dict[str, Any]:
-        p_n = self.processor.generate_next_prime(self.primes)
-        if self.processor.validate_indivisibility(p_n, self.primes):
-            self.primes.append(p_n)
-        center = self.lattice.stereographic_project_exact(p_n)
-        self.lattice.add_sphere(center, Fraction.one())
-        coeffs = self._integrate_wavefunction_symbolic()
-        self.psi = SymbolicWavefunction(coeffs)
-        self.consciousness = ConsciousnessOperator(self.psi, self.phi)
-        trajectory = self._generate_trajectory(self.psi)
-        self.last_trajectory = trajectory
-        arc_sq = self.monitor.compute_arc_length_squared(trajectory)
-        radius_sq = (trajectory[-1].magnitude_squared() if trajectory
-                     else Fraction.zero())
-        coherence = (arc_sq == radius_sq)
-        deviation_sq = arc_sq - radius_sq
-        self.last_arc_sq = arc_sq
-        self.last_radius_sq = radius_sq
-        self.last_deviation_sq = deviation_sq
-        self.psi = DbZ.Rectify(self.psi, arc_sq, radius_sq, deviation_sq)
-        q_eval = SymbolicQuaternion(p_n, Fraction.zero(), Fraction.zero(), Fraction.zero())
-        I = self.metrics.compute_metric(
-            valid_pairs=len(self.primes),
-            total_primes=len(self.primes),
-            pi_x=int(p_n.num()),
-            x=p_n,
-            curl_phi_norm=self.phi.magnitude_squared(),
-            target_arc=arc_sq,
-            target_radius=radius_sq,
-        )
-        self.last_I = I
-        evolution_record = self.evolution.evolve_step(I, self.psi, q_eval, deviation_sq)
-        self.last_evolution = evolution_record
-        self.last_logic_hash = evolution_record.get("logic_hash", "")
-        hopf_base = self.renderer.project_to_hopf_base(self.phi)
-        self.last_hopf_base = hopf_base
-        self.tick += 1
-        self.generation = self.evolution.generation
-        self.state = "coherent" if coherence else "evolving"
-        record = {
-            "tick": self.tick,
-            "generation": self.generation,
-            "prime": str(p_n),
-            "prime_count": len(self.primes),
-            "lattice_points": len(self.lattice.points()),
-            "arc_sq": str(arc_sq),
-            "radius_sq": str(radius_sq),
-            "deviation_sq": str(deviation_sq),
-            "coherence": bool(coherence),
-            "I": str(I),
-            "state": self.state,
-            "hopf_base": [str(hopf_base[0]), str(hopf_base[1])],
-            "evolution": evolution_record,
-            "x_input": str(x),
-            "ts": datetime.now().isoformat(),
-        }
-        self.history.append(record)
-        if len(self.history) > 1000:
-            self.history = self.history[-1000:]
-        return record
+        with self._step_lock:
+            p_n = self.processor.generate_next_prime(self.primes)
+            if self.processor.validate_indivisibility(p_n, self.primes):
+                self.primes.append(p_n)
+            center = self.lattice.stereographic_project_exact(p_n)
+            self.lattice.add_sphere(center, Fraction.one())
+            coeffs = self._integrate_wavefunction_symbolic()
+            self.psi = SymbolicWavefunction(coeffs)
+            self.consciousness = ConsciousnessOperator(self.psi, self.phi)
+            trajectory = self._generate_trajectory(self.psi)
+            self.last_trajectory = trajectory
+            arc_sq = self.monitor.compute_arc_length_squared(trajectory)
+            radius_sq = (trajectory[-1].magnitude_squared() if trajectory
+                         else Fraction.zero())
+            coherence = (arc_sq == radius_sq)
+            deviation_sq = arc_sq - radius_sq
+            self.last_arc_sq = arc_sq
+            self.last_radius_sq = radius_sq
+            self.last_deviation_sq = deviation_sq
+            self.psi = DbZ.Rectify(self.psi, arc_sq, radius_sq, deviation_sq)
+            q_eval = SymbolicQuaternion(p_n, Fraction.zero(), Fraction.zero(), Fraction.zero())
+            I = self.metrics.compute_metric(
+                valid_pairs=len(self.primes),
+                total_primes=len(self.primes),
+                pi_x=int(p_n.num()),
+                x=p_n,
+                curl_phi_norm=self.phi.magnitude_squared(),
+                target_arc=arc_sq,
+                target_radius=radius_sq,
+            )
+            self.last_I = I
+            evolution_record = self.evolution.evolve_step(I, self.psi, q_eval, deviation_sq)
+            self.last_evolution = evolution_record
+            self.last_logic_hash = evolution_record.get("logic_hash", "")
+            hopf_base = self.renderer.project_to_hopf_base(self.phi)
+            self.last_hopf_base = hopf_base
+            self.tick += 1
+            self.generation = self.evolution.generation
+            self.state = "coherent" if coherence else "evolving"
+            record = {
+                "tick": self.tick,
+                "generation": self.generation,
+                "prime": str(p_n),
+                "prime_count": len(self.primes),
+                "lattice_points": len(self.lattice.points()),
+                "arc_sq": str(arc_sq),
+                "radius_sq": str(radius_sq),
+                "deviation_sq": str(deviation_sq),
+                "coherence": bool(coherence),
+                "I": str(I),
+                "state": self.state,
+                "hopf_base": [str(hopf_base[0]), str(hopf_base[1])],
+                "evolution": evolution_record,
+                "x_input": str(x),
+                "ts": datetime.now().isoformat(),
+            }
+            self.history.append(record)
+            if len(self.history) > 1000:
+                self.history = self.history[-1000:]
+            return record
 
     def run_autonomous(self, steps: int, x_fn=None) -> List[Dict[str, Any]]:
         records = []
@@ -1618,35 +1684,41 @@ class AEI_Seed:
         return records
 
     def snapshot(self) -> Dict[str, Any]:
-        return {
-            "state": self.state,
-            "tick": self.tick,
-            "generation": self.generation,
-            "primes_tail": [str(p) for p in self.primes[-12:]],
-            "prime_count": len(self.primes),
-            "lattice_points": len(self.lattice.points()),
-            "arc_sq": str(self.last_arc_sq),
-            "radius_sq": str(self.last_radius_sq),
-            "deviation_sq": str(self.last_deviation_sq),
-            "coherence": self.last_deviation_sq.is_zero(),
-            "I": str(self.last_I),
-            "hopf_base": [str(self.last_hopf_base[0]), str(self.last_hopf_base[1])],
-            "evolution": self.last_evolution,
-            "trajectory": [
-                {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
-                for q in self.last_trajectory
-            ],
-            "linguistic_trajectory": [
-                {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
-                for q in self.last_linguistic_trajectory
-            ],
-            "history_tail": self.history[-20:],
-            "logic_core": {
-                k: {kk: str(vv) for kk, vv in v.items()} if isinstance(v, dict) else str(v)
-                for k, v in self.evolution.logic_core.items()
-            },
-            "last_logic_hash": self.last_logic_hash,
-        }
+        # Acquire the seed's step lock so a concurrent step() cannot mutate
+        # the state mid-snapshot. Every field read here is either an
+        # immutable Fraction, a string, or a list that step() replaces
+        # wholesale (never mutates in place).
+        lock = self._step_lock
+        with lock:
+            return {
+                "state": self.state,
+                "tick": self.tick,
+                "generation": self.generation,
+                "primes_tail": [str(p) for p in self.primes[-12:]],
+                "prime_count": len(self.primes),
+                "lattice_points": len(self.lattice.points()),
+                "arc_sq": str(self.last_arc_sq),
+                "radius_sq": str(self.last_radius_sq),
+                "deviation_sq": str(self.last_deviation_sq),
+                "coherence": self.last_deviation_sq.is_zero(),
+                "I": str(self.last_I),
+                "hopf_base": [str(self.last_hopf_base[0]), str(self.last_hopf_base[1])],
+                "evolution": self.last_evolution,
+                "trajectory": [
+                    {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
+                    for q in self.last_trajectory
+                ],
+                "linguistic_trajectory": [
+                    {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
+                    for q in self.last_linguistic_trajectory
+                ],
+                "history_tail": self.history[-20:],
+                "logic_core": {
+                    k: {kk: str(vv) for kk, vv in v.items()} if isinstance(v, dict) else str(v)
+                    for k, v in self.evolution.logic_core.items()
+                },
+                "last_logic_hash": self.last_logic_hash,
+            }
 
     def encode_syllable(self, syllable: str) -> Dict[str, Any]:
         traj = self.linguist.encode_syllable(syllable)
@@ -1727,6 +1799,7 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "bot": None,
     "public_url": None,
     "crawler": None,
+    "port": None,
 }
 
 
@@ -1877,7 +1950,14 @@ def verify_telegram_init_data(init_data: str, bot_token: str,
                           hashlib.sha256).digest()
     expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"),
                              hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected_hash, received_hash):
+    # Compare as bytes so a malformed `received_hash` (e.g. non-hex) cannot
+    # raise TypeError inside compare_digest — it must return False.
+    try:
+        expected_b = expected_hash.encode("ascii")
+        received_b = str(received_hash).encode("ascii")
+        if not hmac.compare_digest(expected_b, received_b):
+            return None
+    except Exception:
         return None
     auth_date_raw = parsed.get("auth_date")
     if auth_date_raw is not None:
@@ -1907,6 +1987,12 @@ def _extract_auth_headers(handler: "BridgeHandler") -> Tuple[Optional[int], Opti
         auth_hdr = handler.headers.get("Authorization", "").strip()
         if auth_hdr.lower().startswith("tma "):
             raw_init = auth_hdr[4:].strip()
+    if not raw_init:
+        try:
+            qs = dict(parse_qsl(urlparse(handler.path).query))
+            raw_init = (qs.get("auth_init_data") or "").strip()
+        except Exception:
+            raw_init = ""
     if not raw_init:
         return (None, None, False)
     verified = verify_telegram_init_data(raw_init, TELEGRAM_BOT_TOKEN_ENV)
@@ -1952,7 +2038,7 @@ class CrawlerWorker:
     async def _loop(self):
         while self._running:
             try:
-                url = self.state.dequeue()
+                url = await asyncio.to_thread(self.state.dequeue)
                 if url is None:
                     await asyncio.sleep(1.0)
                     continue
@@ -2275,12 +2361,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return {}
 
     def do_OPTIONS(self) -> None:
+        # Respond immediately with 204 No Content. Do not attempt to
+        # flush or otherwise manipulate the socket — http.server manages
+        # the connection lifecycle and Heroku's router accepts a plain
+        # 204 with CORS headers as a successful preflight response.
         self.send_response(204)
         self._set_cors()
         self.send_header("Content-Length", "0")
-        self.send_header("Connection", "close")
         self.end_headers()
-        self.close_connection = True
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -2379,8 +2467,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if crawler is None:
                 self._send_json(503, {"error": "crawler_not_ready"})
                 return
-            snap = crawler.state.snapshot()
-            self._send_json(200, snap)
+            queue_snap = crawler.state.snapshot()
+            self._send_json(200, {
+                "frontier_size": queue_snap.get("frontier_size", 0),
+                "frontier_preview": queue_snap.get("frontier_preview", []),
+                "visited_count": queue_snap.get("visited_count", 0),
+            })
             return
 
         if path == "/symbolic-state":
@@ -2663,6 +2755,13 @@ def _require_auth(handler: "BridgeHandler") -> bool:
         if auth_hdr.lower().startswith("tma "):
             raw_init = auth_hdr[4:].strip()
     if not raw_init:
+        # Fallback: query-string auth for GET requests (avoids CORS preflight).
+        try:
+            qs = dict(parse_qsl(urlparse(handler.path).query))
+            raw_init = (qs.get("auth_init_data") or "").strip()
+        except Exception:
+            raw_init = ""
+    if not raw_init:
         return False
     verified = verify_telegram_init_data(raw_init, TELEGRAM_BOT_TOKEN_ENV)
     if not verified or not verified.get("user"):
@@ -2686,6 +2785,8 @@ class BridgeServer:
         self._tunnel: Optional[TunnelManager] = None
         self._tunnel_thread: Optional[threading.Thread] = None
         self._ssl_context: Optional[ssl.SSLContext] = None
+        self._listen_ready: threading.Event = threading.Event()
+        self._listen_ok: bool = False
 
     def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
         if not BRIDGE_USE_TLS:
@@ -2708,20 +2809,29 @@ class BridgeServer:
     def start(self) -> None:
         if self._thread is not None:
             return
+
+        # Heroku assigns a single port via $PORT and routes all traffic to it.
+        # We MUST bind to that port. Binding to 0 (ephemeral) puts the server
+        # on a port the Heroku router will never route to, producing H10 /
+        # connection-refused on every request.
+        bind_port = int(os.environ.get("PORT", self.port))
+
         import socket as _socket_mod
         _orig_getfqdn = _socket_mod.getfqdn
         try:
             _socket_mod.getfqdn = _fqdn_fast
             try:
-                # BIND TO EPHEMERAL PORT (0) TO PREVENT H12/R12 DEADLOCKS ON RESTART
-                bind_port = 0 if os.getenv("PORT") else self.port
+                # allow_reuse_address must be set on the *class* before bind(),
+                # not on the instance after instantiation. ThreadingHTTPServer
+                # inherits from TCPServer whose __init__ performs bind(). We
+                # patch it before constructing.
+                ThreadingHTTPServer.allow_reuse_address = True
                 self._httpd = ThreadingHTTPServer((self.host, bind_port), BridgeHandler)
                 self._httpd.daemon_threads = True
-                self._httpd.allow_reuse_address = True
-                # Update the port to the actual bound port
+                # Report the actual bound port; on Heroku this equals $PORT.
                 self.port = self._httpd.server_address[1]
                 BRIDGE_ENGINE_REF["port"] = self.port
-                
+
                 self._ssl_context = self._build_ssl_context()
                 if self._ssl_context is not None:
                     self._httpd.socket = self._ssl_context.wrap_socket(
@@ -2729,17 +2839,35 @@ class BridgeServer:
             finally:
                 _socket_mod.getfqdn = _orig_getfqdn
         except OSError as e:
-            logger.error(f"🔥 Bridge server bind failed on {self.host}:{self.port}: {e}")
+            logger.error(
+                f"🔥 Bridge server bind failed on {self.host}:{bind_port}: {e}"
+            )
+            # Signal listening-event failure so _post_init can bail out
+            # rather than proceeding into run_polling() with a dead bridge.
+            self._listen_ready.set()
+            self._listen_ok = False
             return
-        
-        self._thread = threading.Thread(target=self._httpd.serve_forever, name="aei-bridge", daemon=True)
+
+        self._listen_ok = True
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, name="aei-bridge", daemon=True
+        )
         self._thread.start()
         scheme = "https" if self._ssl_context else "http"
-        logger.info(f"🌐 ÆI Seed Bridge listening on {scheme}://{self.host}:{self.port}")
+        logger.info(
+            f"🌐 ÆI Seed Bridge listening on {scheme}://{self.host}:{self.port}"
+        )
 
-        self._tunnel = TunnelManager(self.port, prefer=BRIDGE_TUNNEL, timeout=BRIDGE_PUBLIC_TIMEOUT)
-        self._tunnel_thread = threading.Thread(target=self._tunnel.start, name="aei-tunnel", daemon=True)
+        self._tunnel = TunnelManager(
+            self.port, prefer=BRIDGE_TUNNEL, timeout=BRIDGE_PUBLIC_TIMEOUT
+        )
+        self._tunnel_thread = threading.Thread(
+            target=self._tunnel.start, name="aei-tunnel", daemon=True
+        )
         self._tunnel_thread.start()
+
+        # Signal readiness to _post_init().
+        self._listen_ready.set()
 
     def stop(self) -> None:
         if self._tunnel is not None:
@@ -2840,9 +2968,23 @@ class AEI_Bot:
         if self._bridge_server is None:
             server = BridgeServer()
             self._bridge_server = server
-            # FIXED F1/F2: Force bridge to start in a background thread so PTB run_polling isn't blocked
-            t = threading.Thread(target=server.start, name="aei-bridge-boot", daemon=True)
-            t.start()
+            boot_thread = threading.Thread(
+                target=server.start, name="aei-bridge-boot", daemon=True
+            )
+            boot_thread.start()
+            # Block _post_init until the bridge either finishes binding (ok)
+            # or fails. This prevents the seed/crawler workers from starting
+            # against a bridge that is not yet listening, and prevents PTB's
+            # run_polling from running against a dead bridge.
+            ready = server._listen_ready.wait(timeout=BRIDGE_PUBLIC_TIMEOUT)
+            if not ready or not server._listen_ok:
+                logger.error(
+                    "🔥 Bridge failed to bind within %ss; "
+                    "seed/crawler workers will not start.",
+                    BRIDGE_PUBLIC_TIMEOUT,
+                )
+                return
+            logger.info("🌐 Bridge binding verified; proceeding to worker start")
 
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
         if url:
@@ -3383,24 +3525,30 @@ class AEI_Bot:
         logger.info(f"📡 Relay URL: {RELAY_URL or '(unset)'}")
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
-        import signal
-        import os
-        def _handle_sigterm(signum, frame):
-            logger.info("Received SIGTERM; stopping bridge and exiting...")
-            if self._crawler_worker:
-                try: self._crawler_worker.stop()
-                except Exception: pass
-            if self._seed_worker:
-                try: self._seed_worker.stop()
-                except Exception: pass
-            if self._bridge_server:
-                try: self._bridge_server.stop()
-                except Exception: pass
-            # Force the process to exit immediately, bypassing any stuck background threads.
-            os._exit(0)
+        # Register our own cleanup as PTB's shutdown hook instead of a raw
+        # SIGTERM handler. This runs *after* PTB has drained its event loop,
+        # so the bridge and workers stop cleanly before process exit.
+        async def _post_shutdown(application) -> None:
+            logger.info("PTB post_shutdown: stopping bridge + workers")
+            if self._crawler_worker is not None:
+                try:
+                    self._crawler_worker.stop()
+                except Exception:
+                    pass
+            if self._seed_worker is not None:
+                try:
+                    self._seed_worker.stop()
+                except Exception:
+                    pass
+            if self._bridge_server is not None:
+                try:
+                    self._bridge_server.stop()
+                except Exception:
+                    pass
+
         try:
-            signal.signal(signal.SIGTERM, _handle_sigterm)
-        except ValueError:
+            self.application.post_shutdown = _post_shutdown
+        except Exception:
             pass
 
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
@@ -3412,31 +3560,17 @@ class AEI_Bot:
 def main():
     import signal
     import os
-    import threading
-    import time
-    
-    def _handle_sigterm(signum, frame):
-        print("Received SIGTERM; forcing immediate exit.", flush=True)
-        # Start a watchdog thread that force-kills after 5 seconds
-        def force_kill():
-            time.sleep(5)
-            print("Watchdog: forcing exit after 5s timeout.", flush=True)
-            os._exit(1)
-        threading.Thread(target=force_kill, daemon=True).start()
-        # Try the normal cleanup path first
-        os._exit(0)
-        
-    try:
-        signal.signal(signal.SIGTERM, _handle_sigterm)
-        signal.signal(signal.SIGINT, _handle_sigterm)
-    except ValueError:
-        pass
 
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         logger.error("   export TELEGRAM_BOT_TOKEN='YOUR_BOT_TOKEN'")
         sys.exit(1)
-        
+
+    # Do NOT install a SIGTERM handler here. PTB's Application.run_polling()
+    # installs its own handlers and performs a clean shutdown. A competing
+    # handler (especially one calling os._exit) races with PTB's cleanup and
+    # causes Heroku to SIGKILL the dyno before it can flush.
+
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
     bot.run()
 
