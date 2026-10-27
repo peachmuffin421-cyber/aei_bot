@@ -2737,15 +2737,14 @@ class BridgeServer:
         except OSError as e:
             logger.error(f"🔥 Bridge server bind failed on {self.host}:{self.port}: {e}")
             return
-        self._thread = threading.Thread(target=self._httpd.serve_forever,
-                                        name="aei-bridge", daemon=True)
+        
+        self._thread = threading.Thread(target=self._httpd.serve_forever, name="aei-bridge", daemon=True)
         self._thread.start()
         scheme = "https" if self._ssl_context else "http"
         logger.info(f"🌐 ÆI Seed Bridge listening on {scheme}://{self.host}:{self.port}")
-        self._tunnel = TunnelManager(self.port, prefer=BRIDGE_TUNNEL,
-                                     timeout=BRIDGE_PUBLIC_TIMEOUT)
-        self._tunnel_thread = threading.Thread(target=self._tunnel.start,
-                                               name="aei-tunnel", daemon=True)
+
+        self._tunnel = TunnelManager(self.port, prefer=BRIDGE_TUNNEL, timeout=BRIDGE_PUBLIC_TIMEOUT)
+        self._tunnel_thread = threading.Thread(target=self._tunnel.start, name="aei-tunnel", daemon=True)
         self._tunnel_thread.start()
 
     def stop(self) -> None:
@@ -2847,6 +2846,7 @@ class AEI_Bot:
         if self._bridge_server is None:
             server = BridgeServer()
             self._bridge_server = server
+            # FIXED F1/F2: Force bridge to start in a background thread so PTB run_polling isn't blocked
             t = threading.Thread(target=server.start, name="aei-bridge-boot", daemon=True)
             t.start()
 
