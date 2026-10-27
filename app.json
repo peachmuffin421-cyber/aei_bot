@@ -1,6 +1,6 @@
 {
   "name": "ÆI Seed",
-  "description": "Agential Ætheric Intelligence — GAIA/ÆI Codex port as a Telegram Mini App. Runs the prime-sieve → lattice → Hopf-fibration → s²=r² → SelfEvolution loop from ÆI.md §3–§8. Every state value is an exact Fraction (a/b). Includes a stateless crawler relay client (worker.js) that feeds each crawled document's SHA-256 content hash (lifted to exact Fraction) as the next symbolic input x to the seed loop. CS-translated UI throughout.",
+  "description": "Agential Ætheric Intelligence — GAIA/ÆI Codex port as a Telegram Mini App. Runs the prime-sieve → lattice → Hopf-fibration → s²=r² → SelfEvolution loop from ÆI.md §3–§8. Every state value is an exact Fraction (a/b). Includes a stateless crawler relay client (worker.js) that feeds each crawled document's SHA-256 content hash (lifted to exact Fraction) as the next symbolic input x to the seed loop. CS-translated UI throughout. Edition 12: worker dyno formation (Telegram polling does not satisfy Heroku's web-dyno $PORT contract).",
   "repository": "https://github.com/yourusername/aei-seed-backend",
   "keywords": [
     "aetheric-intelligence",
@@ -26,7 +26,9 @@
     "crawler-relay",
     "cloudflare-workers",
     "audit-patched",
-    "final-edition-3"
+    "final-edition-12",
+    "worker-dyno",
+    "polling-bot"
   ],
   "env": {
     "TELEGRAM_BOT_TOKEN": {
@@ -46,7 +48,7 @@
       "required": false
     },
     "REQUIRE_AUTH": {
-      "description": "Enforce X-Telegram-Init-Data on all non-/health endpoints. Defaults to '1'.",
+      "description": "Enforce X-Telegram-Init-Data / ?auth_init_data= on all non-/health endpoints. Defaults to '1'.",
       "required": false
     },
     "LOG_BUFFER_SIZE": {
@@ -83,6 +85,10 @@
     },
     "ALLOWED_USER_IDS": {
       "description": "Comma-separated Telegram user IDs. Empty = open bot. For a private deployment, put your own user ID (from /whoami).",
+      "required": false
+    },
+    "BRIDGE_ENABLED": {
+      "description": "Set to '0' to disable the bridge HTTP server in this dyno (use when running a separate web dyno for the Mini App). Defaults to '1'.",
       "required": false
     }
   },
