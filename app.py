@@ -3360,6 +3360,7 @@ class AEI_Bot:
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
         import signal
+        import os
         def _handle_sigterm(signum, frame):
             logger.info("Received SIGTERM; stopping bridge and exiting...")
             if self._crawler_worker:
@@ -3371,7 +3372,8 @@ class AEI_Bot:
             if self._bridge_server:
                 try: self._bridge_server.stop()
                 except Exception: pass
-            sys.exit(0)
+            # Force the process to exit immediately, bypassing any stuck background threads.
+            os._exit(0)
         try:
             signal.signal(signal.SIGTERM, _handle_sigterm)
         except ValueError:
