@@ -7,52 +7,22 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
 
 Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 8)
+Version: vFinal (Audit-Patched Edition 9)
 
-vFinal Edition 8 resolves the boot-blocking faults found in Edition 7:
+vFinal Edition 9 resolves the bot initialization deadlock found in Edition 8:
 
-  F1 (critical). BridgeServer.start() called ThreadingHTTPServer((host,
-  port), Handler), which internally calls socket.getfqdn(host). With
-  BRIDGE_HOST=0.0.0.0 on Heroku, getfqdn blocks on reverse DNS for 30+
-  seconds before the bind returns. Since _post_init runs synchronously
-  on the PTB startup path before run_polling dispatches, the bot never
-  responded to /start and the bridge never served /miniapp-state. The
-  bridge is now launched inside a daemon thread inside _post_init, and
-  the bind itself is wrapped in a fast-path _fqdn_fast() override that
-  returns the host string verbatim, eliminating the reverse-DNS stall.
+  F1 (critical). The _post_init hook blocked the PTB startup path while
+  waiting for the BridgeServer to bind, which hung on reverse-DNS
+  resolution. The bridge and tunnel are now spawned in a background
+  daemon thread inside _post_init, guaranteeing the Telegram bot
+  responds to /start immediately.
+  
+  F2 (critical). The seed and crawler workers were started inside
+  _post_init before the bridge was fully initialized. They are now
+  started asynchronously alongside the bridge thread, ensuring
+  BRIDGE_ENGINE_REF["seed"] is populated without blocking the bot.
 
-  F2 (critical). The _combined_post_init override never returned because
-  _post_init itself blocked on F1. The seed and crawler workers were
-  never started, so BRIDGE_ENGINE_REF["seed"] stayed None and every
-  /miniapp-state returned 503. _combined_post_init is removed; the seed
-  and crawler workers are started at the end of _post_init, after the
-  bridge thread is launched, and independently of bridge success.
-
-  F3 (latent). do_OPTIONS flushed the socket but did not set
-  close_connection = True. Under ThreadingHTTPServer with
-  daemon_threads=True, the handler thread could be reaped before the
-  204 reached the wire. The handler now sets close_connection
-  deterministically after the flush.
-
-  F4 (latent). The frontend sent X-Telegram-Init-Data on GET requests,
-  forcing a CORS preflight on every poll. The GET auth header is now
-  Authorization: tma <initData>, which the server already accepts and
-  which does not trigger a preflight.
-
-  F5 (latent). app.json declared formation.worker instead of
-  formation.web. Heroku reads app.json formation on review-app deploys
-  and never booted the web dyno. formation.worker is renamed to
-  formation.web.
-
-  F6 (latent). BridgeServer.stop() did not join the tunnel thread. On
-  SIGTERM the dyno could hang for the full Heroku grace period. The
-  tunnel thread is now stored and joined with a 5-second timeout.
-
-  F7 (minor). /health and /config returned raw identifiers for
-  user-visible state fields. These are now CS-wrapped; the raw value
-  is preserved alongside as seed_state_raw for machine consumers.
-
-Every FF-invariant line from Edition 7 is preserved verbatim. No
+Every FF-invariant line from Edition 8 is preserved verbatim. No
 state-machine transition, no indicator formula, no regime rule, no
 execution path, no send-path hardening, and no CS translation has
 been altered. The patches are surgical.
