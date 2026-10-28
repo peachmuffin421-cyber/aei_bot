@@ -4,94 +4,11 @@
 ÆI SEED TWA — AGENTIAL ÆTHERIC INTELLIGENCE
 Heroku Backend + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
-Platform: Heroku + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js)
-
-Author: Natalia Tanyatia
-Version: vFinal (Audit-Patched Edition 11)
-
-vFinal Edition 11 resolves the Heroku dyno boot-to-death deadlock observed in
-Edition 10's deployment logs. The logs showed a clean boot (bridge bound,
-MenuButton registered, workers started) followed by SIGKILL at exactly the
-60-second Heroku grace-period boundary, with every subsequent request
-returning H10 "App crashed". That sequence is the signature of a process
-that failed to bind to $PORT and then had its SIGTERM handling race with
-PTB's own shutdown path.
-
-Edition 11 fixes:
-
-  P1 (critical). The competing SIGTERM handler in main() and in AEI_Bot.run()
-  was removed. PTB's Application.run_polling() installs its own SIGTERM
-  handler and performs a clean shutdown. Edition 10's os._exit(0) call
-  inside a duplicate SIGTERM handler, combined with a 5-second watchdog
-  thread calling os._exit(1), was the direct cause of the SIGKILL at
-  second 60. Cleanup now runs via Application.post_shutdown.
-
-  P2 (critical). The bridge bound to port 0 (ephemeral) whenever $PORT was
-  set, then assigned the ephemeral port back to self.port. Heroku's router
-  sends all traffic to the assigned $PORT, so any binding to a different
-  port is unreachable from the router and produces H10 on every request.
-  The bridge now always binds to $PORT when it is set.
-
-  P3 (critical). ThreadingHTTPServer.allow_reuse_address was set on the
-  instance after __init__ (which already performs bind()). It is now set
-  on the class before instantiation, ensuring clean rebinds across dyno
-  restarts.
-
-  P4 (critical). _post_init was returning before the bridge finished
-  binding. Seed and crawler workers were starting against a bridge that
-  was not yet listening. _post_init now blocks on a threading.Event
-  (_listen_ready) with a BRIDGE_PUBLIC_TIMEOUT-second ceiling, and bails
-  out cleanly if the bind fails, so the bot still responds to /start even
-  when the bridge is unreachable.
-
-  P5 (major). Seed step and snapshot were not serialized against a shared
-  lock, so a snapshot could observe a half-updated last_trajectory or
-  primes list. AEI_Seed now holds a threading.Lock across step() and
-  snapshot().
-
-  P6 (major). CrawlerWorker._loop was calling state.dequeue() on the
-  event-loop thread, blocking all polls during SQLite access. The dequeue
-  now goes through asyncio.to_thread.
-
-  P7 (major). record_visit was storing the raw 32-hex SHA-256 hash as a
-  PyFraction with denominator 16^32. Every subsequent step() that read
-  latest_hash_fraction() ran PyFraction arithmetic on that enormous
-  denominator. The fraction is now reduced via continued fractions to its
-  20th convergent before being stored. The full content_hash string is
-  retained for audit.
-
-  P8 (major). _emit_toast computed _TOAST_FIRST_AVAILABLE_SEQ from
-  _TOAST_BUFFER[0] after the append that had already evicted the previous
-  index 0. Clients that requested a toast on the eviction boundary
-  received the next element's seq rather than the first-available
-  boundary. The evicted seq is now captured before appending.
-
-  P9 (moderate). verify_telegram_init_data called hmac.compare_digest on
-  possibly-differently-typed arguments. A malformed received_hash could
-  raise TypeError and turn a 403 into a 500. The comparison now encodes
-  both sides to bytes and catches any exception.
-
-  P10 (moderate). GET requests carrying Authorization or
-  X-Telegram-Init-Data triggered a CORS preflight on every poll. The
-  frontend now sends initData as a query parameter on GET
-  (?auth_init_data=...) and reserves the header for POST. The backend
-  reads both. This eliminates preflight from the hot polling path, which
-  is the single largest source of Heroku router churn at 6 polled
-  endpoints.
-
-  P11 (minor). The /crawler-queue endpoint returned the full snapshot,
-  duplicating /crawler-state. It now returns only the queue-side fields
-  (frontier_size, frontier_preview, visited_count).
-
-Every FF-invariant line from Edition 10 is preserved verbatim except where
-a patch explicitly replaces a block. No state-machine transition, no
-indicator formula, no regime rule, no execution path, no send-path
-hardening, and no CS translation has been altered. The patches are surgical
-and address only deployment-environment correctness, concurrency safety,
-and the exactness of the boundary transform from SHA-256 hex to PyFraction.
+Platform: Heroku worker dyno + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js).
+Version: Final Ed.12 (Audit-Patched).
 """
 
-__version__ = "final"
+__version__ = "final-ed12"
 
 import asyncio
 import hashlib
@@ -1247,10 +1164,6 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
             _TOAST_BUFFER = deque(maxlen=1)
             maxlen = 1
         was_full = (len(_TOAST_BUFFER) >= maxlen)
-        # If the buffer is at capacity, the append below will evict the
-        # element currently at index 0. Capture its seq *before* appending,
-        # so _TOAST_FIRST_AVAILABLE_SEQ reflects the first toast a client
-        # can still request (i.e. the one at index 1 after eviction).
         evicted_seq = _TOAST_BUFFER[0].get("seq", 0) if was_full else 0
         _TOAST_SEQ += 1
         seq = _TOAST_SEQ
@@ -1261,8 +1174,6 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
             entry["ts"] = datetime.now().isoformat()
         _TOAST_BUFFER.append(entry)
         if was_full and evicted_seq > 0:
-            # After eviction, the oldest *retained* toast is the one that
-            # was at index 1 before this append.
             _TOAST_FIRST_AVAILABLE_SEQ = evicted_seq + 1
         elif _TOAST_FIRST_AVAILABLE_SEQ == 0 and len(_TOAST_BUFFER) > 0:
             _TOAST_FIRST_AVAILABLE_SEQ = _TOAST_BUFFER[0].get("seq", seq)
@@ -1350,21 +1261,7 @@ class CrawlerSeedState:
 
     def record_visit(self, url: str, title: str, content_hash: str,
                      depth: int, link_count: int) -> CrawlRecord:
-        # Reduce the hash fraction via continued fractions to keep
-        # denominators small. The full SHA-256 hex is 32 hex chars → the
-        # raw PyFraction denominator is 16^32 ≈ 3.4×10^38. Every step()
-        # that reads latest_hash_fraction() runs PyFraction arithmetic on
-        # that denominator. Reducing to the 20th convergent keeps the
-        # magnitude comparable while preserving exactness relative to the
-        # reduced fraction. The full content_hash string is retained for
-        # audit, so the reduction is display-only.
         hash_frac = _hash_to_fraction(content_hash)
-        try:
-            convergents = ContinuedFractionRefiner.generate_convergents(hash_frac, max_iter=20)
-            if convergents:
-                hash_frac = convergents[-1][0]
-        except Exception:
-            pass
         record = CrawlRecord(
             url=url, title=title, content_hash=content_hash,
             hash_frac=hash_frac,
@@ -1616,6 +1513,8 @@ class AEI_Seed:
 
     def step(self, x: Fraction) -> Dict[str, Any]:
         with self._step_lock:
+            x_doc = x
+            x = Fraction.one() + x_doc
             p_n = self.processor.generate_next_prime(self.primes)
             if self.processor.validate_indivisibility(p_n, self.primes):
                 self.primes.append(p_n)
@@ -1669,6 +1568,7 @@ class AEI_Seed:
                 "hopf_base": [str(hopf_base[0]), str(hopf_base[1])],
                 "evolution": evolution_record,
                 "x_input": str(x),
+                "x_input_raw": str(x_doc),
                 "ts": datetime.now().isoformat(),
             }
             self.history.append(record)
@@ -1684,10 +1584,6 @@ class AEI_Seed:
         return records
 
     def snapshot(self) -> Dict[str, Any]:
-        # Acquire the seed's step lock so a concurrent step() cannot mutate
-        # the state mid-snapshot. Every field read here is either an
-        # immutable Fraction, a string, or a list that step() replaces
-        # wholesale (never mutates in place).
         lock = self._step_lock
         with lock:
             return {
@@ -1755,7 +1651,6 @@ class BridgeState:
 
     def register_webapp_session(self, user_id: int, username: Optional[str],
                                 chat_id: Optional[int] = None) -> bool:
-        """Only log on new session or chat_id change."""
         with self._handshake_lock:
             now = datetime.now().isoformat()
             existing = self._webapp_sessions.get(user_id, {})
@@ -1848,6 +1743,9 @@ _CS_VALUE_MAP: Dict[str, str] = {
 }
 
 
+_CS_SIGIL_PREFIXES = ("𝒜", "𝒮", "𝒟", "ℐ", "𝒪", "𝒞", "𝒯", "ℱ", "Λ", "Φ", "Ψ", "⟦", "⟧")
+
+
 def _cs(value) -> str:
     if value is None:
         return "—"
@@ -1857,7 +1755,13 @@ def _cs(value) -> str:
     upper = s.upper()
     if upper in _CS_VALUE_MAP:
         return _CS_VALUE_MAP[upper]
-    return s
+    if "/" in s:
+        stripped = s.replace("/", "").replace("-", "").replace("+", "")
+        if stripped.isdigit():
+            return s
+    if s.startswith(_CS_SIGIL_PREFIXES):
+        return s
+    return "⟦" + s + "⟧"
 
 
 def _looks_like_reply_error(desc: str) -> bool:
@@ -1950,8 +1854,6 @@ def verify_telegram_init_data(init_data: str, bot_token: str,
                           hashlib.sha256).digest()
     expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"),
                              hashlib.sha256).hexdigest()
-    # Compare as bytes so a malformed `received_hash` (e.g. non-hex) cannot
-    # raise TypeError inside compare_digest — it must return False.
     try:
         expected_b = expected_hash.encode("ascii")
         received_b = str(received_hash).encode("ascii")
@@ -2361,10 +2263,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return {}
 
     def do_OPTIONS(self) -> None:
-        # Respond immediately with 204 No Content. Do not attempt to
-        # flush or otherwise manipulate the socket — http.server manages
-        # the connection lifecycle and Heroku's router accepts a plain
-        # 204 with CORS headers as a successful preflight response.
         self.send_response(204)
         self._set_cors()
         self.send_header("Content-Length", "0")
@@ -2534,10 +2432,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "seed_not_ready"})
                 return
             bounds = (
-                (Fraction(-1), Fraction(1)),
-                (Fraction(-1), Fraction(1)),
-                (Fraction(-1), Fraction(1)),
-                (Fraction(-1), Fraction(1)),
+                (Fraction(0), Fraction(1)),
+                (Fraction(0), Fraction(1)),
+                (Fraction(0), Fraction(1)),
+                (Fraction(0), Fraction(1)),
             )
             integral = seed.consciousness.compute_integral_exact(bounds, steps=4)
             self._send_json(200, {
@@ -2755,7 +2653,6 @@ def _require_auth(handler: "BridgeHandler") -> bool:
         if auth_hdr.lower().startswith("tma "):
             raw_init = auth_hdr[4:].strip()
     if not raw_init:
-        # Fallback: query-string auth for GET requests (avoids CORS preflight).
         try:
             qs = dict(parse_qsl(urlparse(handler.path).query))
             raw_init = (qs.get("auth_init_data") or "").strip()
@@ -2810,25 +2707,25 @@ class BridgeServer:
         if self._thread is not None:
             return
 
-        # Heroku assigns a single port via $PORT and routes all traffic to it.
-        # We MUST bind to that port. Binding to 0 (ephemeral) puts the server
-        # on a port the Heroku router will never route to, producing H10 /
-        # connection-refused on every request.
-        bind_port = int(os.environ.get("PORT", self.port))
+        # Heroku worker dynos do not route inbound traffic to $PORT, so we
+        # bind the bridge on BRIDGE_PORT (or the explicit $BRIDGE_PORT).
+        # A worker dyno's only external surface is the Cloudflare Tunnel.
+        if os.environ.get("PORT") and not os.environ.get("BRIDGE_PORT"):
+            # If the operator is running locally with a $PORT preset, honor
+            # it. On a worker dyno the PORT env is absent unless the operator
+            # manually set it, so this branch is a no-op there.
+            bind_port = int(os.environ.get("PORT", self.port))
+        else:
+            bind_port = int(os.environ.get("BRIDGE_PORT", self.port))
 
         import socket as _socket_mod
         _orig_getfqdn = _socket_mod.getfqdn
         try:
             _socket_mod.getfqdn = _fqdn_fast
             try:
-                # allow_reuse_address must be set on the *class* before bind(),
-                # not on the instance after instantiation. ThreadingHTTPServer
-                # inherits from TCPServer whose __init__ performs bind(). We
-                # patch it before constructing.
                 ThreadingHTTPServer.allow_reuse_address = True
                 self._httpd = ThreadingHTTPServer((self.host, bind_port), BridgeHandler)
                 self._httpd.daemon_threads = True
-                # Report the actual bound port; on Heroku this equals $PORT.
                 self.port = self._httpd.server_address[1]
                 BRIDGE_ENGINE_REF["port"] = self.port
 
@@ -2842,8 +2739,6 @@ class BridgeServer:
             logger.error(
                 f"🔥 Bridge server bind failed on {self.host}:{bind_port}: {e}"
             )
-            # Signal listening-event failure so _post_init can bail out
-            # rather than proceeding into run_polling() with a dead bridge.
             self._listen_ready.set()
             self._listen_ok = False
             return
@@ -2866,7 +2761,6 @@ class BridgeServer:
         )
         self._tunnel_thread.start()
 
-        # Signal readiness to _post_init().
         self._listen_ready.set()
 
     def stop(self) -> None:
@@ -2972,10 +2866,6 @@ class AEI_Bot:
                 target=server.start, name="aei-bridge-boot", daemon=True
             )
             boot_thread.start()
-            # Block _post_init until the bridge either finishes binding (ok)
-            # or fails. This prevents the seed/crawler workers from starting
-            # against a bridge that is not yet listening, and prevents PTB's
-            # run_polling from running against a dead bridge.
             ready = server._listen_ready.wait(timeout=BRIDGE_PUBLIC_TIMEOUT)
             if not ready or not server._listen_ok:
                 logger.error(
@@ -3183,10 +3073,10 @@ class AEI_Bot:
             await self._safe_reply(update, "⏳ Seed not initialized.")
             return
         bounds = (
-            (Fraction(-1), Fraction(1)),
-            (Fraction(-1), Fraction(1)),
-            (Fraction(-1), Fraction(1)),
-            (Fraction(-1), Fraction(1)),
+            (Fraction(0), Fraction(1)),
+            (Fraction(0), Fraction(1)),
+            (Fraction(0), Fraction(1)),
+            (Fraction(0), Fraction(1)),
         )
         integral = seed.consciousness.compute_integral_exact(bounds, steps=4)
         text = (
@@ -3525,9 +3415,6 @@ class AEI_Bot:
         logger.info(f"📡 Relay URL: {RELAY_URL or '(unset)'}")
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
-        # Register our own cleanup as PTB's shutdown hook instead of a raw
-        # SIGTERM handler. This runs *after* PTB has drained its event loop,
-        # so the bridge and workers stop cleanly before process exit.
         async def _post_shutdown(application) -> None:
             logger.info("PTB post_shutdown: stopping bridge + workers")
             if self._crawler_worker is not None:
@@ -3565,11 +3452,6 @@ def main():
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         logger.error("   export TELEGRAM_BOT_TOKEN='YOUR_BOT_TOKEN'")
         sys.exit(1)
-
-    # Do NOT install a SIGTERM handler here. PTB's Application.run_polling()
-    # installs its own handlers and performs a clean shutdown. A competing
-    # handler (especially one calling os._exit) races with PTB's cleanup and
-    # causes Heroku to SIGKILL the dyno before it can flush.
 
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
     bot.run()
