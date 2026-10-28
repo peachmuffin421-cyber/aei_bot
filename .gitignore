@@ -1,7 +1,6 @@
 # ============================================================================
 # ÆI SEED BACKEND — .gitignore
-# Version: vFinal (Audit-Patched Edition 3)
-# Repo: aei-seed-backend (Heroku)
+# Repo: aei-seed-backend (Heroku web dyno)
 # ============================================================================
 #
 # The backend repo contains app.py, the Heroku deployment manifests, and
@@ -145,6 +144,8 @@ Procfile.local
 Procfile.windows
 .heroku/
 heroku.yml
+.cloudflared/
+*.cloudflared.json
 
 # ----------------------------------------------------------------------------
 # LOGS / TEMP

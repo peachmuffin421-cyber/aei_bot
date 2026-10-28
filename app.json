@@ -1,6 +1,6 @@
 {
   "name": "ÆI Seed",
-  "description": "Agential Ætheric Intelligence — GAIA/ÆI Codex port as a Telegram Mini App. Runs the prime-sieve → lattice → Hopf-fibration → s²=r² → SelfEvolution loop from ÆI.md §3–§8. Every state value is an exact Fraction (a/b). Includes a stateless crawler relay client (worker.js) that feeds each crawled document's SHA-256 content hash (lifted to exact Fraction) as the next symbolic input x to the seed loop. CS-translated UI throughout. Edition 12: worker dyno formation (Telegram polling does not satisfy Heroku's web-dyno $PORT contract).",
+  "description": "Agential Ætheric Intelligence — GAIA/ÆI Codex port as a Telegram Mini App. Runs the prime-sieve → lattice → Hopf-fibration → s²=r² → SelfEvolution loop from ÆI.md §3–§8. Every state value is an exact Fraction (a/b). Includes a stateless crawler relay client (worker.js) that feeds each crawled document's SHA-256 content hash (lifted to exact Fraction) as the next symbolic input x to the seed loop. CS-translated UI throughout. Runs on a Heroku web dyno bound to $PORT.",
   "repository": "https://github.com/yourusername/aei-seed-backend",
   "keywords": [
     "aetheric-intelligence",
@@ -25,10 +25,9 @@
     "lingoso",
     "crawler-relay",
     "cloudflare-workers",
-    "audit-patched",
-    "final-edition-12",
-    "worker-dyno",
-    "polling-bot"
+    "web-dyno",
+    "heroku-router",
+    "port-bind"
   ],
   "env": {
     "TELEGRAM_BOT_TOKEN": {
@@ -36,7 +35,7 @@
       "required": true
     },
     "TELEGRAM_WEBAPP_URL": {
-      "description": "Public HTTPS URL of the Telegram Mini App (GitHub Pages). Skips tunnel spawn when set.",
+      "description": "Public HTTPS URL of the Telegram Mini App. On a web dyno, set to https://<app>.herokuapp.com/. When set, the tunnel spawner is bypassed.",
       "required": false
     },
     "RELAY_URL": {
@@ -48,7 +47,7 @@
       "required": false
     },
     "REQUIRE_AUTH": {
-      "description": "Enforce X-Telegram-Init-Data / ?auth_init_data= on all non-/health endpoints. Defaults to '1'.",
+      "description": "Enforce X-Telegram-Init-Data on all non-/health endpoints. Defaults to '1'.",
       "required": false
     },
     "LOG_BUFFER_SIZE": {
@@ -86,19 +85,22 @@
     "ALLOWED_USER_IDS": {
       "description": "Comma-separated Telegram user IDs. Empty = open bot. For a private deployment, put your own user ID (from /whoami).",
       "required": false
-    },
-    "BRIDGE_ENABLED": {
-      "description": "Set to '0' to disable the bridge HTTP server in this dyno (use when running a separate web dyno for the Mini App). Defaults to '1'.",
-      "required": false
     }
   },
   "formation": {
-    "worker": {
+    "web": {
       "quantity": 1,
+      "size": "eco"
+    },
+    "worker": {
+      "quantity": 0,
       "size": "eco"
     }
   },
   "buildpacks": [
+    {
+      "url": "https://github.com/heroku/heroku-buildpack-apt"
+    },
     {
       "url": "heroku/python"
     }

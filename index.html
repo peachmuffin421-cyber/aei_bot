@@ -136,7 +136,7 @@ code {
 <div class="container">
 
 <h1>⚡ ÆI SEED BRIDGE</h1>
-<div class="subtitle">HEROKU BACKEND · GAIA/ÆI CODEX · vFinal Edition 3</div>
+<div class="subtitle">HEROKU WEB DYNO · GAIA/ÆI CODEX</div>
 
 <div class="status-line">
     <div class="status-dot wait" id="dot"></div>
@@ -146,6 +146,7 @@ code {
 <div class="panel">
     <div class="panel-title">Bridge Endpoint</div>
     <div class="row"><span class="lbl">Origin</span><span class="val" id="origin">—</span></div>
+    <div class="row"><span class="lbl">Substrate</span><span class="val" id="substrate">—</span></div>
     <div class="row"><span class="lbl">Version</span><span class="val" id="version">—</span></div>
     <div class="row"><span class="lbl">Seed Initialized</span><span class="val" id="seedInit">—</span></div>
     <div class="row"><span class="lbl">Seed State</span><span class="val proj" id="seedState">—</span></div>
@@ -194,22 +195,24 @@ code {
 <div class="panel">
     <div class="panel-title">Sibling Repositories</div>
     <div class="row"><span class="lbl">Frontend</span><span class="val"><code>aei-seed-miniapp</code> — GitHub Pages TWA</span></div>
-    <div class="row"><span class="lbl">Backend</span><span class="val"><code>aei-seed-backend</code> — this repo (Heroku)</span></div>
+    <div class="row"><span class="lbl">Backend</span><span class="val"><code>aei-seed-backend</code> — this repo (Heroku web dyno)</span></div>
     <div class="row"><span class="lbl">Relay</span><span class="val"><code>aei-seed-relay</code> — Cloudflare Workers (stateless fetch proxy)</span></div>
     <div class="note">
         The ÆI Seed Mini App lives in the <b>frontend</b> repo. This backend page is a diagnostic surface only —
         it is <b>not</b> the TWA. To launch the actual Mini App, open it from Telegram via the bot's menu button,
         or visit the GitHub Pages URL with <code>?backend=&lt;this-origin&gt;/</code> appended.
         <br><br>
-        <b>vFinal Edition 3:</b> the worker.js relay is a stateless fetch proxy. All crawl logic (frontier,
-        visited set, depth limits, hash lifting to exact Fraction, seed injection) lives in app.py.
-        The seed loop consumes each crawled document's SHA-256 content hash (lifted to exact Fraction)
-        as the next symbolic input x.
+        <b>Substrate:</b> the bridge binds directly on Heroku's <code>$PORT</code>. The Heroku router
+        terminates TLS at the edge and forwards <code>https://&lt;app&gt;.herokuapp.com/</code> to the dyno.
+        No Cloudflare Tunnel is spawned on a web dyno. The worker.js relay is a stateless fetch proxy;
+        all crawl logic (frontier, visited set, depth limits, hash lifting to exact Fraction, seed injection)
+        lives in app.py. The seed loop consumes each crawled document's SHA-256 content hash (lifted to exact
+        Fraction) as the next symbolic input x.
     </div>
 </div>
 
 <div class="footer">
-    ÆI Seed vFinal Edition 3 · Audit-Patched · Natalia Tanyatia · LOGOS = Φ = Truth = Path = Origin
+    ÆI Seed · Natalia Tanyatia · LOGOS = Φ = Truth = Path = Origin
 </div>
 
 </div>
@@ -243,6 +246,7 @@ async function probe() {
         const data = await res.json();
         dot.className = 'status-dot ok';
         statusText.textContent = 'Bridge online';
+        setText('substrate', data.substrate || '—');
         setText('version', data.version || '—');
         setText('seedInit', String(data.seed_initialized), data.seed_initialized ? 'ok' : 'warn');
         setText('seedState', data.seed_state || '—', 'proj');
