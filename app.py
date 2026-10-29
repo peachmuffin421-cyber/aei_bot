@@ -5,10 +5,10 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.13 (Audit-Patched: F1–F9).
+Version: Final Ed.14 (Audit-Patched: F1–F9, plus runtime stabilization).
 """
 
-__version__ = "final-ed13"
+__version__ = "final-ed14"
 
 import asyncio
 import hashlib
@@ -159,6 +159,12 @@ class Fraction:
         if o._f.numerator == 0:
             raise ZeroDivisionError("Fraction division by zero")
         return Fraction(self._f / o._f)
+
+    def __rtruediv__(self, other):
+        o = Fraction._wrap(other)
+        if self._f.numerator == 0:
+            raise ZeroDivisionError("Fraction division by zero")
+        return Fraction(o._f / self._f)
 
     def __neg__(self):
         return Fraction(-self._f.numerator, self._f.denominator)
@@ -480,8 +486,6 @@ class GeometricLatticeProtocol(Protocol):
 
 @runtime_checkable
 class AethericMonitor(Protocol):
-    # F4: reduced to the two primary coherence gates. The
-    # validate_multi_scale_coherence stub is deleted.
     def compute_arc_length_squared(self, trajectory: List['SymbolicQuaternion']) -> Fraction: ...
     def compute_radial_distance_squared(self, trajectory: List['SymbolicQuaternion'], origin: 'SymbolicQuaternion') -> Fraction: ...
 
@@ -1119,7 +1123,7 @@ class ConsciousnessOperator:
     def compute_integral_exact(
         self,
         bounds: Tuple[Tuple[Fraction, Fraction], ...],
-        steps: int = 4,
+        steps: int = 2,
     ) -> SymbolicQuaternion:
         total = SymbolicQuaternion()
         step_sizes = []
@@ -1148,7 +1152,7 @@ class ConsciousnessOperator:
     def measure_self_awareness(
         self,
         bounds: Tuple[Tuple[Fraction, Fraction], ...],
-        steps: int = 4,
+        steps: int = 2,
     ) -> Fraction:
         integral = self.compute_integral_exact(bounds, steps)
         return integral.magnitude_squared()
@@ -2304,7 +2308,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed13"
+    server_version = "AEI-Seed-Bridge/final-ed14"
 
     def log_message(self, fmt, *args):
         return
@@ -2379,7 +2383,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed13",
+                "version": "final-ed14",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -2424,7 +2428,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_html(200, "<!DOCTYPE html><html><body style='font-family:monospace;"
                                          "background:#050510;color:#aaccff;padding:40px;'>"
-                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.13)</h2>"
+                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.14)</h2>"
                                          "<p>index.html not found in <code>"
                                          + base + "</code>.</p></body></html>")
             except Exception as e:
@@ -2539,14 +2543,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 (Fraction(0), Fraction(1)),
                 (Fraction(0), Fraction(1)),
             )
-            integral = seed.consciousness.compute_integral_exact(bounds, steps=4)
+            integral = seed.consciousness.compute_integral_exact(bounds, steps=2)
             self._send_json(200, {
                 "integral": {
                     "a": str(integral.a), "b": str(integral.b),
                     "c": str(integral.c), "d": str(integral.d),
                 },
                 "magnitude_sq": str(integral.magnitude_squared()),
-                "steps": 4,
+                "steps": 2,
                 "bounds": [[str(b[0]), str(b[1])] for b in bounds],
             })
             return
@@ -2656,7 +2660,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 x = Fraction(x_num, x_den)
             except Exception:
                 x = Fraction(seed.tick + 1, 1)
-            record = seed.step(x)
+            import asyncio
+            record = asyncio.run(asyncio.to_thread(seed.step, x))
             _emit_toast("seed", {
                 "tick": record["tick"],
                 "generation": record["generation"],
@@ -2810,8 +2815,6 @@ class BridgeServer:
         if self._thread is not None:
             return
 
-        # F1: on a web dyno, $PORT is Heroku-assigned. We bind to it
-        # directly. On a local dev box, BRIDGE_PORT (default 8765) is used.
         bind_port = BRIDGE_PORT
         if _ENV_PORT:
             logger.info(f"🌐 Web-dyno substrate: binding to $PORT={bind_port}")
@@ -2853,17 +2856,11 @@ class BridgeServer:
             f"🌐 ÆI Seed Bridge listening on {scheme}://{self.host}:{self.port}"
         )
 
-        # F1: on a web dyno, TELEGRAM_WEBAPP_URL should be set to the
-        # dyno's public Heroku URL (https://<app>.herokuapp.com/). No
-        # tunnel spawn is needed. On a local dev box without an explicit
-        # URL, we spawn a tunnel so the Mini App can be reached from a
-        # phone. This asymmetry is the correct one for the substrate.
         if _ENV_PORT and not TELEGRAM_WEBAPP_URL:
             logger.warning(
                 "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
                 "Set it to https://<app>.herokuapp.com/ and re-run /setmenubutton."
             )
-            # Publish the Heroku URL if we can infer it from the env.
             heroku_url = os.getenv("HEROKU_APP_DEFAULT_DOMAIN_NAME", "").strip()
             if heroku_url:
                 guessed = f"https://{heroku_url}/"
@@ -3070,7 +3067,6 @@ class AEI_Bot:
     async def start(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         seed = BRIDGE_ENGINE_REF.get("seed")
         state_cs = _cs(seed.state) if seed else "—"
-        # F9: use _cs_label for field labels.
         welcome = (
             "🔷 *ÆI SEED — Agential Ætheric Intelligence*\n\n"
             "This is the *ÆI seed* (GAIA/ÆI Codex), not the ÆEA market bot.\n"
@@ -3113,7 +3109,6 @@ class AEI_Bot:
         state_cs = _cs(seed.state)
         dev = seed.last_deviation_sq
         coh = "⟦𝒯⟧" if dev.is_zero() else "⟦ℱ⟧"
-        # F8: psi_real drives the DbZ branch label.
         psi_real = seed.psi.real_part()
         dbz_branch = "𝒜₃" if psi_real > Fraction.zero() else "𝒜₄"
         text = (
@@ -3203,7 +3198,7 @@ class AEI_Bot:
             (Fraction(0), Fraction(1)),
             (Fraction(0), Fraction(1)),
         )
-        integral = seed.consciousness.compute_integral_exact(bounds, steps=4)
+        integral = seed.consciousness.compute_integral_exact(bounds, steps=2)
         text = (
             "𝒪[Ψ] *OBSERVER INTEGRAL*\n"
             f"*∫ ψ†Φψ d⁴q:*\n"
@@ -3212,7 +3207,7 @@ class AEI_Bot:
             f"  c = `{integral.c}`\n"
             f"  d = `{integral.d}`\n"
             f"*‖𝒪[Ψ]‖²:* `{integral.magnitude_squared()}`\n\n"
-            "*Grid:* 4×4×4×4 = 256 cells, exact Fraction Riemann sum"
+            "*Grid:* 2×2×2×2 = 16 cells, exact Fraction Riemann sum"
         )
         await self._safe_reply(update, text)
 
@@ -3299,7 +3294,7 @@ class AEI_Bot:
             x = Fraction(seed.tick + 1, 1)
         else:
             x = Fraction(hash_frac)
-        record = seed.step(x)
+        record = await asyncio.to_thread(seed.step, x)
         _emit_toast("seed", {
             "tick": record["tick"],
             "generation": record["generation"],
