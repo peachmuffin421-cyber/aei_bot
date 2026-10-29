@@ -5,10 +5,10 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed. Two
+Version: Final Ed. Three
 """
 
-__version__ = "final-ed16"
+__version__ = "final-ed17"
 
 import asyncio
 import hashlib
@@ -210,15 +210,13 @@ class Fraction:
 
         The initial guess is an exact rational derived from the decimal
         expansion of the numerator and denominator, not from a float.
-        No math.isqrt call enters the state path; math.isqrt is only used
-        at module load to seed a static initial guess, never in a step."""
+        No math.isqrt call enters the state path."""
         if self._f.numerator < 0:
             raise ValueError("sqrt of negative fraction")
         if self._f.numerator == 0:
             return Fraction.zero()
         n = self._f.numerator
         d = self._f.denominator
-        # Exact integer square root without math.isqrt: Newton on ints.
         def _exact_isqrt(val: int) -> int:
             if val < 0:
                 raise ValueError("isqrt of negative int")
@@ -234,7 +232,6 @@ class Fraction:
         ds = _exact_isqrt(d)
         if ns * ns == n and ds * ds == d:
             return Fraction(ns, ds)
-        # Exact rational initial guess: ns/ds if nonzero, else 1.
         if ds > 0 and ns > 0:
             x0 = PyFraction(ns, ds)
         else:
@@ -1816,6 +1813,7 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "public_url": None,
     "crawler": None,
     "port": None,
+    "shutting_down": False,
 }
 
 
@@ -2370,7 +2368,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed16"
+    server_version = "AEI-Seed-Bridge/final-ed17"
 
     def log_message(self, fmt, *args):
         return
@@ -2449,7 +2447,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed16",
+                "version": "final-ed17",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -2494,7 +2492,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_html(200, "<!DOCTYPE html><html><body style='font-family:monospace;"
                                          "background:#050510;color:#aaccff;padding:40px;'>"
-                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.16)</h2>"
+                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.17)</h2>"
                                          "<p>index.html not found in <code>"
                                          + base + "</code>.</p></body></html>")
             except Exception as e:
@@ -3039,23 +3037,41 @@ class AEI_Bot:
             self._loop = None
         BRIDGE_ENGINE_REF["bot"] = self
 
-        # F19: PTB's run_polling() installs its own SIGTERM/SIGINT
-        # handlers inside the updater's start_polling(), which runs
-        # AFTER _post_init. A one-shot re-registration in _post_init is
-        # therefore overwritten by PTB. Instead we install a daemon
-        # watchdog that polls signal.getsignal(SIGTERM) and re-installs
-        # our non-blocking handler whenever PTB has replaced it. The
-        # watchdog is cheap (0.5 s cadence) and idempotent. This
-        # resolves the R12 exit-timeout that the earlier one-shot patch
-        # failed to fix.
+        # F19 (revisited): PTB v21 installs SIGTERM/SIGINT via
+        # loop.add_signal_handler(), not signal.signal(). The earlier
+        # one-shot patch failed because:
+        #   (a) signal.getsignal(SIGTERM) still returns _force_exit
+        #       (because add_signal_handler does not update getsignal),
+        #   (b) so the guard thread never re-installs, and
+        #   (c) the C-level trampoline routes SIGTERM into the loop,
+        #       where PTB's coroutine runs instead of _force_exit.
+        # The correct fix is to override the loop-level handler:
+        #   loop.add_signal_handler(SIGTERM, _force_exit)
+        # in _post_init (which runs after Updater.start_polling()).
+        # Additionally, because PTB's shutdown coroutine may await I/O
+        # that never completes (an in-flight httpx request), we install
+        # an exit watchdog that fires unconditionally 5 s after
+        # BRIDGE_ENGINE_REF["shutting_down"] is set.
         import signal as _signal_mod
 
-        def _force_exit(signum, frame):
+        def _force_exit(signum=None, frame=None):
             try:
-                logger.info("SIGTERM received inside loop — forcing exit")
-                os._exit(0)
+                if not BRIDGE_ENGINE_REF.get("shutting_down"):
+                    BRIDGE_ENGINE_REF["shutting_down"] = True
+                    logger.info("SIGTERM received — forcing exit (watchdog armed)")
             except Exception:
                 pass
+
+        def _exit_watchdog():
+            while True:
+                if BRIDGE_ENGINE_REF.get("shutting_down"):
+                    time.sleep(5.0)
+                    try:
+                        logger.info("Exit watchdog firing os._exit(0)")
+                    except Exception:
+                        pass
+                    os._exit(0)
+                time.sleep(0.5)
 
         def _signal_guard():
             while True:
@@ -3076,11 +3092,31 @@ class AEI_Bot:
         except (ValueError, OSError) as e:
             logger.warning(f"Initial SIGTERM install failed: {e}")
 
+        # F24: override the asyncio-level signal handler that PTB
+        # installed via Updater.start_polling().
+        if self._loop is not None:
+            try:
+                self._loop.add_signal_handler(_signal_mod.SIGTERM, _force_exit)
+                self._loop.add_signal_handler(_signal_mod.SIGINT, _force_exit)
+                logger.info("🛑 asyncio-level SIGTERM/SIGINT handlers installed")
+            except (NotImplementedError, RuntimeError, ValueError, OSError) as e:
+                logger.warning(f"asyncio signal handler install failed: {e}")
+
         guard_thread = threading.Thread(
             target=_signal_guard, name="aei-signal-guard", daemon=True
         )
         guard_thread.start()
         logger.info("🛑 Signal guard thread started (0.5s cadence)")
+
+        # F25: exit watchdog. Has zero effect during normal operation;
+        # guarantees process exit within 5 s of BRIDGE_ENGINE_REF
+        # ["shutting_down"] being set. This is the final backstop
+        # against R12.
+        watchdog_thread = threading.Thread(
+            target=_exit_watchdog, name="aei-exit-watchdog", daemon=True
+        )
+        watchdog_thread.start()
+        logger.info("🛑 Exit watchdog thread started (5s post-signal)")
 
         if self._bridge_server is None:
             server = BridgeServer()
@@ -3654,10 +3690,8 @@ class AEI_Bot:
         # httpd.shutdown() while an in-flight poll holds the step lock.
         # The seed state is persisted in the crawler SQLite DB and
         # reconstructed on the next boot; there is no in-memory state
-        # that requires a graceful close. Removing post_shutdown means
-        # PTB's own shutdown path is a no-op for our state, so even if
-        # PTB's signal handler runs before our guard re-installs ours,
-        # the process exits cleanly.
+        # that requires a graceful close. The exit watchdog (F25)
+        # guarantees os._exit(0) within 5 s of signal regardless.
         logger.info("ℹ️ post_shutdown intentionally omitted (state persisted in SQLite)")
 
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
@@ -3677,14 +3711,18 @@ def main():
 
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
 
-    # F17: Non-blocking SIGTERM handler at the main() level. This is a
+    # F26: Non-blocking SIGTERM handler at the main() level. This is a
     # pre-loop fallback that covers the window between process spawn and
-    # the _post_init signal guard taking over. Once _post_init runs, the
-    # guard thread owns signal handling and re-installs _force_exit
-    # whenever PTB replaces it. os._exit(0) bypasses PTB's graceful
-    # shutdown deadlock.
+    # the _post_init signal guard taking over. It also arms the exit
+    # watchdog by setting BRIDGE_ENGINE_REF["shutting_down"] = True,
+    # so even if _post_init never runs (e.g. PTB fails to start), the
+    # process still terminates cleanly on SIGTERM.
     def _sigterm_handler(signum, frame):
-        logger.info("Received SIGTERM — forcing immediate shutdown")
+        logger.info("Received SIGTERM at main() — forcing immediate shutdown")
+        try:
+            BRIDGE_ENGINE_REF["shutting_down"] = True
+        except Exception:
+            pass
         os._exit(0)
 
     try:
