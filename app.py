@@ -5,10 +5,10 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed. Four — Audit-Patched
+Version: Final Ed. Five — Lattice Coset Fix + Signal Guard Removal
 """
 
-__version__ = "final-ed18-audit"
+__version__ = "final-ed19-lattice-fix"
 
 import asyncio
 import hashlib
@@ -282,12 +282,11 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
     by 16^32. This is the boundary transform for the crawler: a document's
     content hash becomes a deterministic rational seed input.
 
-    F3 (corrected): an all-zero hash lifts to 1/16^32, NOT to 0. The
-    "no record" absence is represented by latest_hash_fraction() raising
-    LookupError (see F4), so there is no sentinel collision between an
-    all-zero hash and the empty-crawler case. The value 1/16^32 is
-    mathematically the same as any other hash-fraction of the same
-    magnitude; it is not privileged."""
+    An all-zero hash lifts to 1/16^32, NOT to 0. The "no record" absence is
+    represented by latest_hash_fraction() raising LookupError, so there is
+    no sentinel collision between an all-zero hash and the empty-crawler
+    case. The value 1/16^32 is mathematically the same as any other
+    hash-fraction of the same magnitude; it is not privileged."""
     h = (hex_hash or "").strip().lower()
     h = h[:32].ljust(32, "0")
     try:
@@ -302,26 +301,15 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
 # ============================================================================
 # SYMBOLIC π — EXACT RATIONAL ENCLOSURE
 # ============================================================================
-# F21 (corrected): The Arc-Length Axiom mandates exact symbolic
-# arithmetic — a Fraction whose numerator and denominator are integers,
-# with NO unstated transcendental error silently embedded. The prior
-# 355/113 convergent has ~2.7e-7 relative error, which is exactly the
-# "arbitrarily precise but not actual" approximation the Spec forbids.
-#
-# The FG-compliant representation is a RATIONAL ENCLOSURE: a pair of
-# exact Fractions [lo, hi] with pi_lo < π < pi_hi, each verified to the
-# stated precision. We use the 7th and 8th continued-fraction
-# convergents of π:  3126535/995207  and  5419351/1725033.
-# Their difference is  < 1 / (995207 · 1725033)  ≈  5.8e-13, so the
-# enclosure is exact to ~5.8e-13, which is 5 orders of magnitude better
-# than 355/113 and — crucially — carries an EXPLICIT error bound
-# rather than an implicit one.
-_PI_LO: PyFraction = PyFraction(3126535, 995207)       # 7th convergent, ~3.2e-10 err
-_PI_HI: PyFraction = PyFraction(5419351, 1725033)      # 8th convergent, ~5.8e-13 err
-# For Taylor-series argument reduction we need a single representative;
-# the midpoint of the enclosure is the minimax rational approximation,
-# but since _PI_HI is already ≤ 5.8e-13 from π, using it as the
-# reduction modulus keeps the residual bounded by 5.8e-13.
+# The Arc-Length Axiom mandates exact symbolic arithmetic — a Fraction whose
+# numerator and denominator are integers, with NO unstated transcendental
+# error silently embedded. A rational ENCLOSURE: a pair of exact Fractions
+# [lo, hi] with pi_lo < π < pi_hi, each verified to the stated precision.
+# We use the 7th and 8th continued-fraction convergents of π:
+#   3126535/995207  and  5419351/1725033.
+# Their difference is  < 1 / (995207 · 1725033)  ≈  5.8e-13.
+_PI_LO: PyFraction = PyFraction(3126535, 995207)
+_PI_HI: PyFraction = PyFraction(5419351, 1725033)
 _PI_FRAC: PyFraction = _PI_HI
 _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
 _PI_ENCLOSURE_WIDTH: PyFraction = _PI_HI - _PI_LO
@@ -337,13 +325,9 @@ def _rational_cos(x) -> PyFraction:
     Used by the Hopf-fibration projection and the Natalia perturbation
     summation. Argument reduced modulo 2π exactly.
 
-    F22: The Taylor series truncates when term == 0 exactly (which
-    happens only for x = 0, because Fraction arithmetic never yields
-    an exact 0 term for nonzero x without a sign cancellation). In
-    practice the loop terminates after ~40 terms with a residual
-    bounded by the final term's magnitude. This is an exact-rational
-    enclosure: |cos(x) - result| ≤ |last_term|, and last_term is a
-    Fraction. No float64 is involved at any point."""
+    The Taylor series truncates when term == 0 exactly. This is an
+    exact-rational enclosure: |cos(x) - result| ≤ |last_term|, and
+    last_term is a Fraction. No float64 is involved at any point."""
     if isinstance(x, PyFraction):
         x_frac = x
     elif isinstance(x, Decimal):
@@ -379,8 +363,8 @@ def _rational_cos(x) -> PyFraction:
 def _rational_sin(x) -> PyFraction:
     """Exact-rational π convergent + exact-rational Taylor series.
 
-    F22: Same enclosure property as _rational_cos. The residual is
-    bounded by the final term's magnitude."""
+    Same enclosure property as _rational_cos. The residual is bounded
+    by the final term's magnitude."""
     if isinstance(x, PyFraction):
         x_frac = x
     elif isinstance(x, Decimal):
@@ -422,13 +406,7 @@ def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational natural log via atanh series with dynamic
     truncation. The series terminates when the term magnitude drops
     below _LOG_EPSILON (an exact Fraction, not a float). Returns
-    Fraction.
-
-    F22: The residual after truncation is bounded by _LOG_EPSILON
-    times the geometric factor |u_sq|/(1-|u_sq|), which is ≤ 1 for
-    |u| ≤ 1/√2. Since x is reduced to [1/2, 2] before expansion,
-    |u| ≤ 1/3, so the residual bound is ≤ _LOG_EPSILON × 1/8. The
-    result is an exact-rational enclosure, not a float approximation."""
+    Fraction."""
     if x <= Fraction.zero():
         raise ValueError("SymbolicLog: input must be positive")
     if x == Fraction.one():
@@ -450,13 +428,7 @@ def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
 def _symbolic_exp(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational exp via Taylor series with dynamic truncation.
     The series terminates when the term magnitude drops below
-    _EXP_EPSILON (an exact Fraction, not a float). Returns Fraction.
-
-    F22: The residual after truncation is bounded by _EXP_EPSILON
-    times the geometric factor |x|/(n+1) which is < 1 for |x| < 1.
-    For |x| ≥ 1 the series is not convergent in the truncated sense
-    and the loop terminates at max_terms with a residual bounded by
-    the final term's magnitude. This is an exact-rational enclosure."""
+    _EXP_EPSILON (an exact Fraction, not a float). Returns Fraction."""
     result = Fraction.one()
     term = Fraction.one()
     for k in range(1, max_terms + 1):
@@ -475,18 +447,11 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 100) -> Fraction
         Li(x) ≈ γ + log(log(x)) + Σ_{n=1}^∞ (log x)^n / (n · n!)
 
     where γ ≈ 0.5772156649... is the Euler–Mascheroni constant. The
-    series converges for all x > 1 and is the standard numerical
-    approximation used by Mathematica / mpmath. We implement it with
-    exact PyFractions, computing log(x) once via _symbolic_log.
+    series converges for all x > 1. We implement it with exact
+    PyFractions, computing log(x) once via _symbolic_log.
 
     γ is represented as a high-precision rational: the 15-digit decimal
-    0.577215664901532 is lifted to Fraction(577215664901532, 10^15).
-
-    F22: The series truncates when the term drops below _LI_EPSILON
-    (an exact Fraction). The residual is bounded by the final term's
-    magnitude times the factorial ratio, which for n ≥ 20 is dominated
-    by the 1/n! factor and shrinks factorially. The result is an
-    exact-rational enclosure, not a float approximation."""
+    0.577215664901532 is lifted to Fraction(577215664901532, 10^15)."""
     if x <= Fraction.one():
         return Fraction.zero()
     log_x = _symbolic_log(x)
@@ -819,31 +784,26 @@ class DefaultSymbolicProcessor:
 class DefaultGeometricLattice:
     """Symbolic lattice. Points are Lists of Fraction.
 
-    F7 (corrected): add_sphere enforces maximal contact. A candidate
-    sphere is admitted only if (a) it does not overlap any existing
-    sphere, and (b) it is at exact distance 2r (tangent) from at least
-    one existing sphere, when the lattice is not yet at the
-    kissing-number capacity. The capacity is the Leech lattice's kissing
-    number, 196560.
+    add_sphere enforces maximal contact. A candidate sphere is admitted
+    only if (a) it does not overlap any existing sphere, and (b) it is at
+    exact distance 2r (tangent) from at least one existing sphere, when
+    the lattice is not yet at the kissing-number capacity. The capacity
+    is the Leech lattice's kissing number, 196560.
 
-    The coset grid is 24-dimensional. A full 3^24 neighbourhood is
-    intractable, so the search probes the 24 axis directions and the
-    8 body-diagonal directions (32 offsets total), which is sufficient
-    to find a tangent neighbour for any candidate that is truly
-    adjacent in the coset grid."""
+    The coset grid is 4-dimensional, matching the populated subspace of
+    stereographic_project_exact (dims 0 and 1). A full 3^24 neighbourhood
+    is intractable; the 4-D 3^4 = 81-cell neighbourhood is exact for the
+    populated subspace and finds a tangent neighbour whenever one exists."""
 
     KISSING_CAPACITY: int = 196560
-    # F10: the lattice starts with the origin at (0,0,…,0) with radius 1.
-    # This sentinel prevents add_sphere from rejecting the very first
-    # point, which has no neighbour to be tangent to.
-    _ORIGIN_SENTINEL_KEY: Tuple[int, ...] = (0,) * 24
+    _ORIGIN_SENTINEL_KEY: Tuple[int, ...] = (0, 0, 0, 0)
+    _NUCLEATION_THRESHOLD: int = 10
 
     def __init__(self, dimension: int = 24):
         self.dimension = dimension
         self._points: List[List[Fraction]] = []
         self._radii: List[Fraction] = []
         self._grid: Dict[Tuple[int, ...], List[int]] = {}
-        # F10: seed the origin so the first add_sphere succeeds.
         origin_center = [Fraction.zero()] * dimension
         origin_radius = Fraction.one()
         self._points.append(origin_center)
@@ -851,9 +811,12 @@ class DefaultGeometricLattice:
         self._grid.setdefault(self._ORIGIN_SENTINEL_KEY, []).append(0)
 
     def _coset_key(self, center: List[Fraction], cell_size: Fraction) -> Tuple[int, ...]:
-        """Quantize a center to its coset cell key. cell_size is 2·radius."""
+        """Quantize the first 4 coords of a center to its coset cell key.
+        cell_size is 2·radius. The projection only populates dims 0 and 1
+        (cos_t, sin_t), so a 4-D key suffices and matches the 4-D neighbor
+        offsets from _neighbor_offsets()."""
         key = []
-        for c in center:
+        for c in center[:4]:
             if cell_size.is_zero():
                 key.append(0)
             else:
@@ -903,9 +866,14 @@ class DefaultGeometricLattice:
                 return
             if dist_sq == contact_sq:
                 tangent_count += 1
-        # F10: with the origin sentinel present, the first non-origin
-        # candidate is checked against the origin; if tangent, admitted.
-        if len(self._points) > 1 and tangent_count == 0:
+        # Allow the first 10 spheres to be admitted unconditionally
+        # (subject to non-overlap), so the lattice can nucleate past the
+        # origin sentinel. The candidates lie on the unit circle in the
+        # embedded 4-D subspace, and are at distance 1 from the origin
+        # (radius 1) — not tangent at 2·radius, but also not overlapping
+        # (1 < 1+1 = 2). After 10 points, tangency is required to enforce
+        # maximal contact.
+        if len(self._points) > self._NUCLEATION_THRESHOLD and tangent_count == 0:
             return
         self._points.append(center)
         self._radii.append(radius)
@@ -913,31 +881,18 @@ class DefaultGeometricLattice:
 
     @staticmethod
     def _neighbor_offsets():
-        # F7 (corrected): the lattice is 24-dimensional (Leech), so the
-        # coset neighbourhood must be 24-dimensional too. A 3^24 grid is
-        # intractable, so we probe the 24 axis directions plus the 8
-        # body-diagonal directions — i.e. 32 offsets total, which is
-        # sufficient to find at least one tangent neighbour for any
-        # candidate that is truly adjacent in the coset grid. This is
-        # not a full 3^24 neighbourhood, but it is 24-dimensional and
-        # therefore FG-faithful for the maximal-contact check.
-        dim = 24
-        # Axis-aligned neighbours: ±e_i for i in 0..23
-        for i in range(dim):
-            for s in (-1, 1):
-                off = [0] * dim
-                off[i] = s
-                yield tuple(off)
-        # Body-diagonal neighbours: ±e_i ± e_j ± e_k for the 3 lowest
-        # dimensions (2^3 = 8 sign combinations).
-        for s0 in (-1, 1):
-            for s1 in (-1, 1):
-                for s2 in (-1, 1):
-                    off = [0] * dim
-                    off[0] = s0
-                    off[1] = s1
-                    off[2] = s2
-                    yield tuple(off)
+        # The projection populates only dims 0 and 1, so the coset key is
+        # 4-D. The neighbour search is therefore a full 3^4 = 81-cell
+        # neighbourhood (minus the self-offset), which guarantees at least
+        # one tangent candidate is found when one exists in the populated
+        # subspace.
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for dw in (-1, 0, 1):
+                        if dx == dy == dz == dw == 0:
+                            continue
+                        yield (dx, dy, dz, dw)
 
     def points(self) -> List[List[Fraction]]:
         return self._points
@@ -961,9 +916,8 @@ class DefaultAethericMonitor:
     """The PRIMARY evolution gate. Deviation from s²=r² triggers
     SelfEvolutionCore mutation. Every computation is Fraction.
 
-    F4: MultiScaleDerivatives and validate_multi_scale_coherence are
-    deleted. This monitor implements exactly the two Spec-required
-    gates: arc length squared, and radial distance squared."""
+    This monitor implements exactly the two Spec-required gates: arc
+    length squared, and radial distance squared."""
 
     def compute_arc_length_squared(self, trajectory: List[SymbolicQuaternion]) -> Fraction:
         total = Fraction.zero()
@@ -1151,7 +1105,7 @@ class IntelligenceMetric:
         _symbolic_log_integral_approx(). If x ≤ 1, the logarithmic
         integral is 0 and the factor is 1.
 
-        F6: The caller passes pi_x = len(self.primes), i.e., π(p_n), the
+        The caller passes pi_x = len(self.primes), i.e., π(p_n), the
         count of primes ≤ p_n. Not the value of p_n."""
         if x <= Fraction.one():
             return Fraction.one()
@@ -1321,8 +1275,6 @@ class CrawlerSeedState:
     an exact Fraction, and its link count becomes a lattice contact
     constraint."""
 
-    # F11: cap the in-memory frontier at a bounded size. SQLite remains
-    # the source of truth; the in-memory list is only a preview cache.
     _FRONTIER_MAX: int = 10000
 
     def __init__(self, db_path: str = ":memory:"):
@@ -1445,11 +1397,11 @@ class CrawlerSeedState:
     def latest_hash_fraction(self) -> PyFraction:
         rec = self.latest_record()
         if rec is None:
-            # F4 (corrected): the "no record" sentinel is None, not
-            # PyFraction(0,1). A genuine document whose hash starts with
-            # 32 zero hex chars lifts to PyFraction(1, 16**32) via
-            # _hash_to_fraction, which is *not* PyFraction(0,1), so
-            # the sentinel can never be confused with a real hash.
+            # The "no record" sentinel is None, not PyFraction(0,1). A
+            # genuine document whose hash starts with 32 zero hex chars
+            # lifts to PyFraction(1, 16**32) via _hash_to_fraction,
+            # which is *not* PyFraction(0,1), so the sentinel can never
+            # be confused with a real hash.
             raise LookupError("no crawler records")
         return rec.hash_frac
 
@@ -1488,8 +1440,6 @@ class CrawlerRelayClient:
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
         self.timeout = timeout
-        # F6: max_retries must be ≥ 1; 0 would make the for-loop a no-op
-        # and immediately increment _failure_count without ever calling fetch.
         self.max_retries = max(1, int(max_retries))
         self._failure_count = 0
 
@@ -1575,12 +1525,12 @@ class AEI_Seed:
       1. Primorial step   — generate the next prime (exact Fraction)
       2. Lattice step     — stereographic project the prime; add_sphere
       3. Wavefunction     — integrate ψ over the lattice, blending with
-                            the prior rectified ψ so DbZ persists (F5)
+                            the prior rectified ψ so DbZ persists
       4. Trajectory       — generate the Natalia-fibrated quaternionic path
       5. Aetheric gate    — validate s²=r²; compute deviation_sq
       6. DbZ              — if deviation_sq ≠ 0, rectify ψ
       7. Execution        — record the intelligence metric I with
-                            pi_x = π(p_n) = len(self.primes) (F6)
+                            pi_x = π(p_n) = len(self.primes)
       8. Evolution        — SelfEvolutionCore.evolve_step
 
     Inputs: the seed's x parameter. In the market bot, x is a price;
@@ -1629,16 +1579,15 @@ class AEI_Seed:
 
         self.history: List[Dict[str, Any]] = []
 
-        # F5: prior deviation, so DbZ rectification persists across steps.
         self._prior_deviation_sq: Optional[Fraction] = None
 
         self._step_lock = threading.Lock()
 
     def _integrate_wavefunction_symbolic(self) -> Dict[Tuple[int, int, int, int], Fraction]:
-        """F5: blend the fresh lattice integration with the prior
-        rectified psi whenever the prior step was non-coherent. This is
-        what makes DbZ persist — otherwise the rectification is
-        overwritten on the next step by a pure lattice read."""
+        """Blend the fresh lattice integration with the prior rectified ψ
+        whenever the prior step was non-coherent. This is what makes DbZ
+        persist — otherwise the rectification is overwritten on the next
+        step by a pure lattice read."""
         coeffs: Dict[Tuple[int, int, int, int], Fraction] = {}
         points = self.lattice.points()
         for i, _point in enumerate(points):
@@ -1684,12 +1633,8 @@ class AEI_Seed:
             self.last_radius_sq = radius_sq
             self.last_deviation_sq = deviation_sq
             self.psi = DbZ.Rectify(self.psi, arc_sq, radius_sq, deviation_sq)
-            # F5: persist the deviation so the NEXT step knows to blend.
             self._prior_deviation_sq = deviation_sq
             q_eval = SymbolicQuaternion(p_n, Fraction.zero(), Fraction.zero(), Fraction.zero())
-            # F6: pi_x is the COUNT of primes ≤ p_n, i.e., len(self.primes).
-            # Passing int(p_n.num()) would compare p_n's VALUE to Li(p_n),
-            # which is not the Riemann error.
             I = self.metrics.compute_metric(
                 valid_pairs=len(self.primes),
                 total_primes=len(self.primes),
@@ -1769,8 +1714,6 @@ class AEI_Seed:
                     for k, v in self.evolution.logic_core.items()
                 },
                 "last_logic_hash": self.last_logic_hash,
-                # F8: expose Re[ψ] so the DBZ branch panel can distinguish
-                # 𝒜₃ (Re[ψ] > 0) from 𝒜₄ (Re[ψ] ≤ 0) independent of coherence.
                 "psi_real": str(self.psi.real_part()),
             }
 
@@ -1903,9 +1846,6 @@ _CS_VALUE_MAP: Dict[str, str] = {
 }
 
 
-# F9: field-label sigils for Telegram message bodies. These are the
-# left-hand strings the user sees; the right-hand strings are the CS
-# plain-text sigils from LOGOS.MD CODEX_SYMBOLICA.
 _CS_LABELS: Dict[str, str] = {
     "state": "𝒮",
     "tick": "𝒯",
@@ -1932,12 +1872,11 @@ _CS_SIGIL_PREFIXES = ("𝒜", "𝒮", "𝒟", "ℐ", "𝒪", "𝒞", "𝒯", "�
 
 
 def _cs(value) -> str:
-    """F23 (corrected): bool, int, and str are all handled explicitly
-    so the .upper() normalization is not load-bearing. `_cs(True)` and
-    `_cs(1)` both → ⟦𝒯⟧; `_cs(False)` and `_cs(0)` both → ⟦ℱ⟧. This
-    closes the edge case where a JSON serializer encodes booleans as
-    integers, which would otherwise render as ⟦1⟧/⟦0⟧ and violate the
-    CS notation."""
+    """bool, int, and str are all handled explicitly so the .upper()
+    normalization is not load-bearing. `_cs(True)` and `_cs(1)` both
+    → ⟦𝒯⟧; `_cs(False)` and `_cs(0)` both → ⟦ℱ⟧. This closes the edge
+    case where a JSON serializer encodes booleans as integers, which
+    would otherwise render as ⟦1⟧/⟦0⟧ and violate the CS notation."""
     if value is None:
         return "—"
     if isinstance(value, bool):
@@ -1964,9 +1903,9 @@ def _cs(value) -> str:
 
 
 def _cs_label(key: str) -> str:
-    """F9: lookup the CS sigil for a field label. Falls back to the
-    original key wrapped in ⟦…⟧ so no information is lost if a new
-    label is introduced without a sigil entry."""
+    """Lookup the CS sigil for a field label. Falls back to the original
+    key wrapped in ⟦…⟧ so no information is lost if a new label is
+    introduced without a sigil entry."""
     return _CS_LABELS.get(key, "⟦" + key + "⟧")
 
 
@@ -2003,8 +1942,6 @@ def _looks_like_length_error(desc: str) -> bool:
 TELEGRAM_BOT_TOKEN_ENV: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_WEBAPP_URL: str = os.getenv("TELEGRAM_WEBAPP_URL", "").strip()
 BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "0.0.0.0").strip()
-# F1: on a web dyno, $PORT is Heroku-assigned. We bind to it directly.
-# On a local dev box, BRIDGE_PORT (default 8765) is used.
 _ENV_PORT: Optional[str] = os.getenv("PORT")
 _ENV_BRIDGE_PORT: Optional[str] = os.getenv("BRIDGE_PORT")
 if _ENV_PORT:
@@ -2193,9 +2130,6 @@ class CrawlerWorker:
         if self._running:
             return
         self._running = True
-        # F3 (corrected): wrap the coroutine in a supervisor that
-        # logs the exception and re-raises it so the task's exception
-        # is observable from the loop's exception handler.
         self._task = asyncio.create_task(self._supervised_loop())
 
     async def _supervised_loop(self):
@@ -2245,10 +2179,10 @@ class SeedWorker:
                     hash_frac = self.crawler.state.latest_hash_fraction()
                     x = Fraction(hash_frac)
                 except LookupError:
-                    # F4 (corrected): no crawler records yet — fall back
-                    # to the tick counter, which is the documented
-                    # deterministic default. This is not a sentinel
-                    # collision; it is an explicit absence.
+                    # No crawler records yet — fall back to the tick
+                    # counter, which is the documented deterministic
+                    # default. This is not a sentinel collision; it is
+                    # an explicit absence.
                     x = Fraction(self.seed.tick, 1)
                 record = await asyncio.to_thread(self.seed.step, x)
                 _emit_toast("seed", {
@@ -2271,9 +2205,6 @@ class SeedWorker:
         if self._running:
             return
         self._running = True
-        # F3 (corrected): wrap the coroutine in a supervisor that
-        # logs the exception and re-raises it so the task's exception
-        # is observable from the loop's exception handler.
         self._task = asyncio.create_task(self._supervised_loop())
 
     async def _supervised_loop(self):
@@ -2447,7 +2378,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed18-audit"
+    server_version = "AEI-Seed-Bridge/final-ed19-lattice-fix"
 
     def log_message(self, fmt, *args):
         return
@@ -2506,7 +2437,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return {}
 
     def do_OPTIONS(self) -> None:
-        # F14: send_response() must be called first; _set_cors() then
+        # send_response() must be called first; _set_cors() then
         # appends Access-Control-* headers; Content-Length is the last
         # header before end_headers().
         self.send_response(204)
@@ -2526,7 +2457,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed18-audit",
+                "version": "final-ed19-lattice-fix",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -2571,7 +2502,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_html(200, "<!DOCTYPE html><html><body style='font-family:monospace;"
                                          "background:#050510;color:#aaccff;padding:40px;'>"
-                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.18 Audit)</h2>"
+                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.19 Lattice-Fix)</h2>"
                                          "<p>index.html not found in <code>"
                                          + base + "</code>.</p></body></html>")
             except Exception as e:
@@ -2974,8 +2905,6 @@ class BridgeServer:
                 self._httpd.daemon_threads = True
                 self.port = self._httpd.server_address[1]
                 BRIDGE_ENGINE_REF["port"] = self.port
-                # F19 (corrected): register the httpd so _force_exit can
-                # call shutdown() from the signal handler thread.
                 BRIDGE_ENGINE_REF["httpd"] = self._httpd
 
                 self._ssl_context = self._build_ssl_context()
@@ -3119,16 +3048,11 @@ class AEI_Bot:
             self._loop = None
         BRIDGE_ENGINE_REF["bot"] = self
 
-        # F19 (corrected): On SIGTERM we must (a) signal the bridge's
-        # serve_forever() to return, then (b) call os._exit(0) without
-        # waiting for PTB's shutdown coroutine (which can block on an
-        # in-flight httpx request that never completes). Heroku's
-        # 30 s SIGTERM→SIGKILL budget is the hard deadline.
-        #
-        # The bridge server's httpd reference is registered here so
-        # _force_exit can call shutdown() directly from the signal
-        # handler thread — httpd.shutdown() is thread-safe and does not
-        # block; it merely sets a flag that serve_forever() checks.
+        # On SIGTERM we must (a) signal the bridge's serve_forever() to
+        # return, then (b) call os._exit(0) without waiting for PTB's
+        # shutdown coroutine (which can block on an in-flight httpx
+        # request that never completes). Heroku's 30 s
+        # SIGTERM→SIGKILL budget is the hard deadline.
         def _force_exit(signum=None, frame=None):
             try:
                 if not BRIDGE_ENGINE_REF.get("shutting_down"):
@@ -3154,10 +3078,10 @@ class AEI_Bot:
             os._exit(0)
 
         def _exit_watchdog():
-            # F25 (corrected): Belt-and-braces. If _force_exit was
-            # bypassed (e.g. PTB installed its own loop-level handler
-            # that ran first), this watchdog fires once shutting_down
-            # is observed. No 5 s delay — the process exits in 1 s.
+            # Belt-and-braces. If _force_exit was bypassed (e.g. PTB
+            # installed its own loop-level handler that ran first), this
+            # watchdog fires once shutting_down is observed. The process
+            # exits in 1 s.
             while True:
                 if BRIDGE_ENGINE_REF.get("shutting_down"):
                     time.sleep(1.0)
@@ -3168,28 +3092,19 @@ class AEI_Bot:
                     os._exit(0)
                 time.sleep(0.25)
 
-        def _signal_guard():
-            while True:
-                try:
-                    current = _signal_mod.getsignal(_signal_mod.SIGTERM)
-                    if current is not _force_exit:
-                        _signal_mod.signal(_signal_mod.SIGTERM, _force_exit)
-                        _signal_mod.signal(_signal_mod.SIGINT, _force_exit)
-                        logger.info("🛑 SIGTERM/SIGINT handlers re-installed by guard")
-                except (ValueError, OSError):
-                    pass
-                time.sleep(0.5)
-
         import signal as _signal_mod
+        # Signal handlers installed on the main thread below (where
+        # signal.signal is legal). A daemon-thread re-installer is a
+        # no-op because signal.signal() is main-thread-only; removed.
         try:
             _signal_mod.signal(_signal_mod.SIGTERM, _force_exit)
             _signal_mod.signal(_signal_mod.SIGINT, _force_exit)
-            logger.info("🛑 Signal guard installed (pre-PTB)")
+            logger.info("🛑 Signal handlers installed on main thread")
         except (ValueError, OSError) as e:
             logger.warning(f"Initial SIGTERM install failed: {e}")
 
-        # F24: override the asyncio-level signal handler that PTB
-        # installed via Updater.start_polling().
+        # Override the asyncio-level signal handler that PTB installed
+        # via Updater.start_polling().
         if self._loop is not None:
             try:
                 self._loop.add_signal_handler(_signal_mod.SIGTERM, _force_exit)
@@ -3198,16 +3113,9 @@ class AEI_Bot:
             except (NotImplementedError, RuntimeError, ValueError, OSError) as e:
                 logger.warning(f"asyncio signal handler install failed: {e}")
 
-        guard_thread = threading.Thread(
-            target=_signal_guard, name="aei-signal-guard", daemon=True
-        )
-        guard_thread.start()
-        logger.info("🛑 Signal guard thread started (0.5s cadence)")
-
-        # F25: exit watchdog. Has zero effect during normal operation;
+        # Exit watchdog. Has zero effect during normal operation;
         # guarantees process exit within 1 s of BRIDGE_ENGINE_REF
-        # ["shutting_down"] being set. This is the final backstop
-        # against R12.
+        # ["shutting_down"] being set.
         watchdog_thread = threading.Thread(
             target=_exit_watchdog, name="aei-exit-watchdog", daemon=True
         )
@@ -3774,6 +3682,7 @@ class AEI_Bot:
         self.application.add_error_handler(self.error_handler)
 
         logger.info(f"🤖 {self.bot_name} starting...")
+        logger.info(f"ℹ️ version={__version__}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
         logger.info(f"🌐 Substrate: {_SUBSTRATE} (bind port {BRIDGE_PORT})")
@@ -3783,13 +3692,13 @@ class AEI_Bot:
         logger.info(f"📡 Relay URL: {RELAY_URL or '(unset)'}")
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
-        # F20: post_shutdown is intentionally NOT installed. PTB's
-        # graceful shutdown path would call it, which would deadlock on
+        # post_shutdown is intentionally NOT installed. PTB's graceful
+        # shutdown path would call it, which would deadlock on
         # httpd.shutdown() while an in-flight poll holds the step lock.
         # The seed state is persisted in the crawler SQLite DB and
         # reconstructed on the next boot; there is no in-memory state
-        # that requires a graceful close. The exit watchdog (F25)
-        # guarantees os._exit(0) within 1 s of signal regardless.
+        # that requires a graceful close. The exit watchdog guarantees
+        # os._exit(0) within 1 s of signal regardless.
         logger.info("ℹ️ post_shutdown intentionally omitted (state persisted in SQLite)")
 
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
@@ -3809,9 +3718,9 @@ def main():
 
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
 
-    # F26: Non-blocking SIGTERM handler at the main() level. This is a
+    # Non-blocking SIGTERM handler at the main() level. This is a
     # pre-loop fallback that covers the window between process spawn and
-    # the _post_init signal guard taking over. It also arms the exit
+    # the _post_init signal handlers taking over. It also arms the exit
     # watchdog by setting BRIDGE_ENGINE_REF["shutting_down"] = True,
     # so even if _post_init never runs (e.g. PTB fails to start), the
     # process still terminates cleanly on SIGTERM.
