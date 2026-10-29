@@ -3000,7 +3000,35 @@ class AEI_Bot:
         except RuntimeError:
             self._loop = None
         BRIDGE_ENGINE_REF["bot"] = self
-
+    
+        # F19: PTB's run_polling() installs its own SIGTERM/SIGINT
+        # handlers inside the loop's first iteration, silently
+        # overwriting any handler that main() registered earlier. The
+        # earlier non-blocking _sigterm_handler therefore never ran,
+        # and PTB's own handler deadlocked on httpd.shutdown() while
+        # an in-flight /miniapp-state poll held the step lock. Heroku's
+        # 30-second SIGTERM→SIGKILL window then produced R12.
+        #
+        # Fix: re-register a non-blocking handler here, inside the
+        # loop, after PTB has installed its own. os._exit(0) bypasses
+        # every subsequent PTB shutdown path and the bridge/worker
+        # stop() calls entirely. Seed state is persisted in the
+        # crawler SQLite DB (CRAWLER_DB_PATH) and reconstructed on the
+        # next boot.
+        import signal as _signal_mod
+        def _force_exit(signum, frame):
+            try:
+                logger.info("SIGTERM received inside loop — forcing exit")
+                os._exit(0)
+            except Exception:
+                pass
+        try:
+            _signal_mod.signal(_signal_mod.SIGTERM, _force_exit)
+            _signal_mod.signal(_signal_mod.SIGINT, _force_exit)
+            logger.info("🛑 Non-blocking SIGTERM/SIGINT handlers registered inside loop")
+        except (ValueError, OSError) as e:
+            logger.warning(f"Could not re-register signal handlers inside loop: {e}")
+    
         if self._bridge_server is None:
             server = BridgeServer()
             self._bridge_server = server
@@ -3017,7 +3045,7 @@ class AEI_Bot:
                 )
                 return
             logger.info("🌐 Bridge binding verified; proceeding to worker start")
-
+    
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
         if url:
             try:
@@ -3031,7 +3059,7 @@ class AEI_Bot:
                 logger.warning(f"Failed to set menu button: {e}")
         else:
             logger.info("⏳ MenuButtonWebApp deferred — no public URL yet")
-
+    
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         if seed is not None and crawler is not None:
@@ -3043,7 +3071,6 @@ class AEI_Bot:
             logger.info("⚡ AEI seed + crawler workers started")
         else:
             logger.warning("⚠️ _post_init ran before seed/crawler were registered")
-
     def _build_main_keyboard(self) -> "InlineKeyboardMarkup":
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
         rows = [
