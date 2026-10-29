@@ -5,10 +5,10 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed. Five — Lattice Coset Fix + Signal Guard Removal
+Version: Final Ed.14 (Audit-Patched: F1–F9, plus runtime stabilization).
 """
 
-__version__ = "final-ed19-lattice-fix"
+__version__ = "final-ed14"
 
 import asyncio
 import hashlib
@@ -207,40 +207,20 @@ class Fraction:
     def sqrt(self, iterations: int = 30) -> 'Fraction':
         """Newton–Raphson exact-rational square root approximation.
         Each iteration is exact. The result is a Fraction, never a float.
-
-        The initial guess is an exact rational derived from the decimal
-        expansion of the numerator and denominator, not from a float.
-        No math.isqrt call enters the state path."""
+        The FG allows sqrt at the I/O boundary only; the seed's state
+        keeps this Fraction."""
         if self._f.numerator < 0:
             raise ValueError("sqrt of negative fraction")
         if self._f.numerator == 0:
             return Fraction.zero()
-        n = self._f.numerator
-        d = self._f.denominator
-        def _exact_isqrt(val: int) -> int:
-            if val < 0:
-                raise ValueError("isqrt of negative int")
-            if val == 0:
-                return 0
-            x = val
-            y = (x + 1) // 2
-            while y < x:
-                x = y
-                y = (x + val // x) // 2
-            return x
-        ns = _exact_isqrt(n)
-        ds = _exact_isqrt(d)
-        if ns * ns == n and ds * ds == d:
+        ns = int(round(math.isqrt(self._f.numerator)))
+        ds = int(round(math.isqrt(self._f.denominator)))
+        if ns * ns == self._f.numerator and ds * ds == self._f.denominator:
             return Fraction(ns, ds)
-        if ds > 0 and ns > 0:
-            x0 = PyFraction(ns, ds)
-        else:
-            x0 = PyFraction(1, 1)
         two = PyFraction(2, 1)
-        x = x0
-        target = self._f
+        x = PyFraction(max(1, int(round(self.to_float()))), 1)
         for _ in range(iterations):
-            x = (x + target / x) / two
+            x = (x + self._f / x) / two
         return Fraction(x)
 
     def __str__(self):
@@ -257,8 +237,8 @@ class Fraction:
 # ============================================================================
 def _dec_to_frac_exact(d: Decimal) -> PyFraction:
     """Lift a Decimal to an exact PyFraction via its digit tuple.
-    No float64 round-trip. Used at the crawler-relay boundary, so no
-    transcendental enters the seed as a float."""
+    No float64 round-trip. Used at the crawler-relay boundary and at
+    module load for π, so no transcendental enters the seed as a float."""
     if not isinstance(d, Decimal):
         d = Decimal(str(d))
     if d.is_zero():
@@ -282,11 +262,8 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
     by 16^32. This is the boundary transform for the crawler: a document's
     content hash becomes a deterministic rational seed input.
 
-    An all-zero hash lifts to 1/16^32, NOT to 0. The "no record" absence is
-    represented by latest_hash_fraction() raising LookupError, so there is
-    no sentinel collision between an all-zero hash and the empty-crawler
-    case. The value 1/16^32 is mathematically the same as any other
-    hash-fraction of the same magnitude; it is not privileged."""
+    F3: an all-zero hash lifts to 1/16^32, not 0, so the 0/1 sentinel
+    unambiguously means "no record." The SentryWorker relies on this."""
     h = (hex_hash or "").strip().lower()
     h = h[:32].ljust(32, "0")
     try:
@@ -299,35 +276,50 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
 
 
 # ============================================================================
-# SYMBOLIC π — EXACT RATIONAL ENCLOSURE
+# SYMBOLIC π
 # ============================================================================
-# The Arc-Length Axiom mandates exact symbolic arithmetic — a Fraction whose
-# numerator and denominator are integers, with NO unstated transcendental
-# error silently embedded. A rational ENCLOSURE: a pair of exact Fractions
-# [lo, hi] with pi_lo < π < pi_hi, each verified to the stated precision.
-# We use the 7th and 8th continued-fraction convergents of π:
-#   3126535/995207  and  5419351/1725033.
-# Their difference is  < 1 / (995207 · 1725033)  ≈  5.8e-13.
-_PI_LO: PyFraction = PyFraction(3126535, 995207)
-_PI_HI: PyFraction = PyFraction(5419351, 1725033)
-_PI_FRAC: PyFraction = _PI_HI
+def _compute_pi_decimal() -> Decimal:
+    _saved_prec = getcontext().prec
+    getcontext().prec = 60
+    try:
+        def atan_inv(n: int) -> Decimal:
+            n_d = Decimal(n)
+            n_sq = n_d * n_d
+            term = Decimal(1) / n_d
+            total = term
+            sign = -1
+            k = 1
+            while True:
+                term = term / n_sq
+                add = term / Decimal(2 * k + 1)
+                if add == 0:
+                    break
+                total = total + Decimal(sign) * add
+                sign = -sign
+                k += 1
+                if k > 1000:
+                    break
+            return total
+        pi_val = Decimal(16) * atan_inv(5) - Decimal(4) * atan_inv(239)
+    finally:
+        getcontext().prec = _saved_prec
+    return pi_val
+
+
+# F2: derive _PI_FRAC from _compute_pi_decimal(), not from a 15-digit literal.
+_PI_D: Decimal = _compute_pi_decimal()
+_PI_FRAC: PyFraction = _dec_to_frac_exact(_PI_D)
+_TWO_PI_D: Decimal = _PI_D * Decimal(2)
 _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
-_PI_ENCLOSURE_WIDTH: PyFraction = _PI_HI - _PI_LO
-_PI_ENCLOSURE_WIDTH_INV: PyFraction = (PyFraction(1, 1) / _PI_ENCLOSURE_WIDTH
-                                       if _PI_ENCLOSURE_WIDTH != PyFraction(0, 1) else PyFraction(0, 1))
 
 
 # ============================================================================
 # SYMBOLIC ARITHMETIC PRIMITIVES
 # ============================================================================
 def _rational_cos(x) -> PyFraction:
-    """Exact-rational π convergent + exact-rational Taylor series.
+    """15-digit π convergent + exact-rational Taylor series.
     Used by the Hopf-fibration projection and the Natalia perturbation
-    summation. Argument reduced modulo 2π exactly.
-
-    The Taylor series truncates when term == 0 exactly. This is an
-    exact-rational enclosure: |cos(x) - result| ≤ |last_term|, and
-    last_term is a Fraction. No float64 is involved at any point."""
+    summation. Argument reduced modulo 2π exactly."""
     if isinstance(x, PyFraction):
         x_frac = x
     elif isinstance(x, Decimal):
@@ -361,10 +353,7 @@ def _rational_cos(x) -> PyFraction:
 
 
 def _rational_sin(x) -> PyFraction:
-    """Exact-rational π convergent + exact-rational Taylor series.
-
-    Same enclosure property as _rational_cos. The residual is bounded
-    by the final term's magnitude."""
+    """15-digit π convergent + exact-rational Taylor series."""
     if isinstance(x, PyFraction):
         x_frac = x
     elif isinstance(x, Decimal):
@@ -405,8 +394,7 @@ _LI_EPSILON: PyFraction = PyFraction(1, 10 ** 40)
 def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational natural log via atanh series with dynamic
     truncation. The series terminates when the term magnitude drops
-    below _LOG_EPSILON (an exact Fraction, not a float). Returns
-    Fraction."""
+    below _LOG_EPSILON. Returns Fraction."""
     if x <= Fraction.zero():
         raise ValueError("SymbolicLog: input must be positive")
     if x == Fraction.one():
@@ -428,7 +416,7 @@ def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
 def _symbolic_exp(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational exp via Taylor series with dynamic truncation.
     The series terminates when the term magnitude drops below
-    _EXP_EPSILON (an exact Fraction, not a float). Returns Fraction."""
+    _EXP_EPSILON. Returns Fraction."""
     result = Fraction.one()
     term = Fraction.one()
     for k in range(1, max_terms + 1):
@@ -447,11 +435,15 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 100) -> Fraction
         Li(x) ≈ γ + log(log(x)) + Σ_{n=1}^∞ (log x)^n / (n · n!)
 
     where γ ≈ 0.5772156649... is the Euler–Mascheroni constant. The
-    series converges for all x > 1. We implement it with exact
-    PyFractions, computing log(x) once via _symbolic_log.
+    series converges for all x > 1 and is the standard numerical
+    approximation used by Mathematica / mpmath. We implement it with
+    exact PyFractions, computing log(x) once via _symbolic_log.
 
     γ is represented as a high-precision rational: the 15-digit decimal
-    0.577215664901532 is lifted to Fraction(577215664901532, 10^15)."""
+    0.577215664901532 is lifted to Fraction(577215664901532, 10^15).
+
+    The series truncates when the term drops below _LI_EPSILON.
+    """
     if x <= Fraction.one():
         return Fraction.zero()
     log_x = _symbolic_log(x)
@@ -743,7 +735,7 @@ class ContinuedFractionRefiner:
 
     @staticmethod
     def pi_approx() -> Fraction:
-        return Fraction(5419351, 1725033)
+        return Fraction(355, 113)
 
 
 # ============================================================================
@@ -784,39 +776,28 @@ class DefaultSymbolicProcessor:
 class DefaultGeometricLattice:
     """Symbolic lattice. Points are Lists of Fraction.
 
-    add_sphere enforces maximal contact. A candidate sphere is admitted
-    only if (a) it does not overlap any existing sphere, and (b) it is at
-    exact distance 2r (tangent) from at least one existing sphere, when
-    the lattice is not yet at the kissing-number capacity. The capacity
-    is the Leech lattice's kissing number, 196560.
+    F7: add_sphere enforces maximal contact. A candidate sphere is
+    admitted only if (a) it does not overlap any existing sphere, and
+    (b) it is at exact distance 2r (tangent) from at least one existing
+    sphere, when the lattice is not yet at the kissing-number capacity.
+    The capacity is the Leech lattice's kissing number, 196560.
 
-    The coset grid is 4-dimensional, matching the populated subspace of
-    stereographic_project_exact (dims 0 and 1). A full 3^24 neighbourhood
-    is intractable; the 4-D 3^4 = 81-cell neighbourhood is exact for the
-    populated subspace and finds a tangent neighbour whenever one exists."""
+    A coset-grid spatial index gives O(1)-amortized neighbor lookup, so
+    the check is hardware-agnostic on a 512 MB Termux device even at
+    thousands of points."""
 
     KISSING_CAPACITY: int = 196560
-    _ORIGIN_SENTINEL_KEY: Tuple[int, ...] = (0, 0, 0, 0)
-    _NUCLEATION_THRESHOLD: int = 10
 
     def __init__(self, dimension: int = 24):
         self.dimension = dimension
         self._points: List[List[Fraction]] = []
         self._radii: List[Fraction] = []
         self._grid: Dict[Tuple[int, ...], List[int]] = {}
-        origin_center = [Fraction.zero()] * dimension
-        origin_radius = Fraction.one()
-        self._points.append(origin_center)
-        self._radii.append(origin_radius)
-        self._grid.setdefault(self._ORIGIN_SENTINEL_KEY, []).append(0)
 
     def _coset_key(self, center: List[Fraction], cell_size: Fraction) -> Tuple[int, ...]:
-        """Quantize the first 4 coords of a center to its coset cell key.
-        cell_size is 2·radius. The projection only populates dims 0 and 1
-        (cos_t, sin_t), so a 4-D key suffices and matches the 4-D neighbor
-        offsets from _neighbor_offsets()."""
+        """Quantize a center to its coset cell key. cell_size is 2·radius."""
         key = []
-        for c in center[:4]:
+        for c in center:
             if cell_size.is_zero():
                 key.append(0)
             else:
@@ -866,14 +847,7 @@ class DefaultGeometricLattice:
                 return
             if dist_sq == contact_sq:
                 tangent_count += 1
-        # Allow the first 10 spheres to be admitted unconditionally
-        # (subject to non-overlap), so the lattice can nucleate past the
-        # origin sentinel. The candidates lie on the unit circle in the
-        # embedded 4-D subspace, and are at distance 1 from the origin
-        # (radius 1) — not tangent at 2·radius, but also not overlapping
-        # (1 < 1+1 = 2). After 10 points, tangency is required to enforce
-        # maximal contact.
-        if len(self._points) > self._NUCLEATION_THRESHOLD and tangent_count == 0:
+        if self._points and tangent_count == 0:
             return
         self._points.append(center)
         self._radii.append(radius)
@@ -881,17 +855,10 @@ class DefaultGeometricLattice:
 
     @staticmethod
     def _neighbor_offsets():
-        # The projection populates only dims 0 and 1, so the coset key is
-        # 4-D. The neighbour search is therefore a full 3^4 = 81-cell
-        # neighbourhood (minus the self-offset), which guarantees at least
-        # one tangent candidate is found when one exists in the populated
-        # subspace.
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 for dz in (-1, 0, 1):
                     for dw in (-1, 0, 1):
-                        if dx == dy == dz == dw == 0:
-                            continue
                         yield (dx, dy, dz, dw)
 
     def points(self) -> List[List[Fraction]]:
@@ -916,8 +883,9 @@ class DefaultAethericMonitor:
     """The PRIMARY evolution gate. Deviation from s²=r² triggers
     SelfEvolutionCore mutation. Every computation is Fraction.
 
-    This monitor implements exactly the two Spec-required gates: arc
-    length squared, and radial distance squared."""
+    F4: MultiScaleDerivatives and validate_multi_scale_coherence are
+    deleted. This monitor implements exactly the two Spec-required
+    gates: arc length squared, and radial distance squared."""
 
     def compute_arc_length_squared(self, trajectory: List[SymbolicQuaternion]) -> Fraction:
         total = Fraction.zero()
@@ -1105,7 +1073,7 @@ class IntelligenceMetric:
         _symbolic_log_integral_approx(). If x ≤ 1, the logarithmic
         integral is 0 and the factor is 1.
 
-        The caller passes pi_x = len(self.primes), i.e., π(p_n), the
+        F6: The caller passes pi_x = len(self.primes), i.e., π(p_n), the
         count of primes ≤ p_n. Not the value of p_n."""
         if x <= Fraction.one():
             return Fraction.one()
@@ -1275,8 +1243,6 @@ class CrawlerSeedState:
     an exact Fraction, and its link count becomes a lattice contact
     constraint."""
 
-    _FRONTIER_MAX: int = 10000
-
     def __init__(self, db_path: str = ":memory:"):
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -1314,11 +1280,8 @@ class CrawlerSeedState:
                 self._conn.commit()
             except Exception as e:
                 logger.warning(f"crawler enqueue failed: {e}")
-                return
             if url not in self._frontier:
                 self._frontier.append(url)
-                if len(self._frontier) > self._FRONTIER_MAX:
-                    self._frontier = self._frontier[-self._FRONTIER_MAX:]
 
     def dequeue(self) -> Optional[str]:
         with self._lock:
@@ -1332,10 +1295,7 @@ class CrawlerSeedState:
                 self._conn.execute("DELETE FROM crawl_queue WHERE url = ?", (url,))
                 self._conn.commit()
                 if url in self._frontier:
-                    try:
-                        self._frontier.remove(url)
-                    except ValueError:
-                        pass
+                    self._frontier.remove(url)
                 return url
             except Exception as e:
                 logger.warning(f"crawler dequeue failed: {e}")
@@ -1397,12 +1357,7 @@ class CrawlerSeedState:
     def latest_hash_fraction(self) -> PyFraction:
         rec = self.latest_record()
         if rec is None:
-            # The "no record" sentinel is None, not PyFraction(0,1). A
-            # genuine document whose hash starts with 32 zero hex chars
-            # lifts to PyFraction(1, 16**32) via _hash_to_fraction,
-            # which is *not* PyFraction(0,1), so the sentinel can never
-            # be confused with a real hash.
-            raise LookupError("no crawler records")
+            return PyFraction(0, 1)
         return rec.hash_frac
 
     def snapshot(self) -> Dict[str, Any]:
@@ -1440,7 +1395,7 @@ class CrawlerRelayClient:
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
         self.timeout = timeout
-        self.max_retries = max(1, int(max_retries))
+        self.max_retries = max_retries
         self._failure_count = 0
 
     def fetch_url(self, url: str) -> Optional[Dict[str, Any]]:
@@ -1525,12 +1480,12 @@ class AEI_Seed:
       1. Primorial step   — generate the next prime (exact Fraction)
       2. Lattice step     — stereographic project the prime; add_sphere
       3. Wavefunction     — integrate ψ over the lattice, blending with
-                            the prior rectified ψ so DbZ persists
+                            the prior rectified ψ so DbZ persists (F5)
       4. Trajectory       — generate the Natalia-fibrated quaternionic path
       5. Aetheric gate    — validate s²=r²; compute deviation_sq
       6. DbZ              — if deviation_sq ≠ 0, rectify ψ
       7. Execution        — record the intelligence metric I with
-                            pi_x = π(p_n) = len(self.primes)
+                            pi_x = π(p_n) = len(self.primes) (F6)
       8. Evolution        — SelfEvolutionCore.evolve_step
 
     Inputs: the seed's x parameter. In the market bot, x is a price;
@@ -1579,15 +1534,16 @@ class AEI_Seed:
 
         self.history: List[Dict[str, Any]] = []
 
+        # F5: prior deviation, so DbZ rectification persists across steps.
         self._prior_deviation_sq: Optional[Fraction] = None
 
         self._step_lock = threading.Lock()
 
     def _integrate_wavefunction_symbolic(self) -> Dict[Tuple[int, int, int, int], Fraction]:
-        """Blend the fresh lattice integration with the prior rectified ψ
-        whenever the prior step was non-coherent. This is what makes DbZ
-        persist — otherwise the rectification is overwritten on the next
-        step by a pure lattice read."""
+        """F5: blend the fresh lattice integration with the prior
+        rectified psi whenever the prior step was non-coherent. This is
+        what makes DbZ persist — otherwise the rectification is
+        overwritten on the next step by a pure lattice read."""
         coeffs: Dict[Tuple[int, int, int, int], Fraction] = {}
         points = self.lattice.points()
         for i, _point in enumerate(points):
@@ -1633,8 +1589,12 @@ class AEI_Seed:
             self.last_radius_sq = radius_sq
             self.last_deviation_sq = deviation_sq
             self.psi = DbZ.Rectify(self.psi, arc_sq, radius_sq, deviation_sq)
+            # F5: persist the deviation so the NEXT step knows to blend.
             self._prior_deviation_sq = deviation_sq
             q_eval = SymbolicQuaternion(p_n, Fraction.zero(), Fraction.zero(), Fraction.zero())
+            # F6: pi_x is the COUNT of primes ≤ p_n, i.e., len(self.primes).
+            # Passing int(p_n.num()) would compare p_n's VALUE to Li(p_n),
+            # which is not the Riemann error.
             I = self.metrics.compute_metric(
                 valid_pairs=len(self.primes),
                 total_primes=len(self.primes),
@@ -1714,6 +1674,8 @@ class AEI_Seed:
                     for k, v in self.evolution.logic_core.items()
                 },
                 "last_logic_hash": self.last_logic_hash,
+                # F8: expose Re[ψ] so the DBZ branch panel can distinguish
+                # 𝒜₃ (Re[ψ] > 0) from 𝒜₄ (Re[ψ] ≤ 0) independent of coherence.
                 "psi_real": str(self.psi.real_part()),
             }
 
@@ -1796,8 +1758,6 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "public_url": None,
     "crawler": None,
     "port": None,
-    "httpd": None,
-    "shutting_down": False,
 }
 
 
@@ -1846,6 +1806,9 @@ _CS_VALUE_MAP: Dict[str, str] = {
 }
 
 
+# F9: field-label sigils for Telegram message bodies. These are the
+# left-hand strings the user sees; the right-hand strings are the CS
+# plain-text sigils from LOGOS.MD CODEX_SYMBOLICA.
 _CS_LABELS: Dict[str, str] = {
     "state": "𝒮",
     "tick": "𝒯",
@@ -1872,21 +1835,8 @@ _CS_SIGIL_PREFIXES = ("𝒜", "𝒮", "𝒟", "ℐ", "𝒪", "𝒞", "𝒯", "�
 
 
 def _cs(value) -> str:
-    """bool, int, and str are all handled explicitly so the .upper()
-    normalization is not load-bearing. `_cs(True)` and `_cs(1)` both
-    → ⟦𝒯⟧; `_cs(False)` and `_cs(0)` both → ⟦ℱ⟧. This closes the edge
-    case where a JSON serializer encodes booleans as integers, which
-    would otherwise render as ⟦1⟧/⟦0⟧ and violate the CS notation."""
     if value is None:
         return "—"
-    if isinstance(value, bool):
-        return "⟦𝒯⟧" if value else "⟦ℱ⟧"
-    if isinstance(value, int):
-        if value == 1:
-            return "⟦𝒯⟧"
-        if value == 0:
-            return "⟦ℱ⟧"
-        return "⟦" + str(value) + "⟧"
     s = str(value).strip()
     if not s:
         return "—"
@@ -1903,9 +1853,9 @@ def _cs(value) -> str:
 
 
 def _cs_label(key: str) -> str:
-    """Lookup the CS sigil for a field label. Falls back to the original
-    key wrapped in ⟦…⟧ so no information is lost if a new label is
-    introduced without a sigil entry."""
+    """F9: lookup the CS sigil for a field label. Falls back to the
+    original key wrapped in ⟦…⟧ so no information is lost if a new
+    label is introduced without a sigil entry."""
     return _CS_LABELS.get(key, "⟦" + key + "⟧")
 
 
@@ -1942,6 +1892,8 @@ def _looks_like_length_error(desc: str) -> bool:
 TELEGRAM_BOT_TOKEN_ENV: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_WEBAPP_URL: str = os.getenv("TELEGRAM_WEBAPP_URL", "").strip()
 BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "0.0.0.0").strip()
+# F1: on a web dyno, $PORT is Heroku-assigned. We bind to it directly.
+# On a local dev box, BRIDGE_PORT (default 8765) is used.
 _ENV_PORT: Optional[str] = os.getenv("PORT")
 _ENV_BRIDGE_PORT: Optional[str] = os.getenv("BRIDGE_PORT")
 if _ENV_PORT:
@@ -2130,16 +2082,7 @@ class CrawlerWorker:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.create_task(self._supervised_loop())
-
-    async def _supervised_loop(self):
-        try:
-            await self._loop()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"CrawlerWorker loop died: {type(e).__name__}: {e}")
-            raise
+        self._task = asyncio.create_task(self._loop())
 
     def stop(self):
         self._running = False
@@ -2175,15 +2118,11 @@ class SeedWorker:
     async def _loop(self):
         while self._running:
             try:
-                try:
-                    hash_frac = self.crawler.state.latest_hash_fraction()
-                    x = Fraction(hash_frac)
-                except LookupError:
-                    # No crawler records yet — fall back to the tick
-                    # counter, which is the documented deterministic
-                    # default. This is not a sentinel collision; it is
-                    # an explicit absence.
+                hash_frac = self.crawler.state.latest_hash_fraction()
+                if hash_frac == PyFraction(0, 1):
                     x = Fraction(self.seed.tick, 1)
+                else:
+                    x = Fraction(hash_frac)
                 record = await asyncio.to_thread(self.seed.step, x)
                 _emit_toast("seed", {
                     "tick": record["tick"],
@@ -2205,16 +2144,7 @@ class SeedWorker:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.create_task(self._supervised_loop())
-
-    async def _supervised_loop(self):
-        try:
-            await self._loop()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"SeedWorker loop died: {type(e).__name__}: {e}")
-            raise
+        self._task = asyncio.create_task(self._loop())
 
     def stop(self):
         self._running = False
@@ -2378,7 +2308,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed19-lattice-fix"
+    server_version = "AEI-Seed-Bridge/final-ed14"
 
     def log_message(self, fmt, *args):
         return
@@ -2437,13 +2367,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return {}
 
     def do_OPTIONS(self) -> None:
-        # send_response() must be called first; _set_cors() then
-        # appends Access-Control-* headers; Content-Length is the last
-        # header before end_headers().
         self.send_response(204)
         self._set_cors()
         self.send_header("Content-Length", "0")
-        self.send_header("Vary", "Origin")
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -2457,7 +2383,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed19-lattice-fix",
+                "version": "final-ed14",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -2502,7 +2428,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_html(200, "<!DOCTYPE html><html><body style='font-family:monospace;"
                                          "background:#050510;color:#aaccff;padding:40px;'>"
-                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.19 Lattice-Fix)</h2>"
+                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.14)</h2>"
                                          "<p>index.html not found in <code>"
                                          + base + "</code>.</p></body></html>")
             except Exception as e:
@@ -2905,7 +2831,6 @@ class BridgeServer:
                 self._httpd.daemon_threads = True
                 self.port = self._httpd.server_address[1]
                 BRIDGE_ENGINE_REF["port"] = self.port
-                BRIDGE_ENGINE_REF["httpd"] = self._httpd
 
                 self._ssl_context = self._build_ssl_context()
                 if self._ssl_context is not None:
@@ -3047,80 +2972,6 @@ class AEI_Bot:
         except RuntimeError:
             self._loop = None
         BRIDGE_ENGINE_REF["bot"] = self
-
-        # On SIGTERM we must (a) signal the bridge's serve_forever() to
-        # return, then (b) call os._exit(0) without waiting for PTB's
-        # shutdown coroutine (which can block on an in-flight httpx
-        # request that never completes). Heroku's 30 s
-        # SIGTERM→SIGKILL budget is the hard deadline.
-        def _force_exit(signum=None, frame=None):
-            try:
-                if not BRIDGE_ENGINE_REF.get("shutting_down"):
-                    BRIDGE_ENGINE_REF["shutting_down"] = True
-                    logger.info("SIGTERM received — signalling bridge shutdown")
-            except Exception:
-                pass
-            # (a) Stop the bridge's serve_forever loop immediately.
-            try:
-                httpd = BRIDGE_ENGINE_REF.get("httpd")
-                if httpd is not None:
-                    httpd.shutdown()
-            except Exception:
-                pass
-            # (b) Exit synchronously. 2 s grace allows the log line to
-            # flush; the process is gone at 2 s, well inside the 30 s
-            # Heroku budget.
-            try:
-                logger.info("SIGTERM exit firing in 2s")
-            except Exception:
-                pass
-            time.sleep(2.0)
-            os._exit(0)
-
-        def _exit_watchdog():
-            # Belt-and-braces. If _force_exit was bypassed (e.g. PTB
-            # installed its own loop-level handler that ran first), this
-            # watchdog fires once shutting_down is observed. The process
-            # exits in 1 s.
-            while True:
-                if BRIDGE_ENGINE_REF.get("shutting_down"):
-                    time.sleep(1.0)
-                    try:
-                        logger.info("Exit watchdog firing os._exit(0)")
-                    except Exception:
-                        pass
-                    os._exit(0)
-                time.sleep(0.25)
-
-        import signal as _signal_mod
-        # Signal handlers installed on the main thread below (where
-        # signal.signal is legal). A daemon-thread re-installer is a
-        # no-op because signal.signal() is main-thread-only; removed.
-        try:
-            _signal_mod.signal(_signal_mod.SIGTERM, _force_exit)
-            _signal_mod.signal(_signal_mod.SIGINT, _force_exit)
-            logger.info("🛑 Signal handlers installed on main thread")
-        except (ValueError, OSError) as e:
-            logger.warning(f"Initial SIGTERM install failed: {e}")
-
-        # Override the asyncio-level signal handler that PTB installed
-        # via Updater.start_polling().
-        if self._loop is not None:
-            try:
-                self._loop.add_signal_handler(_signal_mod.SIGTERM, _force_exit)
-                self._loop.add_signal_handler(_signal_mod.SIGINT, _force_exit)
-                logger.info("🛑 asyncio-level SIGTERM/SIGINT handlers installed")
-            except (NotImplementedError, RuntimeError, ValueError, OSError) as e:
-                logger.warning(f"asyncio signal handler install failed: {e}")
-
-        # Exit watchdog. Has zero effect during normal operation;
-        # guarantees process exit within 1 s of BRIDGE_ENGINE_REF
-        # ["shutting_down"] being set.
-        watchdog_thread = threading.Thread(
-            target=_exit_watchdog, name="aei-exit-watchdog", daemon=True
-        )
-        watchdog_thread.start()
-        logger.info("🛑 Exit watchdog thread started (1s post-signal)")
 
         if self._bridge_server is None:
             server = BridgeServer()
@@ -3438,13 +3289,11 @@ class AEI_Bot:
             await self._safe_reply(update, "⏳ Seed not initialized.")
             return
         crawler = BRIDGE_ENGINE_REF.get("crawler")
-        try:
-            hash_frac = crawler.state.latest_hash_fraction() if crawler else None
-            if hash_frac is None:
-                raise LookupError("no crawler records")
-            x = Fraction(hash_frac)
-        except LookupError:
+        hash_frac = crawler.state.latest_hash_fraction() if crawler else PyFraction(0, 1)
+        if hash_frac == PyFraction(0, 1):
             x = Fraction(seed.tick + 1, 1)
+        else:
+            x = Fraction(hash_frac)
         record = await asyncio.to_thread(seed.step, x)
         _emit_toast("seed", {
             "tick": record["tick"],
@@ -3682,7 +3531,6 @@ class AEI_Bot:
         self.application.add_error_handler(self.error_handler)
 
         logger.info(f"🤖 {self.bot_name} starting...")
-        logger.info(f"ℹ️ version={__version__}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
         logger.info(f"🌐 Substrate: {_SUBSTRATE} (bind port {BRIDGE_PORT})")
@@ -3692,14 +3540,28 @@ class AEI_Bot:
         logger.info(f"📡 Relay URL: {RELAY_URL or '(unset)'}")
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
-        # post_shutdown is intentionally NOT installed. PTB's graceful
-        # shutdown path would call it, which would deadlock on
-        # httpd.shutdown() while an in-flight poll holds the step lock.
-        # The seed state is persisted in the crawler SQLite DB and
-        # reconstructed on the next boot; there is no in-memory state
-        # that requires a graceful close. The exit watchdog guarantees
-        # os._exit(0) within 1 s of signal regardless.
-        logger.info("ℹ️ post_shutdown intentionally omitted (state persisted in SQLite)")
+        async def _post_shutdown(application) -> None:
+            logger.info("PTB post_shutdown: stopping bridge + workers")
+            if self._crawler_worker is not None:
+                try:
+                    self._crawler_worker.stop()
+                except Exception:
+                    pass
+            if self._seed_worker is not None:
+                try:
+                    self._seed_worker.stop()
+                except Exception:
+                    pass
+            if self._bridge_server is not None:
+                try:
+                    self._bridge_server.stop()
+                except Exception:
+                    pass
+
+        try:
+            self.application.post_shutdown = _post_shutdown
+        except Exception:
+            pass
 
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
@@ -3717,27 +3579,6 @@ def main():
         sys.exit(1)
 
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
-
-    # Non-blocking SIGTERM handler at the main() level. This is a
-    # pre-loop fallback that covers the window between process spawn and
-    # the _post_init signal handlers taking over. It also arms the exit
-    # watchdog by setting BRIDGE_ENGINE_REF["shutting_down"] = True,
-    # so even if _post_init never runs (e.g. PTB fails to start), the
-    # process still terminates cleanly on SIGTERM.
-    def _sigterm_handler(signum, frame):
-        logger.info("Received SIGTERM at main() — forcing immediate shutdown")
-        try:
-            BRIDGE_ENGINE_REF["shutting_down"] = True
-        except Exception:
-            pass
-        os._exit(0)
-
-    try:
-        signal.signal(signal.SIGTERM, _sigterm_handler)
-        signal.signal(signal.SIGINT, _sigterm_handler)
-    except (ValueError, OSError):
-        pass
-
     bot.run()
 
 
