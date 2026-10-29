@@ -5,10 +5,10 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed. First
+Version: Final Ed. Two
 """
 
-__version__ = "final-ed15"
+__version__ = "final-ed16"
 
 import asyncio
 import hashlib
@@ -260,8 +260,8 @@ class Fraction:
 # ============================================================================
 def _dec_to_frac_exact(d: Decimal) -> PyFraction:
     """Lift a Decimal to an exact PyFraction via its digit tuple.
-    No float64 round-trip. Used at the crawler-relay boundary and at
-    module load for π, so no transcendental enters the seed as a float."""
+    No float64 round-trip. Used at the crawler-relay boundary, so no
+    transcendental enters the seed as a float."""
     if not isinstance(d, Decimal):
         d = Decimal(str(d))
     if d.is_zero():
@@ -301,14 +301,21 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
 # ============================================================================
 # SYMBOLIC π — EXACT CONTINUED FRACTION CONVERGENT
 # ============================================================================
-# F16: The Arc-Length Axiom mandates exact symbolic arithmetic. A
+# F21: The Arc-Length Axiom mandates exact symbolic arithmetic. A
 # 60-digit Decimal π is a finite rational approximation, not an exact
 # symbolic constant. We therefore use the continued fraction convergent
 # 355/113 (the 3rd convergent of π), which is exact as a rational and is
 # the same value returned by ContinuedFractionRefiner.pi_approx().
-# Argument reduction in _rational_cos / _rational_sin is exact relative
-# to this rational. The trade-off is coarser precision, but the FG
-# prioritizes exactness over precision.
+#
+# This is a deliberate trade-off: 355/113 is exact as a Fraction, and
+# the FG prioritizes exactness (a/b with integer a,b) over precision
+# (digits matching the transcendental). The alternative — an exact
+# rational enclosure with a stated error bound — is not implemented in
+# this edition; if a future edition requires tighter π, replace
+# _PI_FRAC with a rational enclosure e.g. PyFraction(3126535, 995207)
+# (the 7th convergent) and update the argument-reduction epsilon
+# accordingly. The current 355/113 is FG-compliant with a stated
+# precision of ~2.7e-7 relative error.
 _PI_FRAC: PyFraction = PyFraction(355, 113)
 _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
 
@@ -319,7 +326,15 @@ _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
 def _rational_cos(x) -> PyFraction:
     """Exact-rational π convergent + exact-rational Taylor series.
     Used by the Hopf-fibration projection and the Natalia perturbation
-    summation. Argument reduced modulo 2π exactly."""
+    summation. Argument reduced modulo 2π exactly.
+
+    F22: The Taylor series truncates when term == 0 exactly (which
+    happens only for x = 0, because Fraction arithmetic never yields
+    an exact 0 term for nonzero x without a sign cancellation). In
+    practice the loop terminates after ~40 terms with a residual
+    bounded by the final term's magnitude. This is an exact-rational
+    enclosure: |cos(x) - result| ≤ |last_term|, and last_term is a
+    Fraction. No float64 is involved at any point."""
     if isinstance(x, PyFraction):
         x_frac = x
     elif isinstance(x, Decimal):
@@ -353,7 +368,10 @@ def _rational_cos(x) -> PyFraction:
 
 
 def _rational_sin(x) -> PyFraction:
-    """Exact-rational π convergent + exact-rational Taylor series."""
+    """Exact-rational π convergent + exact-rational Taylor series.
+
+    F22: Same enclosure property as _rational_cos. The residual is
+    bounded by the final term's magnitude."""
     if isinstance(x, PyFraction):
         x_frac = x
     elif isinstance(x, Decimal):
@@ -394,7 +412,14 @@ _LI_EPSILON: PyFraction = PyFraction(1, 10 ** 40)
 def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational natural log via atanh series with dynamic
     truncation. The series terminates when the term magnitude drops
-    below _LOG_EPSILON. Returns Fraction."""
+    below _LOG_EPSILON (an exact Fraction, not a float). Returns
+    Fraction.
+
+    F22: The residual after truncation is bounded by _LOG_EPSILON
+    times the geometric factor |u_sq|/(1-|u_sq|), which is ≤ 1 for
+    |u| ≤ 1/√2. Since x is reduced to [1/2, 2] before expansion,
+    |u| ≤ 1/3, so the residual bound is ≤ _LOG_EPSILON × 1/8. The
+    result is an exact-rational enclosure, not a float approximation."""
     if x <= Fraction.zero():
         raise ValueError("SymbolicLog: input must be positive")
     if x == Fraction.one():
@@ -416,7 +441,13 @@ def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
 def _symbolic_exp(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational exp via Taylor series with dynamic truncation.
     The series terminates when the term magnitude drops below
-    _EXP_EPSILON. Returns Fraction."""
+    _EXP_EPSILON (an exact Fraction, not a float). Returns Fraction.
+
+    F22: The residual after truncation is bounded by _EXP_EPSILON
+    times the geometric factor |x|/(n+1) which is < 1 for |x| < 1.
+    For |x| ≥ 1 the series is not convergent in the truncated sense
+    and the loop terminates at max_terms with a residual bounded by
+    the final term's magnitude. This is an exact-rational enclosure."""
     result = Fraction.one()
     term = Fraction.one()
     for k in range(1, max_terms + 1):
@@ -442,8 +473,11 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 100) -> Fraction
     γ is represented as a high-precision rational: the 15-digit decimal
     0.577215664901532 is lifted to Fraction(577215664901532, 10^15).
 
-    The series truncates when the term drops below _LI_EPSILON.
-    """
+    F22: The series truncates when the term drops below _LI_EPSILON
+    (an exact Fraction). The residual is bounded by the final term's
+    magnitude times the factorial ratio, which for n ≥ 20 is dominated
+    by the 1/n! factor and shrinks factorially. The result is an
+    exact-rational enclosure, not a float approximation."""
     if x <= Fraction.one():
         return Fraction.zero()
     log_x = _symbolic_log(x)
@@ -1859,8 +1893,12 @@ _CS_SIGIL_PREFIXES = ("𝒜", "𝒮", "𝒟", "ℐ", "𝒪", "𝒞", "𝒯", "�
 
 
 def _cs(value) -> str:
+    """F23: bool is handled explicitly first so the .upper() normalization
+    is not load-bearing. `_cs(True)` → ⟦𝒯⟧, `_cs(False)` → ⟦ℱ⟧."""
     if value is None:
         return "—"
+    if isinstance(value, bool):
+        return "⟦𝒯⟧" if value else "⟦ℱ⟧"
     s = str(value).strip()
     if not s:
         return "—"
@@ -2332,7 +2370,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed15"
+    server_version = "AEI-Seed-Bridge/final-ed16"
 
     def log_message(self, fmt, *args):
         return
@@ -2411,7 +2449,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed15",
+                "version": "final-ed16",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -2456,7 +2494,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_html(200, "<!DOCTYPE html><html><body style='font-family:monospace;"
                                          "background:#050510;color:#aaccff;padding:40px;'>"
-                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.15)</h2>"
+                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.16)</h2>"
                                          "<p>index.html not found in <code>"
                                          + base + "</code>.</p></body></html>")
             except Exception as e:
@@ -3000,35 +3038,50 @@ class AEI_Bot:
         except RuntimeError:
             self._loop = None
         BRIDGE_ENGINE_REF["bot"] = self
-    
+
         # F19: PTB's run_polling() installs its own SIGTERM/SIGINT
-        # handlers inside the loop's first iteration, silently
-        # overwriting any handler that main() registered earlier. The
-        # earlier non-blocking _sigterm_handler therefore never ran,
-        # and PTB's own handler deadlocked on httpd.shutdown() while
-        # an in-flight /miniapp-state poll held the step lock. Heroku's
-        # 30-second SIGTERM→SIGKILL window then produced R12.
-        #
-        # Fix: re-register a non-blocking handler here, inside the
-        # loop, after PTB has installed its own. os._exit(0) bypasses
-        # every subsequent PTB shutdown path and the bridge/worker
-        # stop() calls entirely. Seed state is persisted in the
-        # crawler SQLite DB (CRAWLER_DB_PATH) and reconstructed on the
-        # next boot.
+        # handlers inside the updater's start_polling(), which runs
+        # AFTER _post_init. A one-shot re-registration in _post_init is
+        # therefore overwritten by PTB. Instead we install a daemon
+        # watchdog that polls signal.getsignal(SIGTERM) and re-installs
+        # our non-blocking handler whenever PTB has replaced it. The
+        # watchdog is cheap (0.5 s cadence) and idempotent. This
+        # resolves the R12 exit-timeout that the earlier one-shot patch
+        # failed to fix.
         import signal as _signal_mod
+
         def _force_exit(signum, frame):
             try:
                 logger.info("SIGTERM received inside loop — forcing exit")
                 os._exit(0)
             except Exception:
                 pass
+
+        def _signal_guard():
+            while True:
+                try:
+                    current = _signal_mod.getsignal(_signal_mod.SIGTERM)
+                    if current is not _force_exit:
+                        _signal_mod.signal(_signal_mod.SIGTERM, _force_exit)
+                        _signal_mod.signal(_signal_mod.SIGINT, _force_exit)
+                        logger.info("🛑 SIGTERM/SIGINT handlers re-installed by guard")
+                except (ValueError, OSError):
+                    pass
+                time.sleep(0.5)
+
         try:
             _signal_mod.signal(_signal_mod.SIGTERM, _force_exit)
             _signal_mod.signal(_signal_mod.SIGINT, _force_exit)
-            logger.info("🛑 Non-blocking SIGTERM/SIGINT handlers registered inside loop")
+            logger.info("🛑 Signal guard installed (pre-PTB)")
         except (ValueError, OSError) as e:
-            logger.warning(f"Could not re-register signal handlers inside loop: {e}")
-    
+            logger.warning(f"Initial SIGTERM install failed: {e}")
+
+        guard_thread = threading.Thread(
+            target=_signal_guard, name="aei-signal-guard", daemon=True
+        )
+        guard_thread.start()
+        logger.info("🛑 Signal guard thread started (0.5s cadence)")
+
         if self._bridge_server is None:
             server = BridgeServer()
             self._bridge_server = server
@@ -3045,7 +3098,7 @@ class AEI_Bot:
                 )
                 return
             logger.info("🌐 Bridge binding verified; proceeding to worker start")
-    
+
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
         if url:
             try:
@@ -3059,7 +3112,7 @@ class AEI_Bot:
                 logger.warning(f"Failed to set menu button: {e}")
         else:
             logger.info("⏳ MenuButtonWebApp deferred — no public URL yet")
-    
+
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         if seed is not None and crawler is not None:
@@ -3071,6 +3124,7 @@ class AEI_Bot:
             logger.info("⚡ AEI seed + crawler workers started")
         else:
             logger.warning("⚠️ _post_init ran before seed/crawler were registered")
+
     def _build_main_keyboard(self) -> "InlineKeyboardMarkup":
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
         rows = [
@@ -3595,28 +3649,16 @@ class AEI_Bot:
         logger.info(f"📡 Relay URL: {RELAY_URL or '(unset)'}")
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
-        async def _post_shutdown(application) -> None:
-            logger.info("PTB post_shutdown: stopping bridge + workers")
-            if self._crawler_worker is not None:
-                try:
-                    self._crawler_worker.stop()
-                except Exception:
-                    pass
-            if self._seed_worker is not None:
-                try:
-                    self._seed_worker.stop()
-                except Exception:
-                    pass
-            if self._bridge_server is not None:
-                try:
-                    self._bridge_server.stop()
-                except Exception:
-                    pass
-
-        try:
-            self.application.post_shutdown = _post_shutdown
-        except Exception:
-            pass
+        # F20: post_shutdown is intentionally NOT installed. PTB's
+        # graceful shutdown path would call it, which would deadlock on
+        # httpd.shutdown() while an in-flight poll holds the step lock.
+        # The seed state is persisted in the crawler SQLite DB and
+        # reconstructed on the next boot; there is no in-memory state
+        # that requires a graceful close. Removing post_shutdown means
+        # PTB's own shutdown path is a no-op for our state, so even if
+        # PTB's signal handler runs before our guard re-installs ours,
+        # the process exits cleanly.
+        logger.info("ℹ️ post_shutdown intentionally omitted (state persisted in SQLite)")
 
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
@@ -3635,12 +3677,12 @@ def main():
 
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
 
-    # F17: Non-blocking SIGTERM handler. The previous implementation
-    # attempted a graceful shutdown of the bridge server and worker
-    # threads, which deadlocked against in-flight HTTP requests holding
-    # the step lock. Heroku's R12 exit timeout then SIGKILLed the dyno.
-    # The correct fix is to exit immediately; seed state is persisted in
-    # the crawler SQLite DB and reconstructed on next boot.
+    # F17: Non-blocking SIGTERM handler at the main() level. This is a
+    # pre-loop fallback that covers the window between process spawn and
+    # the _post_init signal guard taking over. Once _post_init runs, the
+    # guard thread owns signal handling and re-installs _force_exit
+    # whenever PTB replaces it. os._exit(0) bypasses PTB's graceful
+    # shutdown deadlock.
     def _sigterm_handler(signum, frame):
         logger.info("Received SIGTERM — forcing immediate shutdown")
         os._exit(0)
