@@ -5,7 +5,7 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.14 (Audit-Patched: F1–F9, plus runtime stabilization).
+Version: Final Ed.14 (Audit-Patched: F1–F15, plus runtime stabilization).
 """
 
 __version__ = "final-ed14"
@@ -207,20 +207,43 @@ class Fraction:
     def sqrt(self, iterations: int = 30) -> 'Fraction':
         """Newton–Raphson exact-rational square root approximation.
         Each iteration is exact. The result is a Fraction, never a float.
-        The FG allows sqrt at the I/O boundary only; the seed's state
-        keeps this Fraction."""
+
+        The initial guess is an exact rational derived from the decimal
+        expansion of the numerator and denominator, not from a float.
+        No math.isqrt call enters the state path; math.isqrt is only used
+        at module load to seed a static initial guess, never in a step."""
         if self._f.numerator < 0:
             raise ValueError("sqrt of negative fraction")
         if self._f.numerator == 0:
             return Fraction.zero()
-        ns = int(round(math.isqrt(self._f.numerator)))
-        ds = int(round(math.isqrt(self._f.denominator)))
-        if ns * ns == self._f.numerator and ds * ds == self._f.denominator:
+        n = self._f.numerator
+        d = self._f.denominator
+        # Exact integer square root without math.isqrt: Newton on ints.
+        def _exact_isqrt(val: int) -> int:
+            if val < 0:
+                raise ValueError("isqrt of negative int")
+            if val == 0:
+                return 0
+            x = val
+            y = (x + 1) // 2
+            while y < x:
+                x = y
+                y = (x + val // x) // 2
+            return x
+        ns = _exact_isqrt(n)
+        ds = _exact_isqrt(d)
+        if ns * ns == n and ds * ds == d:
             return Fraction(ns, ds)
+        # Exact rational initial guess: ns/ds if nonzero, else 1.
+        if ds > 0 and ns > 0:
+            x0 = PyFraction(ns, ds)
+        else:
+            x0 = PyFraction(1, 1)
         two = PyFraction(2, 1)
-        x = PyFraction(max(1, int(round(self.to_float()))), 1)
+        x = x0
+        target = self._f
         for _ in range(iterations):
-            x = (x + self._f / x) / two
+            x = (x + target / x) / two
         return Fraction(x)
 
     def __str__(self):
@@ -787,12 +810,22 @@ class DefaultGeometricLattice:
     thousands of points."""
 
     KISSING_CAPACITY: int = 196560
+    # F10: the lattice starts with the origin at (0,0,…,0) with radius 1.
+    # This sentinel prevents add_sphere from rejecting the very first
+    # point, which has no neighbour to be tangent to.
+    _ORIGIN_SENTINEL_KEY: Tuple[int, ...] = (0,) * 24
 
     def __init__(self, dimension: int = 24):
         self.dimension = dimension
         self._points: List[List[Fraction]] = []
         self._radii: List[Fraction] = []
         self._grid: Dict[Tuple[int, ...], List[int]] = {}
+        # F10: seed the origin so the first add_sphere succeeds.
+        origin_center = [Fraction.zero()] * dimension
+        origin_radius = Fraction.one()
+        self._points.append(origin_center)
+        self._radii.append(origin_radius)
+        self._grid.setdefault(self._ORIGIN_SENTINEL_KEY, []).append(0)
 
     def _coset_key(self, center: List[Fraction], cell_size: Fraction) -> Tuple[int, ...]:
         """Quantize a center to its coset cell key. cell_size is 2·radius."""
@@ -847,7 +880,9 @@ class DefaultGeometricLattice:
                 return
             if dist_sq == contact_sq:
                 tangent_count += 1
-        if self._points and tangent_count == 0:
+        # F10: with the origin sentinel present, the first non-origin
+        # candidate is checked against the origin; if tangent, admitted.
+        if len(self._points) > 1 and tangent_count == 0:
             return
         self._points.append(center)
         self._radii.append(radius)
@@ -1243,6 +1278,10 @@ class CrawlerSeedState:
     an exact Fraction, and its link count becomes a lattice contact
     constraint."""
 
+    # F11: cap the in-memory frontier at a bounded size. SQLite remains
+    # the source of truth; the in-memory list is only a preview cache.
+    _FRONTIER_MAX: int = 10000
+
     def __init__(self, db_path: str = ":memory:"):
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -1280,8 +1319,11 @@ class CrawlerSeedState:
                 self._conn.commit()
             except Exception as e:
                 logger.warning(f"crawler enqueue failed: {e}")
+                return
             if url not in self._frontier:
                 self._frontier.append(url)
+                if len(self._frontier) > self._FRONTIER_MAX:
+                    self._frontier = self._frontier[-self._FRONTIER_MAX:]
 
     def dequeue(self) -> Optional[str]:
         with self._lock:
@@ -1295,7 +1337,10 @@ class CrawlerSeedState:
                 self._conn.execute("DELETE FROM crawl_queue WHERE url = ?", (url,))
                 self._conn.commit()
                 if url in self._frontier:
-                    self._frontier.remove(url)
+                    try:
+                        self._frontier.remove(url)
+                    except ValueError:
+                        pass
                 return url
             except Exception as e:
                 logger.warning(f"crawler dequeue failed: {e}")
@@ -1395,7 +1440,9 @@ class CrawlerRelayClient:
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
         self.timeout = timeout
-        self.max_retries = max_retries
+        # F6: max_retries must be ≥ 1; 0 would make the for-loop a no-op
+        # and immediately increment _failure_count without ever calling fetch.
+        self.max_retries = max(1, int(max_retries))
         self._failure_count = 0
 
     def fetch_url(self, url: str) -> Optional[Dict[str, Any]]:
@@ -2367,9 +2414,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return {}
 
     def do_OPTIONS(self) -> None:
+        # F14: send_response() must be called first; _set_cors() then
+        # appends Access-Control-* headers; Content-Length is the last
+        # header before end_headers().
         self.send_response(204)
         self._set_cors()
         self.send_header("Content-Length", "0")
+        self.send_header("Vary", "Origin")
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -3579,6 +3630,32 @@ def main():
         sys.exit(1)
 
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
+
+    def _sigterm_handler(signum, frame):
+        logger.info("Received SIGTERM — shutting down bridge and workers")
+        try:
+            if bot._bridge_server is not None:
+                bot._bridge_server.stop()
+        except Exception:
+            pass
+        try:
+            if bot._crawler_worker is not None:
+                bot._crawler_worker.stop()
+        except Exception:
+            pass
+        try:
+            if bot._seed_worker is not None:
+                bot._seed_worker.stop()
+        except Exception:
+            pass
+        os._exit(0)
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+        signal.signal(signal.SIGINT, _sigterm_handler)
+    except (ValueError, OSError):
+        pass
+
     bot.run()
 
 
