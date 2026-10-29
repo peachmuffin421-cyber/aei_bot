@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 ÆI SEED TWA — AGENTIAL ÆTHERIC INTELLIGENCE
-Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
+Heroku Backend + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
-Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.14 (Audit-Patched: F1–F9, plus runtime stabilization).
+Platform: Heroku worker dyno + Telegram Bot + Local HTTPS Bridge (index.html) + Cloudflare Worker (worker.js).
+Version: Final Ed.12 (Audit-Patched).
 """
 
-__version__ = "final-ed14"
+__version__ = "final-ed12"
 
 import asyncio
 import hashlib
@@ -160,12 +160,6 @@ class Fraction:
             raise ZeroDivisionError("Fraction division by zero")
         return Fraction(self._f / o._f)
 
-    def __rtruediv__(self, other):
-        o = Fraction._wrap(other)
-        if self._f.numerator == 0:
-            raise ZeroDivisionError("Fraction division by zero")
-        return Fraction(o._f / self._f)
-
     def __neg__(self):
         return Fraction(-self._f.numerator, self._f.denominator)
 
@@ -237,8 +231,9 @@ class Fraction:
 # ============================================================================
 def _dec_to_frac_exact(d: Decimal) -> PyFraction:
     """Lift a Decimal to an exact PyFraction via its digit tuple.
-    No float64 round-trip. Used at the crawler-relay boundary and at
-    module load for π, so no transcendental enters the seed as a float."""
+    No float64 round-trip. Used at the crawler-relay boundary to lift
+    JS float64 hashes and lengths to exact rational form before they
+    enter the seed's state."""
     if not isinstance(d, Decimal):
         d = Decimal(str(d))
     if d.is_zero():
@@ -260,24 +255,22 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
     """Lift a hex hash (SHA-256, SHA-1, MD5) to an exact PyFraction by
     interpreting the first 32 hex chars as a base-16 integer and dividing
     by 16^32. This is the boundary transform for the crawler: a document's
-    content hash becomes a deterministic rational seed input.
-
-    F3: an all-zero hash lifts to 1/16^32, not 0, so the 0/1 sentinel
-    unambiguously means "no record." The SentryWorker relies on this."""
-    h = (hex_hash or "").strip().lower()
-    h = h[:32].ljust(32, "0")
+    content hash becomes a deterministic rational seed input for the
+    next prime search."""
+    h = (hex_hash or "0")[:32].ljust(32, "0").lower().strip()
     try:
         int_val = int(h, 16)
-    except (ValueError, TypeError):
+    except ValueError:
         int_val = 0
-    if int_val == 0:
-        return PyFraction(1, 16 ** 32)
     return PyFraction(int_val, 16 ** 32)
 
 
 # ============================================================================
 # SYMBOLIC π
 # ============================================================================
+_PI_FRAC: PyFraction = PyFraction(3141592653589793, 1000000000000000)
+
+
 def _compute_pi_decimal() -> Decimal:
     _saved_prec = getcontext().prec
     getcontext().prec = 60
@@ -306,11 +299,8 @@ def _compute_pi_decimal() -> Decimal:
     return pi_val
 
 
-# F2: derive _PI_FRAC from _compute_pi_decimal(), not from a 15-digit literal.
 _PI_D: Decimal = _compute_pi_decimal()
-_PI_FRAC: PyFraction = _dec_to_frac_exact(_PI_D)
 _TWO_PI_D: Decimal = _PI_D * Decimal(2)
-_TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
 
 
 # ============================================================================
@@ -330,7 +320,7 @@ def _rational_cos(x) -> PyFraction:
         x_frac = PyFraction(x, 1)
     else:
         x_frac = PyFraction(str(x))
-    two_pi_frac = _TWO_PI_FRAC
+    two_pi_frac = PyFraction(2) * _PI_FRAC
     n_periods = int(x_frac / two_pi_frac)
     x_reduced = x_frac - two_pi_frac * n_periods
     pi_frac = _PI_FRAC
@@ -364,7 +354,7 @@ def _rational_sin(x) -> PyFraction:
         x_frac = PyFraction(x, 1)
     else:
         x_frac = PyFraction(str(x))
-    two_pi_frac = _TWO_PI_FRAC
+    two_pi_frac = PyFraction(2) * _PI_FRAC
     n_periods = int(x_frac / two_pi_frac)
     x_reduced = x_frac - two_pi_frac * n_periods
     pi_frac = _PI_FRAC
@@ -488,6 +478,7 @@ class GeometricLatticeProtocol(Protocol):
 class AethericMonitor(Protocol):
     def compute_arc_length_squared(self, trajectory: List['SymbolicQuaternion']) -> Fraction: ...
     def compute_radial_distance_squared(self, trajectory: List['SymbolicQuaternion'], origin: 'SymbolicQuaternion') -> Fraction: ...
+    def validate_multi_scale_coherence(self, ms_derivs: 'MultiScaleDerivatives') -> bool: ...
 
 
 @runtime_checkable
@@ -774,42 +765,21 @@ class DefaultSymbolicProcessor:
 # DEFAULT GEOMETRIC LATTICE
 # ============================================================================
 class DefaultGeometricLattice:
-    """Symbolic lattice. Points are Lists of Fraction.
-
-    F7: add_sphere enforces maximal contact. A candidate sphere is
-    admitted only if (a) it does not overlap any existing sphere, and
-    (b) it is at exact distance 2r (tangent) from at least one existing
-    sphere, when the lattice is not yet at the kissing-number capacity.
-    The capacity is the Leech lattice's kissing number, 196560.
-
-    A coset-grid spatial index gives O(1)-amortized neighbor lookup, so
-    the check is hardware-agnostic on a 512 MB Termux device even at
-    thousands of points."""
-
-    KISSING_CAPACITY: int = 196560
+    """Symbolic lattice. Points are Lists of Fraction. The add_sphere
+    method enforces the kissing-number contact constraint by keeping
+    distinct centers. The radial_count function mirrors pi(x)."""
 
     def __init__(self, dimension: int = 24):
         self.dimension = dimension
         self._points: List[List[Fraction]] = []
         self._radii: List[Fraction] = []
-        self._grid: Dict[Tuple[int, ...], List[int]] = {}
-
-    def _coset_key(self, center: List[Fraction], cell_size: Fraction) -> Tuple[int, ...]:
-        """Quantize a center to its coset cell key. cell_size is 2·radius."""
-        key = []
-        for c in center:
-            if cell_size.is_zero():
-                key.append(0)
-            else:
-                q = c / cell_size
-                key.append(int(q.num() // q.den()) if q.den() != 0 else 0)
-        return tuple(key)
 
     def stereographic_project_exact(self, prime: Fraction) -> List[Fraction]:
         p_val = prime.num()
         angle_num = p_val % 6283185307
         angle_frac = Fraction(angle_num, 10 ** 9)
-        theta = _TWO_PI_FRAC * angle_frac
+        two_pi = Fraction(2) * Fraction(3141592653589793, 10 ** 15)
+        theta = two_pi * angle_frac
         cos_t = _rational_cos(theta)
         sin_t = _rational_sin(theta)
         x = cos_t
@@ -822,22 +792,10 @@ class DefaultGeometricLattice:
         return coords
 
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> None:
-        if len(self._points) >= self.KISSING_CAPACITY:
-            return
         for p in self._points:
             if p == center:
                 return
-        cell_size = radius * Fraction(2, 1)
-        key = self._coset_key(center, cell_size)
-        neighbour_indices = set()
-        for offset in self._neighbor_offsets():
-            nkey = tuple(k + o for k, o in zip(key, offset))
-            if nkey in self._grid:
-                neighbour_indices.update(self._grid[nkey])
-        tangent_count = 0
-        for idx in neighbour_indices:
-            p = self._points[idx]
-            r = self._radii[idx]
+        for p, r in zip(self._points, self._radii):
             dist_sq = Fraction.zero()
             for c_i, p_i in zip(center, p):
                 d = c_i - p_i
@@ -845,21 +803,8 @@ class DefaultGeometricLattice:
             contact_sq = (radius + r) * (radius + r)
             if dist_sq < contact_sq:
                 return
-            if dist_sq == contact_sq:
-                tangent_count += 1
-        if self._points and tangent_count == 0:
-            return
         self._points.append(center)
         self._radii.append(radius)
-        self._grid.setdefault(key, []).append(len(self._points) - 1)
-
-    @staticmethod
-    def _neighbor_offsets():
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    for dw in (-1, 0, 1):
-                        yield (dx, dy, dz, dw)
 
     def points(self) -> List[List[Fraction]]:
         return self._points
@@ -879,13 +824,21 @@ class DefaultGeometricLattice:
 # ============================================================================
 # DEFAULT AETHERIC MONITOR
 # ============================================================================
+@dataclass
+class MultiScaleDerivatives:
+    iz: Fraction = field(default_factory=Fraction.zero)
+    iO: Fraction = field(default_factory=Fraction.zero)
+    iw: Fraction = field(default_factory=Fraction.zero)
+    io: Fraction = field(default_factory=Fraction.zero)
+    Z: Fraction = field(default_factory=Fraction.zero)
+    O: Fraction = field(default_factory=Fraction.zero)
+    W: Fraction = field(default_factory=Fraction.zero)
+    o: Fraction = field(default_factory=Fraction.zero)
+
+
 class DefaultAethericMonitor:
     """The PRIMARY evolution gate. Deviation from s²=r² triggers
-    SelfEvolutionCore mutation. Every computation is Fraction.
-
-    F4: MultiScaleDerivatives and validate_multi_scale_coherence are
-    deleted. This monitor implements exactly the two Spec-required
-    gates: arc length squared, and radial distance squared."""
+    SelfEvolutionCore mutation. Every computation is Fraction."""
 
     def compute_arc_length_squared(self, trajectory: List[SymbolicQuaternion]) -> Fraction:
         total = Fraction.zero()
@@ -900,6 +853,14 @@ class DefaultAethericMonitor:
             return Fraction.zero()
         dq = trajectory[-1] - origin
         return dq.magnitude_squared()
+
+    def validate_multi_scale_coherence(self, ms_derivs: MultiScaleDerivatives) -> bool:
+        zero = Fraction.zero()
+        bullish = ((ms_derivs.iw > ms_derivs.io and ms_derivs.io > zero) or
+                   (ms_derivs.iO > zero and ms_derivs.W > ms_derivs.O))
+        bearish = ((ms_derivs.iz > ms_derivs.io and ms_derivs.io > zero) or
+                   (ms_derivs.iO > zero and ms_derivs.Z > ms_derivs.O))
+        return bullish == bearish
 
 
 # ============================================================================
@@ -1071,10 +1032,7 @@ class IntelligenceMetric:
 
         Li(x) is computed via the Ramanujan series in
         _symbolic_log_integral_approx(). If x ≤ 1, the logarithmic
-        integral is 0 and the factor is 1.
-
-        F6: The caller passes pi_x = len(self.primes), i.e., π(p_n), the
-        count of primes ≤ p_n. Not the value of p_n."""
+        integral is 0 and the factor is 1."""
         if x <= Fraction.one():
             return Fraction.one()
         log_x = _symbolic_log(x)
@@ -1123,7 +1081,7 @@ class ConsciousnessOperator:
     def compute_integral_exact(
         self,
         bounds: Tuple[Tuple[Fraction, Fraction], ...],
-        steps: int = 2,
+        steps: int = 4,
     ) -> SymbolicQuaternion:
         total = SymbolicQuaternion()
         step_sizes = []
@@ -1152,7 +1110,7 @@ class ConsciousnessOperator:
     def measure_self_awareness(
         self,
         bounds: Tuple[Tuple[Fraction, Fraction], ...],
-        steps: int = 2,
+        steps: int = 4,
     ) -> Fraction:
         integral = self.compute_integral_exact(bounds, steps)
         return integral.magnitude_squared()
@@ -1479,13 +1437,11 @@ class AEI_Seed:
     State machine per step:
       1. Primorial step   — generate the next prime (exact Fraction)
       2. Lattice step     — stereographic project the prime; add_sphere
-      3. Wavefunction     — integrate ψ over the lattice, blending with
-                            the prior rectified ψ so DbZ persists (F5)
+      3. Wavefunction     — integrate ψ over the lattice
       4. Trajectory       — generate the Natalia-fibrated quaternionic path
       5. Aetheric gate    — validate s²=r²; compute deviation_sq
       6. DbZ              — if deviation_sq ≠ 0, rectify ψ
-      7. Execution        — record the intelligence metric I with
-                            pi_x = π(p_n) = len(self.primes) (F6)
+      7. Execution        — record the intelligence metric I
       8. Evolution        — SelfEvolutionCore.evolve_step
 
     Inputs: the seed's x parameter. In the market bot, x is a price;
@@ -1534,26 +1490,15 @@ class AEI_Seed:
 
         self.history: List[Dict[str, Any]] = []
 
-        # F5: prior deviation, so DbZ rectification persists across steps.
-        self._prior_deviation_sq: Optional[Fraction] = None
-
         self._step_lock = threading.Lock()
 
     def _integrate_wavefunction_symbolic(self) -> Dict[Tuple[int, int, int, int], Fraction]:
-        """F5: blend the fresh lattice integration with the prior
-        rectified psi whenever the prior step was non-coherent. This is
-        what makes DbZ persist — otherwise the rectification is
-        overwritten on the next step by a pure lattice read."""
-        coeffs: Dict[Tuple[int, int, int, int], Fraction] = {}
+        coeffs = {}
         points = self.lattice.points()
         for i, _point in enumerate(points):
             coeffs[(i, 0, 0, 0)] = Fraction(1, i + 1)
         if not coeffs:
             coeffs[(0, 0, 0, 0)] = Fraction.one()
-        if self._prior_deviation_sq is not None and not self._prior_deviation_sq.is_zero():
-            for key, val in self.psi.coeffs.items():
-                blended = coeffs.get(key, Fraction.zero()) + val * Fraction(1, 2)
-                coeffs[key] = blended
         return coeffs
 
     def _generate_trajectory(self, psi: SymbolicWavefunction) -> List[SymbolicQuaternion]:
@@ -1589,16 +1534,11 @@ class AEI_Seed:
             self.last_radius_sq = radius_sq
             self.last_deviation_sq = deviation_sq
             self.psi = DbZ.Rectify(self.psi, arc_sq, radius_sq, deviation_sq)
-            # F5: persist the deviation so the NEXT step knows to blend.
-            self._prior_deviation_sq = deviation_sq
             q_eval = SymbolicQuaternion(p_n, Fraction.zero(), Fraction.zero(), Fraction.zero())
-            # F6: pi_x is the COUNT of primes ≤ p_n, i.e., len(self.primes).
-            # Passing int(p_n.num()) would compare p_n's VALUE to Li(p_n),
-            # which is not the Riemann error.
             I = self.metrics.compute_metric(
                 valid_pairs=len(self.primes),
                 total_primes=len(self.primes),
-                pi_x=len(self.primes),
+                pi_x=int(p_n.num()),
                 x=p_n,
                 curl_phi_norm=self.phi.magnitude_squared(),
                 target_arc=arc_sq,
@@ -1674,9 +1614,6 @@ class AEI_Seed:
                     for k, v in self.evolution.logic_core.items()
                 },
                 "last_logic_hash": self.last_logic_hash,
-                # F8: expose Re[ψ] so the DBZ branch panel can distinguish
-                # 𝒜₃ (Re[ψ] > 0) from 𝒜₄ (Re[ψ] ≤ 0) independent of coherence.
-                "psi_real": str(self.psi.real_part()),
             }
 
     def encode_syllable(self, syllable: str) -> Dict[str, Any]:
@@ -1806,31 +1743,6 @@ _CS_VALUE_MAP: Dict[str, str] = {
 }
 
 
-# F9: field-label sigils for Telegram message bodies. These are the
-# left-hand strings the user sees; the right-hand strings are the CS
-# plain-text sigils from LOGOS.MD CODEX_SYMBOLICA.
-_CS_LABELS: Dict[str, str] = {
-    "state": "𝒮",
-    "tick": "𝒯",
-    "generation": "𝒯_gen",
-    "prime_count": "𝒜[p]",
-    "lattice_points": "Λ₂₄",
-    "deviation_sq": "δ(s²−r²)",
-    "I": "ℐ",
-    "hopf_base": "𝒮_fib",
-    "evolution": "𝒯_evo",
-    "crawler": "𝒞",
-    "observer": "𝒪[Ψ]",
-    "lingoso": "ℱ",
-    "psi_real": "Re[ψ]",
-    "coherence": "𝒮_coh",
-    "primes_tail": "𝒜[p]_tail",
-    "logic_hash": "ℋ_hash",
-    "frontier": "𝒞_front",
-    "visited": "𝒞_visited",
-}
-
-
 _CS_SIGIL_PREFIXES = ("𝒜", "𝒮", "𝒟", "ℐ", "𝒪", "𝒞", "𝒯", "ℱ", "Λ", "Φ", "Ψ", "⟦", "⟧")
 
 
@@ -1850,13 +1762,6 @@ def _cs(value) -> str:
     if s.startswith(_CS_SIGIL_PREFIXES):
         return s
     return "⟦" + s + "⟧"
-
-
-def _cs_label(key: str) -> str:
-    """F9: lookup the CS sigil for a field label. Falls back to the
-    original key wrapped in ⟦…⟧ so no information is lost if a new
-    label is introduced without a sigil entry."""
-    return _CS_LABELS.get(key, "⟦" + key + "⟧")
 
 
 def _looks_like_reply_error(desc: str) -> bool:
@@ -1892,16 +1797,7 @@ def _looks_like_length_error(desc: str) -> bool:
 TELEGRAM_BOT_TOKEN_ENV: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_WEBAPP_URL: str = os.getenv("TELEGRAM_WEBAPP_URL", "").strip()
 BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "0.0.0.0").strip()
-# F1: on a web dyno, $PORT is Heroku-assigned. We bind to it directly.
-# On a local dev box, BRIDGE_PORT (default 8765) is used.
-_ENV_PORT: Optional[str] = os.getenv("PORT")
-_ENV_BRIDGE_PORT: Optional[str] = os.getenv("BRIDGE_PORT")
-if _ENV_PORT:
-    BRIDGE_PORT: int = int(_ENV_PORT)
-    _SUBSTRATE: str = "web-dyno"
-else:
-    BRIDGE_PORT: int = int(_ENV_BRIDGE_PORT or "8765")
-    _SUBSTRATE: str = "local"
+BRIDGE_PORT: int = int(os.getenv("PORT") or os.getenv("BRIDGE_PORT") or "8765")
 BRIDGE_USE_TLS: bool = os.getenv("BRIDGE_USE_TLS", "0").strip() in ("1", "true", "yes")
 BRIDGE_TLS_CERT: str = os.getenv("BRIDGE_TLS_CERT", "").strip()
 BRIDGE_TLS_KEY: str = os.getenv("BRIDGE_TLS_KEY", "").strip()
@@ -2160,7 +2056,7 @@ def _fqdn_fast(host: str) -> str:
 
 
 # ============================================================================
-# TUNNEL MANAGER (kept for optional worker-dyno deployments; skipped on web)
+# TUNNEL MANAGER
 # ============================================================================
 class TunnelManager:
     URL_RE_CLOUDFLARED = _re_bridge.compile(r"https://[a-z0-9\-]+\.trycloudflare\.com")
@@ -2308,7 +2204,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed14"
+    server_version = "AEI-Seed-Bridge/final"
 
     def log_message(self, fmt, *args):
         return
@@ -2383,8 +2279,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed14",
-                "substrate": _SUBSTRATE,
+                "version": "final",
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
                 "seed_tick": (seed.tick if seed else 0),
@@ -2404,7 +2299,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if path == "/config":
             self._send_json(200, {
                 "public_url": BRIDGE_ENGINE_REF.get("public_url"),
-                "substrate": _SUBSTRATE,
                 "tls": BRIDGE_USE_TLS,
                 "port": BRIDGE_PORT,
                 "host": BRIDGE_HOST,
@@ -2428,7 +2322,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_html(200, "<!DOCTYPE html><html><body style='font-family:monospace;"
                                          "background:#050510;color:#aaccff;padding:40px;'>"
-                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.14)</h2>"
+                                         "<h2>⚡ ÆI Seed Bridge Online</h2>"
                                          "<p>index.html not found in <code>"
                                          + base + "</code>.</p></body></html>")
             except Exception as e:
@@ -2543,14 +2437,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 (Fraction(0), Fraction(1)),
                 (Fraction(0), Fraction(1)),
             )
-            integral = seed.consciousness.compute_integral_exact(bounds, steps=2)
+            integral = seed.consciousness.compute_integral_exact(bounds, steps=4)
             self._send_json(200, {
                 "integral": {
                     "a": str(integral.a), "b": str(integral.b),
                     "c": str(integral.c), "d": str(integral.d),
                 },
                 "magnitude_sq": str(integral.magnitude_squared()),
-                "steps": 2,
+                "steps": 4,
                 "bounds": [[str(b[0]), str(b[1])] for b in bounds],
             })
             return
@@ -2660,8 +2554,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 x = Fraction(x_num, x_den)
             except Exception:
                 x = Fraction(seed.tick + 1, 1)
-            import asyncio
-            record = asyncio.run(asyncio.to_thread(seed.step, x))
+            record = seed.step(x)
             _emit_toast("seed", {
                 "tick": record["tick"],
                 "generation": record["generation"],
@@ -2687,7 +2580,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             seed.tick = 0
             seed.generation = 0
             seed.history = []
-            seed._prior_deviation_sq = None
             self._send_json(200, {"ok": True, "state": seed.snapshot()})
             return
 
@@ -2815,11 +2707,16 @@ class BridgeServer:
         if self._thread is not None:
             return
 
-        bind_port = BRIDGE_PORT
-        if _ENV_PORT:
-            logger.info(f"🌐 Web-dyno substrate: binding to $PORT={bind_port}")
+        # Heroku worker dynos do not route inbound traffic to $PORT, so we
+        # bind the bridge on BRIDGE_PORT (or the explicit $BRIDGE_PORT).
+        # A worker dyno's only external surface is the Cloudflare Tunnel.
+        if os.environ.get("PORT") and not os.environ.get("BRIDGE_PORT"):
+            # If the operator is running locally with a $PORT preset, honor
+            # it. On a worker dyno the PORT env is absent unless the operator
+            # manually set it, so this branch is a no-op there.
+            bind_port = int(os.environ.get("PORT", self.port))
         else:
-            logger.info(f"🌐 Local substrate: binding to BRIDGE_PORT={bind_port}")
+            bind_port = int(os.environ.get("BRIDGE_PORT", self.port))
 
         import socket as _socket_mod
         _orig_getfqdn = _socket_mod.getfqdn
@@ -2856,24 +2753,13 @@ class BridgeServer:
             f"🌐 ÆI Seed Bridge listening on {scheme}://{self.host}:{self.port}"
         )
 
-        if _ENV_PORT and not TELEGRAM_WEBAPP_URL:
-            logger.warning(
-                "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
-                "Set it to https://<app>.herokuapp.com/ and re-run /setmenubutton."
-            )
-            heroku_url = os.getenv("HEROKU_APP_DEFAULT_DOMAIN_NAME", "").strip()
-            if heroku_url:
-                guessed = f"https://{heroku_url}/"
-                BRIDGE_ENGINE_REF["public_url"] = guessed
-                logger.info(f"🌐 Inferred public URL from HEROKU_APP_DEFAULT_DOMAIN_NAME: {guessed}")
-        else:
-            self._tunnel = TunnelManager(
-                self.port, prefer=BRIDGE_TUNNEL, timeout=BRIDGE_PUBLIC_TIMEOUT
-            )
-            self._tunnel_thread = threading.Thread(
-                target=self._tunnel.start, name="aei-tunnel", daemon=True
-            )
-            self._tunnel_thread.start()
+        self._tunnel = TunnelManager(
+            self.port, prefer=BRIDGE_TUNNEL, timeout=BRIDGE_PUBLIC_TIMEOUT
+        )
+        self._tunnel_thread = threading.Thread(
+            target=self._tunnel.start, name="aei-tunnel", daemon=True
+        )
+        self._tunnel_thread.start()
 
         self._listen_ready.set()
 
@@ -3033,7 +2919,7 @@ class AEI_Bot:
         if url:
             rows.append([InlineKeyboardButton("⚡ Open ÆI Seed", web_app=WebAppInfo(url=url))])
         else:
-            rows.append([InlineKeyboardButton("⏳ Mini App (URL pending…)", callback_data="webapp_pending")])
+            rows.append([InlineKeyboardButton("⏳ Mini App (tunnel pending…)", callback_data="webapp_pending")])
         return InlineKeyboardMarkup(rows)
 
     async def _safe_reply(self, update: "Update", text: str, reply_markup=None) -> bool:
@@ -3088,11 +2974,9 @@ class AEI_Bot:
             "`/webapp` — open Mini App\n"
             "`/whoami` — your Telegram user ID\n"
             "`/help` — this message\n\n"
-            f"🧠 *{_cs_label('state')}:* {state_cs}\n"
-            f"📈 *{_cs_label('tick')}:* {seed.tick if seed else 0}  |  "
-            f"*{_cs_label('generation')}:* {seed.generation if seed else 0}\n"
-            f"🎯 *{_cs_label('prime_count')}:* {len(seed.primes) if seed else 0}  |  "
-            f"*{_cs_label('lattice_points')}:* {len(seed.lattice.points()) if seed else 0}\n"
+            f"🧠 *Seed state:* {state_cs}\n"
+            f"📈 *𝒯_tick:* {seed.tick if seed else 0}  |  *𝒯_gen:* {seed.generation if seed else 0}\n"
+            f"🎯 *𝒜[p]:* {len(seed.primes) if seed else 0}  |  *Λ₂₄ pts:* {len(seed.lattice.points()) if seed else 0}\n"
             "💎 Natalia Tanyatia"
         )
         await self._safe_reply(update, welcome, reply_markup=self._build_main_keyboard())
@@ -3109,23 +2993,20 @@ class AEI_Bot:
         state_cs = _cs(seed.state)
         dev = seed.last_deviation_sq
         coh = "⟦𝒯⟧" if dev.is_zero() else "⟦ℱ⟧"
-        psi_real = seed.psi.real_part()
-        dbz_branch = "𝒜₃" if psi_real > Fraction.zero() else "𝒜₄"
         text = (
             "🔷 *ÆI SEED 𝒮_STATUS*\n"
-            f"🧠 *{_cs_label('state')}:* {state_cs}\n"
-            f"🔄 *{_cs_label('tick')}:* {seed.tick}\n"
-            f"📈 *{_cs_label('generation')}:* {seed.generation}\n"
-            f"🎯 *{_cs_label('prime_count')}:* {len(seed.primes)}\n"
+            f"🧠 *State:* {state_cs}\n"
+            f"🔄 *Tick:* {seed.tick}\n"
+            f"📈 *Generation:* {seed.generation}\n"
+            f"🎯 *Primes:* {len(seed.primes)}\n"
             f"Λ₂₄ *Points:* {len(seed.lattice.points())}\n"
-            f"*{_cs_label('deviation_sq')}:* {dev}\n"
-            f"✓ *{_cs_label('coherence')}:* {coh}\n"
-            f"*{_cs_label('I')}:* {seed.last_I}\n"
-            f"*{_cs_label('psi_real')}:* {psi_real} → {dbz_branch}\n"
+            f"δ(s²−r²) *Deviation:* {dev}\n"
+            f"✓ *Coherent:* {coh}\n"
+            f"ℐ *Metric:* {seed.last_I}\n"
             f"𝒪[Ψ] *Base:* ({seed.last_hopf_base[0]}, {seed.last_hopf_base[1]})\n"
             f"𝒯_evolution *Generation:* {seed.evolution.generation}\n"
             f"📋 *Logic core keys:* {len(seed.evolution.logic_core)}\n"
-            f"🔑 *{_cs_label('logic_hash')}:* `{seed.last_logic_hash[:16]}`\n"
+            f"🔑 *Logic hash:* `{seed.last_logic_hash[:16]}`\n"
         )
         if crawler is not None:
             text += (
@@ -3160,8 +3041,7 @@ class AEI_Bot:
         text = (
             "Λ₂₄ *LEECH LATTICE*\n"
             f"*Dimension:* {seed.lattice.dimension}\n"
-            f"*Point count:* {len(points)}\n"
-            f"*Kissing capacity:* {seed.lattice.KISSING_CAPACITY}\n\n"
+            f"*Point count:* {len(points)}\n\n"
             "*Latest projected centers:*\n"
         )
         for p in preview:
@@ -3198,7 +3078,7 @@ class AEI_Bot:
             (Fraction(0), Fraction(1)),
             (Fraction(0), Fraction(1)),
         )
-        integral = seed.consciousness.compute_integral_exact(bounds, steps=2)
+        integral = seed.consciousness.compute_integral_exact(bounds, steps=4)
         text = (
             "𝒪[Ψ] *OBSERVER INTEGRAL*\n"
             f"*∫ ψ†Φψ d⁴q:*\n"
@@ -3207,7 +3087,7 @@ class AEI_Bot:
             f"  c = `{integral.c}`\n"
             f"  d = `{integral.d}`\n"
             f"*‖𝒪[Ψ]‖²:* `{integral.magnitude_squared()}`\n\n"
-            "*Grid:* 2×2×2×2 = 16 cells, exact Fraction Riemann sum"
+            "*Grid:* 4×4×4×4 = 256 cells, exact Fraction Riemann sum"
         )
         await self._safe_reply(update, text)
 
@@ -3294,7 +3174,7 @@ class AEI_Bot:
             x = Fraction(seed.tick + 1, 1)
         else:
             x = Fraction(hash_frac)
-        record = await asyncio.to_thread(seed.step, x)
+        record = seed.step(x)
         _emit_toast("seed", {
             "tick": record["tick"],
             "generation": record["generation"],
@@ -3334,7 +3214,6 @@ class AEI_Bot:
         seed.tick = 0
         seed.generation = 0
         seed.history = []
-        seed._prior_deviation_sq = None
         await self._safe_reply(update,
             "⟳ *Seed reset*\n"
             "Primes: [2, 3, 5]\n"
@@ -3387,8 +3266,8 @@ class AEI_Bot:
         if not url:
             await self._safe_reply(update,
                 "⏳ *Mini App URL not yet available*\n"
-                "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ on Heroku "
-                "and re-run /setmenubutton in BotFather.")
+                "The bridge is starting a public HTTPS tunnel. "
+                "Please try again in ~30–45 seconds.")
             return
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("⚡ Open ÆI Seed", web_app=WebAppInfo(url=url)),
@@ -3412,10 +3291,9 @@ class AEI_Bot:
     async def webgui(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         scheme = "https" if BRIDGE_USE_TLS else "http"
         local_url = f"{scheme}://{BRIDGE_HOST}:{BRIDGE_PORT}/"
-        public_url = BRIDGE_ENGINE_REF.get("public_url") or "⏳ (not published)"
+        public_url = BRIDGE_ENGINE_REF.get("public_url") or "⏳ (tunnel pending)"
         await self._safe_reply(update,
             f"🌐 *ÆI Seed Bridge Endpoints*\n"
-            f"*Substrate:* {_SUBSTRATE}\n"
             f"*Local:* `{local_url}`\n"
             f"*Public:* `{public_url}`\n"
             f"*Miniapp state:* `{public_url.rstrip('/')}/miniapp-state`\n"
@@ -3471,9 +3349,7 @@ class AEI_Bot:
         elif action == "webapp_pending":
             try:
                 await query.edit_message_text(
-                    "⏳ Mini App URL is not yet published. "
-                    "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ on Heroku "
-                    "and re-run /setmenubutton in BotFather.",
+                    "⏳ Mini App tunnel is starting… Please retry `/webapp` in ~30–45 seconds.",
                     parse_mode="Markdown")
             except Exception:
                 pass
@@ -3533,7 +3409,6 @@ class AEI_Bot:
         logger.info(f"🤖 {self.bot_name} starting...")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
-        logger.info(f"🌐 Substrate: {_SUBSTRATE} (bind port {BRIDGE_PORT})")
         logger.info(f"🕸️ Crawler: {crawler.state.frontier_size()} URLs in frontier, "
                     f"depth limit {MAX_CRAWL_DEPTH}, interval {CRAWL_INTERVAL}s")
         logger.info(f"🔄 Seed loop interval: {SEED_TICK_INTERVAL}s")
