@@ -314,7 +314,7 @@ _PI_FRAC: PyFraction = _PI_HI
 _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
 _PI_ENCLOSURE_WIDTH: PyFraction = _PI_HI - _PI_LO
 _PI_ENCLOSURE_WIDTH_INV: PyFraction = (PyFraction(1, 1) / _PI_ENCLOSURE_WIDTH
-                                       if not _PI_ENCLOSURE_WIDTH.is_zero() else PyFraction(0, 1))
+                                       if _PI_ENCLOSURE_WIDTH != PyFraction(0, 1) else PyFraction(0, 1))
 
 
 # ============================================================================
