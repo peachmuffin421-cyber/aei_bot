@@ -405,12 +405,12 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
     return result
 
 # ============================================================================
-# AUDIT PATCH — CACHING FOR H12 FIX (P1) + HEALTH BYPASS
+# AUDIT PATCH — CACHING FOR H12 FIX (P1)
 # ============================================================================
 from functools import lru_cache
 _CACHED_LI: dict = {}
 _CACHED_LOG: dict = {}
-def _cached_log_integral(x):
+def _cached_log_integral(x: Fraction) -> Fraction:
     key = str(x._f)
     if key in _CACHED_LI:
         return _CACHED_LI[key]
@@ -420,7 +420,7 @@ def _cached_log_integral(x):
         _CACHED_LI.pop(next(iter(_CACHED_LI)))
     return v
 
-def _cached_symbolic_log(x):
+def _cached_symbolic_log(x: Fraction) -> Fraction:
     key = str(x._f)
     if key in _CACHED_LOG:
         return _CACHED_LOG[key]
@@ -429,18 +429,6 @@ def _cached_symbolic_log(x):
     if len(_CACHED_LOG) > 256:
         _CACHED_LOG.pop(next(iter(_CACHED_LOG)))
     return v
-
-# ensure health bypass
-def _require_auth_patched(handler) -> bool:
-    try:
-        from urllib.parse import urlparse
-        p = urlparse(handler.path).path
-        if p in ("/health", "/", "/favicon.ico"):
-            return True
-    except Exception:
-        pass
-    return None
-
 
 # ============================================================================
 # PROTOCOL DEFINITIONS
@@ -1956,11 +1944,6 @@ class CrawlerWorker:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
-        # extra: close sqlite connection quickly
-        try:
-            self.state._conn.close()
-        except Exception:
-            pass
     def snapshot(self) -> Dict[str, Any]:
         snap = self.state.snapshot()
         snap.update({
@@ -2027,11 +2010,8 @@ class SeedWorker:
         self._task = asyncio.create_task(self._loop())
     def stop(self):
         self._running = False
-        try:
-            if self._task and not self._task.done():
-                self._task.cancel()
-        except Exception:
-            pass
+        if self._task and not self._task.done():
+            self._task.cancel()
         try:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
@@ -2162,8 +2142,17 @@ class TunnelManager:
                 return url
         logger.warning("⚠️ No tunnel available. Telegram Mini App will require manual TELEGRAM_WEBAPP_URL.")
         return None
+    def stop_quick(self):
+        try:
+            if hasattr(self, '_httpd') and self._httpd:
+                self._httpd.shutdown()
+        except Exception:
+            pass
     def stop(self) -> None:
-        if self.process is None:
+        self.stop_quick()
+        if getattr(self, 'process', None) is None and not hasattr(self, 'process'):
+            pass
+        if hasattr(self, 'process') and self.process is None:
             return
         try:
             self.process.terminate()
@@ -2179,7 +2168,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed13-patched-r12"
+    server_version = "AEI-Seed-Bridge/final-ed13-patched"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -2588,7 +2577,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"error": "not_found", "path": path})
 def _require_auth(handler: "BridgeHandler") -> bool:
-    # AUDIT PATCH C3: /health must bypass auth
+    # AUDIT PATCH C3: /health must bypass auth to avoid H12 on Heroku health checks
     try:
         p = urlparse(handler.path).path
         if p in ("/health", "/", "/favicon.ico"):
@@ -2683,6 +2672,7 @@ class BridgeServer:
             self._listen_ok = False
             return
         self._listen_ok = True
+        BRIDGE_ENGINE_REF["bridge_server_ref"] = self
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="aei-bridge", daemon=True
         )
@@ -2748,21 +2738,10 @@ class BridgeServer:
             )
             drain_thread.start()
             drain_thread.join(timeout=1.0)
-        # AUDIT PATCH 13.2: instant shutdown for R12 - do not join, daemon threads will die on process exit
-        if self._httpd is not None:
-            try:
-                # shutdown() unblocks serve_forever immediately
-                self._httpd.shutdown()
-            except Exception:
-                pass
-            try:
-                self._httpd.server_close()
-            except Exception:
-                pass
-        # do not join - let daemon threads be killed by interpreter exit
-        self._thread = None
-        self._httpd = None
-        logger.info("🌐 ÆI Seed Bridge stopped (instant)")
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+        logger.info("🌐 ÆI Seed Bridge stopped")
 # ============================================================================
 # TELEGRAM BOT
 # ============================================================================
@@ -3387,51 +3366,37 @@ class AEI_Bot:
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
         async def _post_shutdown(application) -> None:
-            logger.info("PTB post_shutdown: stopping bridge + workers (R12-fast)")
+            logger.info("PTB post_shutdown: stopping bridge + workers")
 
-            # AUDIT PATCH 13.2: do not await long - stop everything synchronously and instantly
-            # Crawler
-            if self._crawler_worker is not None:
-                try:
-                    self._crawler_worker._running = False
-                    self._crawler_worker.stop()
-                except Exception:
-                    pass
-            # Seed
-            if self._seed_worker is not None:
-                try:
-                    self._seed_worker._running = False
-                    self._seed_worker.stop()
-                except Exception:
-                    pass
-            # Bridge - instant, no join
-            if self._bridge_server is not None:
-                try:
-                    self._bridge_server.stop()
-                except Exception:
-                    pass
-            # small yield to let shutdown() propagate
+            async def _stop_all() -> None:
+                if self._crawler_worker is not None:
+                    try:
+                        self._crawler_worker.stop()
+                    except Exception:
+                        pass
+                if self._seed_worker is not None:
+                    try:
+                        self._seed_worker.stop()
+                    except Exception:
+                        pass
+                if self._bridge_server is not None:
+                    try:
+                        self._bridge_server.stop()
+                    except Exception:
+                        pass
+
             try:
-                await asyncio.sleep(0.2)
+                await asyncio.wait_for(_stop_all(), timeout=8.0)
+            except asyncio.TimeoutError:
+                logger.warning("post_shutdown exceeded 8s; proceeding to interpreter exit")
             except Exception:
                 pass
-            logger.info("PTB post_shutdown: all workers signaled, exiting")
 
         try:
             self.application.post_shutdown = _post_shutdown
         except Exception:
             pass
-        # AUDIT PATCH: explicit stop_signals handling for Heroku SIGTERM, and close_loop=False to avoid hanging
-        import signal as _sig
-        try:
-            self.application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                stop_signals=(_sig.SIGTERM, _sig.SIGINT, _sig.SIGABRT),
-                close_loop=False,
-            )
-        except TypeError:
-            # older PTB version fallback
-            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 # ============================================================================
 # MAIN
@@ -3439,19 +3404,18 @@ class AEI_Bot:
 def main():
     import signal
     import os
-    # AUDIT PATCH 13.2: Heroku sends SIGTERM, PTB will handle via stop_signals, but install fallback that forces _exit if stuck
-    def _emergency_exit(signum, frame):
-        logger.warning(f"Emergency signal {signum} - forcing os._exit(0) to avoid R12")
+    def _sigterm_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        # Stop bridge server quickly to satisfy Heroku R12 30s deadline
         try:
-            os._exit(0)
+            bs = BRIDGE_ENGINE_REF.get('bridge_server_ref')
+            if bs:
+                bs.stop_quick()
         except Exception:
             pass
-    # second-chance handler after 25s - will be replaced by PTB's own handler
-    try:
-        signal.signal(signal.SIGTERM, _emergency_exit)
-        signal.signal(signal.SIGINT, _emergency_exit)
-    except Exception:
-        pass
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    signal.signal(signal.SIGINT, _sigterm_handler)
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         logger.error("   export TELEGRAM_BOT_TOKEN='YOUR_BOT_TOKEN'")
