@@ -3431,8 +3431,22 @@ def main():
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         sys.exit(1)
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
-    # R12 v16: run bot in daemon thread, keep main thread free to handle SIGTERM instantly
-    t = threading.Thread(target=bot.run, name="aei-bot-polling", daemon=True)
+    # R12 v16.1: run bot in daemon thread with its own event loop
+    def _bot_thread():
+        try:
+            import asyncio
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            except Exception:
+                pass
+            bot.run()
+        except Exception as e:
+            try:
+                print(f"Bot thread error: {e}")
+            except Exception:
+                pass
+    t = threading.Thread(target=_bot_thread, name="aei-bot-polling", daemon=True)
     t.start()
     # Main thread just waits - signal handler will os._exit immediately
     try:
