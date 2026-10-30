@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.13 (Audit-Patched: F1–F9, P1-11, P1-12, P1-13).
 """
-__version__ = "final-ed15-r12fix"
+__version__ = "final-ed16-r12-instant"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -2715,7 +2715,6 @@ class BridgeServer:
             self._tunnel_thread.start()
         self._listen_ready.set()
     def stop(self) -> None:
-        # R12-fix v15
         if self._tunnel is not None:
             try:
                 self._tunnel.stop()
@@ -3408,6 +3407,8 @@ class AEI_Bot:
 def main():
     import signal
     import os
+    import threading
+    # Main thread owns SIGTERM and must die instantly
     def _emergency_exit(signum, frame):
         try:
             os._exit(0)
@@ -3428,10 +3429,21 @@ def main():
         pass
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
-        logger.error("   export TELEGRAM_BOT_TOKEN='YOUR_BOT_TOKEN'")
         sys.exit(1)
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
-    bot.run()
+    # R12 v16: run bot in daemon thread, keep main thread free to handle SIGTERM instantly
+    t = threading.Thread(target=bot.run, name="aei-bot-polling", daemon=True)
+    t.start()
+    # Main thread just waits - signal handler will os._exit immediately
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    try:
+        os._exit(0)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()
