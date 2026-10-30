@@ -11,6 +11,7 @@ Version: Final Ed.13 (Audit-Patched: F1–F9).
 __version__ = "final-ed13"
 
 import asyncio
+import concurrent.futures
 import hashlib
 import hmac
 import json
@@ -1527,7 +1528,7 @@ class AEI_Seed:
         for k in range(10):
             t = Fraction(k, 10)
             q = SymbolicQuaternion(t, Fraction.zero(), Fraction.zero(), Fraction.zero())
-            q = q.apply_natalia_fibration(t, epsilon, iterations=25)
+            q = q.apply_natalia_fibration(t, epsilon, iterations=15)
             trajectory.append(q)
         return trajectory
 
@@ -2078,6 +2079,12 @@ class SeedWorker:
         self.crawler = crawler
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._executor: concurrent.futures.ThreadPoolExecutor = (
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="aei-seed-step",
+            )
+        )
 
     async def _loop(self):
         while self._running:
@@ -2087,8 +2094,9 @@ class SeedWorker:
                     x = Fraction(self.seed.tick, 1)
                 else:
                     x = Fraction(hash_frac)
+                loop = asyncio.get_running_loop()
                 record = await asyncio.wait_for(
-                    asyncio.to_thread(self.seed.step, x),
+                    loop.run_in_executor(self._executor, self.seed.step, x),
                     timeout=20.0,
                 )
                 _emit_toast("seed", {
@@ -2103,8 +2111,11 @@ class SeedWorker:
                 await asyncio.sleep(SEED_TICK_INTERVAL)
             except asyncio.CancelledError:
                 break
+            except asyncio.TimeoutError:
+                logger.warning("seed loop timeout: step exceeded 20s (queue starvation or slow relay)")
+                await asyncio.sleep(2.0)
             except Exception as e:
-                logger.warning(f"seed loop error: {e}")
+                logger.warning(f"seed loop error: {type(e).__name__}: {e}")
                 await asyncio.sleep(2.0)
 
     def start(self):
@@ -2117,6 +2128,10 @@ class SeedWorker:
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
 # ============================================================================
 # FQDN FAST-PATH
@@ -3529,6 +3544,10 @@ class AEI_Bot:
                     self._bridge_server.stop()
                 except Exception:
                     pass
+            try:
+                await asyncio.get_running_loop().shutdown_default_executor()
+            except Exception:
+                pass
 
         try:
             self.application.post_shutdown = _post_shutdown
