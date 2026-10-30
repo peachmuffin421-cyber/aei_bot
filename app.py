@@ -1258,7 +1258,7 @@ class CrawlerRelayClient:
     {url, title, content_hash, links, provider} as JSON. The relay
     does the network I/O; all crawl logic (frontier, visited set,
     seed injection) lives in app.py."""
-    def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 15,
+    def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 5,
                  max_retries: int = 3, total_budget_s: float = 20.0):
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
@@ -3419,20 +3419,23 @@ def main():
     import os
     def _emergency_exit(signum, frame):
         try:
-            logger.info(f"🚨 Emergency exit on signal {signum} -> os._exit(0)")
+            os._exit(0)
         except Exception:
             pass
+        import sys
         try:
-            import os as __o
-            __o._exit(0)
+            sys.exit(0)
         except Exception:
-            os._exit(0)
+            pass
     try:
         signal.signal(signal.SIGTERM, _emergency_exit)
         signal.signal(signal.SIGINT, _emergency_exit)
-        # also handle SIGABRT if possible
         try:
             signal.signal(signal.SIGABRT, _emergency_exit)
+        except Exception:
+            pass
+        try:
+            signal.signal(signal.SIGQUIT, _emergency_exit)
         except Exception:
             pass
     except Exception:
