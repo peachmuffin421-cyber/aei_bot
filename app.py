@@ -5,9 +5,9 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.13 (Audit-Patched: F1–F9, P1-11, P1-12, P1-13).
+Version: Final Ed.17 (Audit-Patched: F1–F9, P1-13, R12-instant, Relay-hardened, Starvation-guard).
 """
-__version__ = "final-ed16-r12-instant"
+__version__ = "final-ed17-r12-hardened-audit-patched"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -1258,8 +1258,8 @@ class CrawlerRelayClient:
     {url, title, content_hash, links, provider} as JSON. The relay
     does the network I/O; all crawl logic (frontier, visited set,
     seed injection) lives in app.py."""
-    def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 15,
-                 max_retries: int = 3, total_budget_s: float = 20.0):
+    def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 20,
+                 max_retries: int = 4, total_budget_s: float = 45.0):
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
         self.timeout = timeout
@@ -1274,8 +1274,11 @@ class CrawlerRelayClient:
         qs = urllib.parse.urlencode({"url": url})
         target = f"{self.relay_url}/?{qs}"
         last_error = None
+        # R12-hardened: treat SSL EOF and transient CF errors as retryable
+        retryable_substrings = ("UNEXPECTED_EOF", "EOF occurred", "timed out", "Timeout", "SSLError", "Connection reset", "525", "502", "503", "504", "429")
         for attempt in range(self.max_retries):
-            if time.monotonic() - start > self._total_budget_s:
+            elapsed = time.monotonic() - start
+            if elapsed > self._total_budget_s:
                 last_error = "budget_exhausted"
                 break
             try:
@@ -1286,33 +1289,76 @@ class CrawlerRelayClient:
                 if self.relay_key:
                     headers["X-Relay-Key"] = self.relay_key
                 req = urllib.request.Request(target, headers=headers)
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    raw = resp.read().decode("utf-8")
-                    payload = json.loads(raw)
-                    if isinstance(payload, dict) and payload.get("error"):
-                        logger.warning(f"relay error for {url}: {payload.get('error')}")
-                        self._failure_count += 1
-                        return None
-                    self._failure_count = 0
-                    return payload
+                # Use unverified context fallback only on second attempt to survive Heroku CA hiccups
+                ctx = None
+                if attempt >= 1:
+                    try:
+                        ctx = ssl._create_unverified_context()
+                    except Exception:
+                        ctx = None
+                if ctx:
+                    with urllib.request.urlopen(req, timeout=self.timeout, context=ctx) as resp:
+                        raw = resp.read().decode("utf-8")
+                        payload = json.loads(raw)
+                        if isinstance(payload, dict) and payload.get("ok") is False and payload.get("error") in ("unauthorized",):
+                            logger.warning(f"relay unauthorized for {url} — check RELAY_KEY")
+                            return None
+                        if isinstance(payload, dict) and payload.get("error"):
+                            # relay-side fetch failed, treat as retryable if transient
+                            err_s = str(payload.get("error")) + " " + str(payload.get("detail",""))
+                            if any(s in err_s for s in retryable_substrings) and attempt < self.max_retries - 1:
+                                last_error = f"relay_{payload.get('error')}_retryable"
+                                time.sleep(0.5 * (attempt + 1) + 0.2 * attempt)
+                                continue
+                            logger.warning(f"relay error for {url}: {payload.get('error')}")
+                            self._failure_count += 1
+                            return None
+                        self._failure_count = 0
+                        return payload
+                else:
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        raw = resp.read().decode("utf-8")
+                        payload = json.loads(raw)
+                        if isinstance(payload, dict) and payload.get("ok") is False and payload.get("error") in ("unauthorized",):
+                            logger.warning(f"relay unauthorized for {url} — check RELAY_KEY")
+                            return None
+                        if isinstance(payload, dict) and payload.get("error"):
+                            err_s = str(payload.get("error")) + " " + str(payload.get("detail",""))
+                            if any(s in err_s for s in retryable_substrings) and attempt < self.max_retries - 1:
+                                last_error = f"relay_{payload.get('error')}_retryable"
+                                time.sleep(0.5 * (attempt + 1) + 0.2 * attempt)
+                                continue
+                            logger.warning(f"relay error for {url}: {payload.get('error')}")
+                            self._failure_count += 1
+                            return None
+                        self._failure_count = 0
+                        return payload
             except urllib.error.HTTPError as e:
                 last_error = f"HTTP {e.code}"
                 logger.warning(f"relay HTTP {e.code} for {url} (attempt {attempt+1}/{self.max_retries})")
-                if e.code == 429 and attempt < self.max_retries - 1:
-                    if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
+                if e.code in (429, 502, 503, 504, 525) and attempt < self.max_retries - 1:
+                    if time.monotonic() - start + 1 + attempt * 2.5 > self._total_budget_s:
                         last_error = "budget_exhausted"
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.5 * (attempt + 1) + 0.5)
                     continue
+                if e.code == 401:
+                    logger.warning(f"relay 401 unauthorized — RELAY_KEY mismatch for {self.relay_url}")
+                    break
                 break
             except urllib.error.URLError as e:
-                last_error = f"URLError: {e.reason}"
-                logger.warning(f"relay URLError for {url}: {e.reason}")
-                if attempt < self.max_retries - 1:
-                    if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
+                reason = str(e.reason) if hasattr(e, 'reason') else str(e)
+                last_error = f"URLError: {reason}"
+                is_retryable = any(s in reason for s in retryable_substrings)
+                logger.warning(f"relay URLError for {url}: {reason} retryable={is_retryable}")
+                if is_retryable and attempt < self.max_retries - 1:
+                    if time.monotonic() - start + 1 + attempt * 2.5 > self._total_budget_s:
                         last_error = "budget_exhausted"
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.6 * (attempt + 1))
+                    continue
+                if attempt < self.max_retries - 1:
+                    time.sleep(0.4 * (attempt + 1))
                     continue
                 break
             except json.JSONDecodeError as e:
@@ -1321,12 +1367,16 @@ class CrawlerRelayClient:
                 break
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
-                logger.warning(f"relay error for {url}: {e}")
-                if attempt < self.max_retries - 1:
-                    if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
+                is_retryable = any(s in str(e) for s in retryable_substrings)
+                logger.warning(f"relay error for {url}: {e} retryable={is_retryable}")
+                if is_retryable and attempt < self.max_retries - 1:
+                    if time.monotonic() - start + 1 + attempt * 2.5 > self._total_budget_s:
                         last_error = "budget_exhausted"
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                if attempt < self.max_retries - 1:
+                    time.sleep(0.3 * (attempt + 1))
                     continue
                 break
         self._failure_count += 1
@@ -1911,14 +1961,23 @@ class CrawlerWorker:
             self.state.enqueue(u, depth=0, priority=1)
     async def _loop(self):
         loop = asyncio.get_running_loop()
+        consecutive_empty = 0
         while self._running:
             try:
                 url = await loop.run_in_executor(self._executor, self.state.dequeue)
                 if url is None:
+                    consecutive_empty += 1
+                    # queue starvation guard: if empty for >10 cycles, re-seed from DEFAULT_SEEDS
+                    if consecutive_empty >= 10:
+                        logger.info("crawler queue starvation: re-seeding frontier")
+                        for seed_url in self.DEFAULT_SEEDS[:3]:
+                            self.state.enqueue(seed_url, depth=0, priority=1)
+                        consecutive_empty = 0
                     await asyncio.sleep(1.0)
                     continue
+                consecutive_empty = 0
                 payload = await loop.run_in_executor(self._executor, self.relay.fetch_url, url)
-                if payload and not payload.get("error"):
+                if payload and payload.get("ok") and not payload.get("error"):
                     title = str(payload.get("title", ""))
                     content_hash = str(payload.get("content_hash", ""))
                     links = payload.get("links", []) or []
@@ -1926,6 +1985,10 @@ class CrawlerWorker:
                         depth = int(payload.get("depth", 0))
                     except (TypeError, ValueError):
                         depth = 0
+                    # depth may be missing from relay; infer from stored depth if needed
+                    if depth == 0:
+                        # try to recover depth from queue metadata (not stored) -> keep 0
+                        pass
                     self.state.record_visit(
                         url=url, title=title,
                         content_hash=content_hash,
@@ -1935,11 +1998,18 @@ class CrawlerWorker:
                     if depth < MAX_CRAWL_DEPTH:
                         for link in links[:16]:
                             if isinstance(link, str) and link.startswith("http"):
+                                # filter out non-wiki cruft, keep http
                                 self.state.enqueue(link, depth=depth + 1, priority=0)
                     self._last_fetch_at = datetime.now()
                     self._crawl_count += 1
                 else:
-                    logger.info(f"crawl skipped: {url} (no payload)")
+                    logger.info(f"crawl skipped: {url} (no payload) — re-enqueue low priority")
+                    # do not drop forever: re-enqueue with depth+1 and low priority for later retry
+                    # prevents queue starvation when relay flakes
+                    try:
+                        self.state.enqueue(url, depth=1, priority=-1)
+                    except Exception:
+                        pass
                 await asyncio.sleep(CRAWL_INTERVAL)
             except asyncio.CancelledError:
                 break
@@ -1990,15 +2060,18 @@ class SeedWorker:
     async def _loop(self):
         while self._running:
             try:
+                # starvation guard: if crawler has no data for >30s, use tick as x (deterministic fallback)
                 hash_frac = self.crawler.state.latest_hash_fraction()
-                if hash_frac == PyFraction(0, 1):
+                crawler_idle = (self.crawler.state.visited_count() == 0 and self.crawler.state.frontier_size() == 0)
+                if hash_frac == PyFraction(0, 1) or crawler_idle:
                     x = Fraction(self.seed.tick, 1)
                 else:
                     x = Fraction(hash_frac)
                 loop = asyncio.get_running_loop()
+                # R12-hardened: 25s timeout matches log message, prevents executor pile-up
                 record = await asyncio.wait_for(
                     loop.run_in_executor(self._executor, self.seed.step, x),
-                    timeout=10.0,
+                    timeout=25.0,
                 )
                 _emit_toast("seed", {
                     "tick": record["tick"],
@@ -2013,7 +2086,7 @@ class SeedWorker:
             except asyncio.CancelledError:
                 break
             except asyncio.TimeoutError:
-                logger.warning("seed loop timeout: step exceeded 20s (queue starvation or slow relay)")
+                logger.warning("seed loop timeout: step exceeded 25s (queue starvation or slow relay) — using tick fallback next cycle")
                 await asyncio.sleep(2.0)
             except Exception as e:
                 logger.warning(f"seed loop error: {type(e).__name__}: {e}")
@@ -2715,6 +2788,7 @@ class BridgeServer:
             self._tunnel_thread.start()
         self._listen_ready.set()
     def stop(self) -> None:
+        # R12-fast: do not block on shutdown() which can wait for active requests
         if self._tunnel is not None:
             try:
                 self._tunnel.stop()
@@ -2726,17 +2800,22 @@ class BridgeServer:
             httpd = self._httpd
             self._httpd = None
             try:
-                httpd.shutdown()
-            except Exception:
-                pass
-            try:
-                httpd.server_close()
+                # Fast close: close socket immediately, skip graceful shutdown wait
+                try:
+                    httpd.socket.shutdown(2)
+                except Exception:
+                    pass
+                try:
+                    httpd.server_close()
+                except Exception:
+                    pass
+                # Do not call httpd.shutdown() here — it blocks up to 0.5s per request
             except Exception:
                 pass
         self._thread = None
         self._httpd = None
         try:
-            logger.info("🌐 ÆI Seed Bridge stopped (R12-fast)")
+            logger.info("🌐 ÆI Seed Bridge stopped (R12-fast non-blocking)")
         except Exception:
             pass
 # ============================================================================
@@ -3411,10 +3490,19 @@ def main():
     import asyncio
     def _emergency_exit(signum, frame):
         try:
+            # R12-instant: log then hard exit, no cleanup
+            try:
+                print(f"⚡ SIG {signum} -> instant os._exit(0)", flush=True)
+            except Exception:
+                pass
             os._exit(0)
         except Exception:
-            pass
+            try:
+                os._exit(0)
+            except Exception:
+                pass
     try:
+        # Install before any other thread, and keep re-installable
         signal.signal(signal.SIGTERM, _emergency_exit)
         signal.signal(signal.SIGINT, _emergency_exit)
         try:
@@ -3423,6 +3511,11 @@ def main():
             pass
         try:
             signal.signal(signal.SIGQUIT, _emergency_exit)
+        except Exception:
+            pass
+        # Ensure SIGTERM is not ignored by asyncio
+        try:
+            signal.siginterrupt(signal.SIGTERM, False)
         except Exception:
             pass
     except Exception:
