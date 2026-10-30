@@ -12,6 +12,7 @@ __version__ = "final-ed13"
 
 import asyncio
 import concurrent.futures
+import concurrent.futures.thread
 import hashlib
 import hmac
 import json
@@ -29,6 +30,7 @@ import sqlite3
 import urllib.parse
 import urllib.request
 import urllib.error
+import weakref
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qsl
@@ -1451,6 +1453,36 @@ class CrawlerRelayClient:
         return self._failure_count
 
 # ============================================================================
+# DAEMON THREAD POOL EXECUTOR
+# ============================================================================
+class _DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
+    """A ThreadPoolExecutor whose worker threads are daemon, so the
+    interpreter can exit on SIGTERM even if a worker is still inside a
+    blocking call (e.g. urllib.urlopen on a slow drip). The worker is
+    killed by the OS at process exit; any in-flight work is lost and
+    re-run on the next boot. Safe because both the crawler and the seed
+    worker are idempotent at the transaction boundary (SQLite commits
+    atomically in record_visit; seed.step is pure on the lock)."""
+
+    def _adjust_thread_count(self) -> None:
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+        def weakref_cb(_, q=self._work_queue):
+            q.put(None)
+        num_threads = len(self._threads)
+        if num_threads < self._max_workers:
+            thread_name = '%s_%d' % (self._thread_name_prefix or self, num_threads)
+            t = threading.Thread(
+                name=thread_name,
+                target=concurrent.futures.thread._worker,
+                args=(weakref.ref(self, weakref_cb), self._work_queue,
+                      self._initializer, self._initargs),
+                daemon=True,
+            )
+            t.start()
+            self._threads.add(t)
+
+# ============================================================================
 # AEI_SEED — the GAIA seed loop
 # ============================================================================
 class AEI_Seed:
@@ -2016,7 +2048,7 @@ class CrawlerWorker:
         self._last_fetch_at: Optional[datetime] = None
         self._crawl_count = 0
         self._executor: concurrent.futures.ThreadPoolExecutor = (
-            concurrent.futures.ThreadPoolExecutor(
+            _DaemonThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="aei-crawl",
             )
@@ -2105,7 +2137,7 @@ class SeedWorker:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._executor: concurrent.futures.ThreadPoolExecutor = (
-            concurrent.futures.ThreadPoolExecutor(
+            _DaemonThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="aei-seed-step",
             )
