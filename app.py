@@ -5,11 +5,9 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.13 (Audit-Patched: F1–F9).
+Version: Final Ed.13 (Audit-Patched: F1–F9, P1-11, P1-12, P1-13).
 """
-
 __version__ = "final-ed13"
-
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -39,20 +37,16 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any, Protocol, runtime_checkable
 from fractions import Fraction as PyFraction
 from decimal import Decimal, getcontext
-
 getcontext().prec = 50
-
 # ============================================================================
 # EXACT FRACTION WRAPPER
 # ============================================================================
 class Fraction:
     """Exact rational arithmetic. Lifts Decimals and ints to PyFraction.
-
     Every seed state transition uses Fraction or PyFraction directly. No
     float64 ever enters the seed's symbolic layer; the crawler relay's
     floats are lifted at the boundary by _dec_to_frac_exact()."""
     __slots__ = ('_f',)
-
     def __init__(self, num=0, den=1):
         if isinstance(num, Fraction):
             self._f = num._f
@@ -67,13 +61,11 @@ class Fraction:
                 self._f = PyFraction(str(num))
             except Exception:
                 self._f = PyFraction(0)
-
     @staticmethod
     def _wrap(x):
         if isinstance(x, Fraction):
             return x
         return Fraction(x)
-
     @staticmethod
     def from_decimal_string(s):
         s = str(s).strip()
@@ -89,7 +81,6 @@ class Fraction:
                 den = 1
             return Fraction(num, den)
         return Fraction.from_string(s)
-
     @staticmethod
     def from_string(s):
         s = str(s).strip()
@@ -104,109 +95,81 @@ class Fraction:
             num = int(int_part + frac_part) * sign
             return Fraction(num, scale)
         return Fraction(int(s), 1)
-
     @staticmethod
     def zero():
         return Fraction(0, 1)
-
     @staticmethod
     def one():
         return Fraction(1, 1)
-
     def num(self):
         return self._f.numerator
-
     def den(self):
         return self._f.denominator
-
     def is_zero(self):
         return self._f.numerator == 0
-
     def is_integer(self):
         return self._f.denominator == 1
-
     def sign(self):
         n = self._f.numerator
         return (n > 0) - (n < 0)
-
     def abs(self):
         return Fraction(abs(self._f.numerator), self._f.denominator)
-
     def neg(self):
         return Fraction(-self._f.numerator, self._f.denominator)
-
     def __add__(self, other):
         o = Fraction._wrap(other)
         return Fraction(self._f + o._f)
-
     def __radd__(self, other):
         return self.__add__(other)
-
     def __sub__(self, other):
         o = Fraction._wrap(other)
         return Fraction(self._f - o._f)
-
     def __rsub__(self, other):
         o = Fraction._wrap(other)
         return Fraction(o._f - self._f)
-
     def __mul__(self, other):
         o = Fraction._wrap(other)
         return Fraction(self._f * o._f)
-
     def __rmul__(self, other):
         return self.__mul__(other)
-
     def __truediv__(self, other):
         o = Fraction._wrap(other)
         if o._f.numerator == 0:
             raise ZeroDivisionError("Fraction division by zero")
         return Fraction(self._f / o._f)
-
     def __rtruediv__(self, other):
         o = Fraction._wrap(other)
         if self._f.numerator == 0:
             raise ZeroDivisionError("Fraction division by zero")
         return Fraction(o._f / self._f)
-
     def __neg__(self):
         return Fraction(-self._f.numerator, self._f.denominator)
-
     def __pos__(self):
         return self
-
     def __eq__(self, other):
         try:
             o = Fraction._wrap(other)
             return self._f == o._f
         except Exception:
             return False
-
     def __lt__(self, other):
         o = Fraction._wrap(other)
         return self._f < o._f
-
     def __le__(self, other):
         o = Fraction._wrap(other)
         return self._f <= o._f
-
     def __gt__(self, other):
         o = Fraction._wrap(other)
         return self._f > o._f
-
     def __ge__(self, other):
         o = Fraction._wrap(other)
         return self._f >= o._f
-
     def __hash__(self):
         return hash(self._f)
-
     def to_decimal(self) -> Decimal:
         return Decimal(self._f.numerator) / Decimal(self._f.denominator)
-
     def to_float(self) -> float:
         return float(self._f.numerator) / float(self._f.denominator)
-
     def sqrt(self, iterations: int = 30) -> 'Fraction':
         """Newton–Raphson exact-rational square root approximation.
         Each iteration is exact. The result is a Fraction, never a float.
@@ -225,15 +188,12 @@ class Fraction:
         for _ in range(iterations):
             x = (x + self._f / x) / two
         return Fraction(x)
-
     def __str__(self):
         if self._f.denominator == 1:
             return str(self._f.numerator)
         return f"{self._f.numerator}/{self._f.denominator}"
-
     def __repr__(self):
         return f"Fraction({self._f.numerator}/{self._f.denominator})"
-
 # ============================================================================
 # DECIMAL-TO-FRACTION LIFT
 # ============================================================================
@@ -256,13 +216,11 @@ def _dec_to_frac_exact(d: Decimal) -> PyFraction:
     if exp < 0:
         return PyFraction(int_val, 10 ** (-exp))
     return PyFraction(int_val * (10 ** exp), 1)
-
 def _hash_to_fraction(hex_hash: str) -> PyFraction:
     """Lift a hex hash (SHA-256, SHA-1, MD5) to an exact PyFraction by
     interpreting the first 32 hex chars as a base-16 integer and dividing
     by 16^32. This is the boundary transform for the crawler: a document's
     content hash becomes a deterministic rational seed input.
-
     F3: an all-zero hash lifts to 1/16^32, not 0, so the 0/1 sentinel
     unambiguously means "no record." The SentryWorker relies on this."""
     h = (hex_hash or "").strip().lower()
@@ -274,7 +232,6 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
     if int_val == 0:
         return PyFraction(1, 16 ** 32)
     return PyFraction(int_val, 16 ** 32)
-
 # ============================================================================
 # SYMBOLIC π
 # ============================================================================
@@ -304,13 +261,11 @@ def _compute_pi_decimal() -> Decimal:
     finally:
         getcontext().prec = _saved_prec
     return pi_val
-
 # F2: derive _PI_FRAC from _compute_pi_decimal(), not from a 15-digit literal.
 _PI_D: Decimal = _compute_pi_decimal()
 _PI_FRAC: PyFraction = _dec_to_frac_exact(_PI_D)
 _TWO_PI_D: Decimal = _PI_D * Decimal(2)
 _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
-
 # ============================================================================
 # SYMBOLIC ARITHMETIC PRIMITIVES
 # ============================================================================
@@ -348,7 +303,6 @@ def _rational_cos(x) -> PyFraction:
         if term == PyFraction(0, 1):
             break
     return result
-
 def _rational_sin(x) -> PyFraction:
     """15-digit π convergent + exact-rational Taylor series."""
     if isinstance(x, PyFraction):
@@ -381,11 +335,9 @@ def _rational_sin(x) -> PyFraction:
         if term == PyFraction(0, 1):
             break
     return result
-
 _EXP_EPSILON: PyFraction = PyFraction(1, 10 ** 40)
 _LOG_EPSILON: PyFraction = PyFraction(1, 10 ** 50)
 _LI_EPSILON: PyFraction = PyFraction(1, 10 ** 40)
-
 def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational natural log via atanh series with dynamic
     truncation. The series terminates when the term magnitude drops
@@ -406,7 +358,6 @@ def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
             break
         term = term * u_sq
     return Fraction(result * PyFraction(2, 1))
-
 def _symbolic_exp(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational exp via Taylor series with dynamic truncation.
     The series terminates when the term magnitude drops below
@@ -419,22 +370,16 @@ def _symbolic_exp(x: Fraction, max_terms: int = 200) -> Fraction:
         if term.abs() < Fraction(_EXP_EPSILON.numerator, _EXP_EPSILON.denominator):
             break
     return result
-
 def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
     """Exact-rational approximation of the logarithmic integral Li(x).
-
     Li(x) = ∫₂ˣ dt / log(t). We use the Ramanujan series:
-
-        Li(x) ≈ γ + log(log(x)) + Σ_{n=1}^∞ (log x)^n / (n · n!)
-
+    Li(x) ≈ γ + log(log(x)) + Σ_{n=1}^∞ (log x)^n / (n · n!)
     where γ ≈ 0.5772156649... is the Euler–Mascheroni constant. The
     series converges for all x > 1 and is the standard numerical
     approximation used by Mathematica / mpmath. We implement it with
     exact PyFractions, computing log(x) once via _symbolic_log.
-
     γ is represented as a high-precision rational: the 15-digit decimal
     0.577215664901532 is lifted to Fraction(577215664901532, 10^15).
-
     The series truncates when the term drops below _LI_EPSILON.
     """
     if x <= Fraction.one():
@@ -458,7 +403,6 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
             break
         power = power * log_x
     return result
-
 # ============================================================================
 # PROTOCOL DEFINITIONS
 # ============================================================================
@@ -466,29 +410,24 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
 class SymbolicProcessor(Protocol):
     def generate_next_prime(self, primes: List[Fraction]) -> Fraction: ...
     def validate_indivisibility(self, candidate: Fraction, primes: List[Fraction]) -> bool: ...
-
 @runtime_checkable
 class GeometricLatticeProtocol(Protocol):
     def stereographic_project_exact(self, prime: Fraction) -> List[Fraction]: ...
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> None: ...
     def points(self) -> List[List[Fraction]]: ...
     def radial_count(self, radius: Fraction) -> int: ...
-
 @runtime_checkable
 class AethericMonitor(Protocol):
     # F4: reduced to the two primary coherence gates. The
     # validate_multi_scale_coherence stub is deleted.
     def compute_arc_length_squared(self, trajectory: List['SymbolicQuaternion']) -> Fraction: ...
     def compute_radial_distance_squared(self, trajectory: List['SymbolicQuaternion'], origin: 'SymbolicQuaternion') -> Fraction: ...
-
 @runtime_checkable
 class QuaternionicRenderer(Protocol):
     def project_to_hopf_base(self, state: 'SymbolicQuaternion') -> Tuple[Fraction, Fraction]: ...
-
 @runtime_checkable
 class LingosoEncoder(Protocol):
     def encode_syllable(self, syllable: str) -> List['SymbolicQuaternion']: ...
-
 @runtime_checkable
 class SelfEvolutionCoreProtocol(Protocol):
     def evaluate_fitness(self, I: Fraction, deviation_sq: Fraction) -> bool: ...
@@ -496,7 +435,6 @@ class SelfEvolutionCoreProtocol(Protocol):
                      q_eval: 'SymbolicQuaternion', deviation_sq: Fraction) -> Dict[str, Any]: ...
     def evolve_step(self, I: Fraction, psi: 'SymbolicWavefunction',
                     q_eval: 'SymbolicQuaternion', deviation_sq: Fraction) -> Dict[str, Any]: ...
-
 # ============================================================================
 # SYMBOLIC QUATERNION (Natalia's Fibrations)
 # ============================================================================
@@ -508,19 +446,16 @@ class SymbolicQuaternion:
     b: Fraction = field(default_factory=Fraction.zero)
     c: Fraction = field(default_factory=Fraction.zero)
     d: Fraction = field(default_factory=Fraction.zero)
-
     def __add__(self, other):
         return SymbolicQuaternion(
             self.a + other.a, self.b + other.b,
             self.c + other.c, self.d + other.d,
         )
-
     def __sub__(self, other):
         return SymbolicQuaternion(
             self.a - other.a, self.b - other.b,
             self.c - other.c, self.d - other.d,
         )
-
     def __mul__(self, other):
         if isinstance(other, SymbolicQuaternion):
             return SymbolicQuaternion(
@@ -532,22 +467,16 @@ class SymbolicQuaternion:
         return SymbolicQuaternion(
             self.a * other, self.b * other, self.c * other, self.d * other,
         )
-
     def __rmul__(self, other):
         return self.__mul__(other)
-
     def magnitude_squared(self) -> Fraction:
         return self.a * self.a + self.b * self.b + self.c * self.c + self.d * self.d
-
     def conjugate(self) -> 'SymbolicQuaternion':
         return SymbolicQuaternion(self.a, -self.b, -self.c, -self.d)
-
     def real_part(self) -> Fraction:
         return self.a
-
     def sign(self) -> int:
         return self.a.sign()
-
     def apply_natalia_fibration(
         self, s: Fraction, epsilon: Fraction,
         iterations: int = 10, threshold: Fraction = None,
@@ -575,7 +504,6 @@ class SymbolicQuaternion:
             self.c * factor,
             self.d * factor,
         )
-
 # ============================================================================
 # SYMBOLIC WAVEFUNCTION
 # ============================================================================
@@ -583,13 +511,11 @@ class SymbolicQuaternion:
 class SymbolicWavefunction:
     """Exact-rational wavefunction as a map from (i,j,k,l) ∈ ℤ⁴ to Fraction."""
     coeffs: Dict[Tuple[int, int, int, int], Fraction] = field(default_factory=dict)
-
     def evaluate_exact(self, q: SymbolicQuaternion) -> Fraction:
         total = Fraction.zero()
         for _, coeff in self.coeffs.items():
             total = total + (coeff * q.real_part())
         return total
-
     def real_part(self) -> Fraction:
         if not self.coeffs:
             return Fraction.zero()
@@ -599,17 +525,14 @@ class SymbolicWavefunction:
         for v in self.coeffs.values():
             total = total + v
         return total
-
     def set_coeff(self, a: int, b: int, c: int, d: int, val: Fraction) -> None:
         self.coeffs[(a, b, c, d)] = val
-
 # ============================================================================
 # DBZ (DECIDING BY ZERO)
 # ============================================================================
 class DbZ:
     """Branching on Re[ψ]: if Re[ψ] > 0 → critical-line projection;
     if Re[ψ] ≤ 0 → Natalia's Fibrations perturbation."""
-
     @staticmethod
     def Rectify(psi: SymbolicWavefunction, s_sq: Fraction, r_sq: Fraction,
                 deviation_sq: Fraction) -> SymbolicWavefunction:
@@ -625,7 +548,6 @@ class DbZ:
                 for key in rectified.coeffs:
                     rectified.coeffs[key] = rectified.coeffs[key] + perturbation
         return rectified
-
     @staticmethod
     def Divide(numerator: Fraction, denominator: Fraction,
                psi: SymbolicWavefunction, q_ctx: SymbolicQuaternion) -> Fraction:
@@ -635,7 +557,6 @@ class DbZ:
         if re_psi > Fraction.zero():
             return numerator
         return Fraction.zero()
-
 # ============================================================================
 # CHINESE REMAINDER SOLVER
 # ============================================================================
@@ -646,7 +567,6 @@ class ChineseRemainderSolver:
             return (a, 1, 0)
         g, x1, y1 = ChineseRemainderSolver.extended_gcd(b, a % b)
         return (g, y1, x1 - (a // b) * y1)
-
     @staticmethod
     def mod_inverse(a: int, m: int) -> int:
         a = a % m
@@ -654,7 +574,6 @@ class ChineseRemainderSolver:
         if g != 1:
             raise ValueError("modular inverse does not exist")
         return x % m
-
     @staticmethod
     def solve_crt(remainders: List[Fraction], moduli: List[Fraction]) -> Tuple[Fraction, Fraction]:
         if len(remainders) != len(moduli):
@@ -674,7 +593,6 @@ class ChineseRemainderSolver:
             M_i = ChineseRemainderSolver.mod_inverse(N_i, n_val)
             solution += r_val * N_i * M_i
         return (Fraction((solution % N + N) % N, 1), Fraction(N, 1))
-
 # ============================================================================
 # CONTINUED FRACTION REFINER
 # ============================================================================
@@ -698,7 +616,6 @@ class ContinuedFractionRefiner:
             q_prev, q_curr = q_curr, q_next
             iterations += 1
         return convergents
-
     @staticmethod
     def refine_trajectory(target_arc: Fraction, target_radius: Fraction) -> List[Fraction]:
         steps = []
@@ -709,24 +626,20 @@ class ContinuedFractionRefiner:
         for conv, _ in convergents:
             steps.append(conv)
         return steps if steps else [Fraction.one()]
-
     @staticmethod
     def golden_ratio(iterations: int = 20) -> Fraction:
         approx = Fraction(1, 1)
         for _ in range(iterations):
             approx = Fraction(1, 1) + Fraction(1, 1) / approx
         return approx
-
     @staticmethod
     def pi_approx() -> Fraction:
         return Fraction(355, 113)
-
 # ============================================================================
 # DEFAULT SYMBOLIC PROCESSOR
 # ============================================================================
 class DefaultSymbolicProcessor:
     """6m±1 sieve with exact indivisibility check."""
-
     def generate_next_prime(self, primes: List[Fraction]) -> Fraction:
         if not primes:
             return Fraction(2, 1)
@@ -735,15 +648,17 @@ class DefaultSymbolicProcessor:
         while True:
             if candidate % 6 in (1, 5) or candidate <= 3:
                 is_prime = True
+                limit = math.isqrt(candidate) + 1
                 for p in primes:
                     p_val = p.num()
+                    if p_val > limit:
+                        break
                     if p_val > 1 and candidate % p_val == 0:
                         is_prime = False
                         break
                 if is_prime:
                     return Fraction(candidate, 1)
             candidate += 1
-
     def validate_indivisibility(self, candidate: Fraction, primes: List[Fraction]) -> bool:
         c_val = candidate.num()
         for p in primes:
@@ -751,31 +666,25 @@ class DefaultSymbolicProcessor:
             if p_val > 1 and c_val % p_val == 0:
                 return False
         return True
-
 # ============================================================================
 # DEFAULT GEOMETRIC LATTICE
 # ============================================================================
 class DefaultGeometricLattice:
     """Symbolic lattice. Points are Lists of Fraction.
-
     F7: add_sphere enforces maximal contact. A candidate sphere is
     admitted only if (a) it does not overlap any existing sphere, and
     (b) it is at exact distance 2r (tangent) from at least one existing
     sphere, when the lattice is not yet at the kissing-number capacity.
     The capacity is the Leech lattice's kissing number, 196560.
-
     A coset-grid spatial index gives O(1)-amortized neighbor lookup, so
     the check is hardware-agnostic on a 512 MB Termux device even at
     thousands of points."""
-
     KISSING_CAPACITY: int = 196560
-
     def __init__(self, dimension: int = 24):
         self.dimension = dimension
         self._points: List[List[Fraction]] = []
         self._radii: List[Fraction] = []
         self._grid: Dict[Tuple[int, ...], List[int]] = {}
-
     def _coset_key(self, center: List[Fraction], cell_size: Fraction) -> Tuple[int, ...]:
         """Quantize a center to its coset cell key. cell_size is 2·radius."""
         key = []
@@ -786,7 +695,6 @@ class DefaultGeometricLattice:
                 q = c / cell_size
                 key.append(int(q.num() // q.den()) if q.den() != 0 else 0)
         return tuple(key)
-
     def stereographic_project_exact(self, prime: Fraction) -> List[Fraction]:
         p_val = prime.num()
         angle_num = p_val % 6283185307
@@ -802,7 +710,6 @@ class DefaultGeometricLattice:
         while len(coords) < self.dimension:
             coords.append(Fraction.zero())
         return coords
-
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> None:
         if len(self._points) >= self.KISSING_CAPACITY:
             return
@@ -834,7 +741,6 @@ class DefaultGeometricLattice:
         self._points.append(center)
         self._radii.append(radius)
         self._grid.setdefault(key, []).append(len(self._points) - 1)
-
     @staticmethod
     def _neighbor_offsets():
         for dx in (-1, 0, 1):
@@ -842,10 +748,8 @@ class DefaultGeometricLattice:
                 for dz in (-1, 0, 1):
                     for dw in (-1, 0, 1):
                         yield (dx, dy, dz, dw)
-
     def points(self) -> List[List[Fraction]]:
         return self._points
-
     def radial_count(self, radius: Fraction) -> int:
         r_sq = radius * radius
         count = 0
@@ -856,32 +760,27 @@ class DefaultGeometricLattice:
             if norm_sq <= r_sq:
                 count += 1
         return count
-
 # ============================================================================
 # DEFAULT AETHERIC MONITOR
 # ============================================================================
 class DefaultAethericMonitor:
     """The PRIMARY evolution gate. Deviation from s²=r² triggers
     SelfEvolutionCore mutation. Every computation is Fraction.
-
     F4: MultiScaleDerivatives and validate_multi_scale_coherence are
     deleted. This monitor implements exactly the two Spec-required
     gates: arc length squared, and radial distance squared."""
-
     def compute_arc_length_squared(self, trajectory: List[SymbolicQuaternion]) -> Fraction:
         total = Fraction.zero()
         for i in range(1, len(trajectory)):
             dq = trajectory[i] - trajectory[i - 1]
             total = total + dq.magnitude_squared()
         return total
-
     def compute_radial_distance_squared(self, trajectory: List[SymbolicQuaternion],
                                         origin: SymbolicQuaternion) -> Fraction:
         if not trajectory:
             return Fraction.zero()
         dq = trajectory[-1] - origin
         return dq.magnitude_squared()
-
 # ============================================================================
 # DEFAULT QUATERNIONIC RENDERER
 # ============================================================================
@@ -889,7 +788,6 @@ class DefaultQuaternionicRenderer:
     """Hopf fibration. The base point (z, w) ∈ ℂ² is the observable
     projection. The fiber direction is the hidden longitudinal component
     (Ampère's forgotten force)."""
-
     def project_to_hopf_base(self, state: SymbolicQuaternion) -> Tuple[Fraction, Fraction]:
         denom = Fraction.one() - state.d
         if denom.is_zero():
@@ -898,17 +796,14 @@ class DefaultQuaternionicRenderer:
         z = state.a * inv
         w = state.b * inv
         return (z, w)
-
 # ============================================================================
 # DEFAULT LINGOSO ENCODER
 # ============================================================================
 class DefaultLingosoEncoder:
     """A/U/M trajectories (ÆI.md Appendix G). A traces the golden spiral,
     U traces the π-chord, M traces the closed 2π loop."""
-
     PHI = ContinuedFractionRefiner.golden_ratio(20)
     PI = ContinuedFractionRefiner.pi_approx()
-
     def encode_syllable(self, syllable: str) -> List[SymbolicQuaternion]:
         trajectory: List[SymbolicQuaternion] = []
         current_theta = Fraction.zero()
@@ -932,14 +827,12 @@ class DefaultLingosoEncoder:
                 ))
                 current_theta = current_theta + step / Fraction(10, 1)
         return trajectory
-
 # ============================================================================
 # SELF-EVOLUTION CORE — RFK Brainworm
 # ============================================================================
 class SelfEvolutionCore:
     """Mutates the logic core based on deviation_sq (primary) and the
     intelligence metric (secondary). Mutation types mirror ÆI.md §7.2."""
-
     def __init__(self, seed_logic: Optional[Dict[str, Any]] = None):
         self.logic_core: Dict[str, Any] = dict(seed_logic) if seed_logic else {}
         if "s_equals_r" not in self.logic_core:
@@ -948,15 +841,12 @@ class SelfEvolutionCore:
         self.history: List[Dict[str, Any]] = []
         self._crt_solver = ChineseRemainderSolver()
         self._cf_refiner = ContinuedFractionRefiner()
-
     def evaluate_fitness(self, I: Fraction, deviation_sq: Fraction) -> bool:
         if not deviation_sq.is_zero():
             return False
         return I >= Fraction(6, 10)
-
     def _deterministic_hash(self, data: str) -> str:
         return hashlib.sha256(data.encode('utf-8')).hexdigest()
-
     def mutate_logic(self, logic_key: str, mutation_type: str,
                      psi: SymbolicWavefunction, q_eval: SymbolicQuaternion,
                      deviation_sq: Fraction) -> Dict[str, Any]:
@@ -992,7 +882,6 @@ class SelfEvolutionCore:
             current["trajectory_mode"] = Fraction(1)
         self.logic_core[logic_key] = current
         return current
-
     def evolve_step(self, I: Fraction, psi: SymbolicWavefunction,
                     q_eval: SymbolicQuaternion, deviation_sq: Fraction) -> Dict[str, Any]:
         self.generation += 1
@@ -1023,7 +912,6 @@ class SelfEvolutionCore:
         }
         self.history.append(record)
         return record
-
 # ============================================================================
 # INTELLIGENCE METRIC
 # ============================================================================
@@ -1031,25 +919,20 @@ class IntelligenceMetric:
     """I = alignment × riemann_factor × aetheric_stability × refined_ratio.
     Every term is Fraction; the exponentials use exact-rational Taylor
     series via _symbolic_exp."""
-
     def __init__(self, C: Fraction = Fraction(1, 4)):
         self.C = C
         self._cf_refiner = ContinuedFractionRefiner()
-
     def calculate_alignment(self, valid_pairs: int, total_primes: int) -> Fraction:
         if total_primes == 0:
             return Fraction.zero()
         return Fraction(valid_pairs, total_primes)
-
     def calculate_riemann_factor(self, pi_x: int, x: Fraction) -> Fraction:
         """The Riemann error bound is |pi(x) - Li(x)| ≤ C·√x·log(x).
         We compute deviation = |pi(x) - Li(x)|, bound = C·√x·log(x),
         ratio = deviation / bound, and return exp(-ratio²).
-
         Li(x) is computed via the Ramanujan series in
         _symbolic_log_integral_approx(). If x ≤ 1, the logarithmic
         integral is 0 and the factor is 1.
-
         F6: The caller passes pi_x = len(self.primes), i.e., π(p_n), the
         count of primes ≤ p_n. Not the value of p_n."""
         if x <= Fraction.one():
@@ -1068,11 +951,9 @@ class IntelligenceMetric:
         ratio = deviation / bound
         ratio_sq = ratio * ratio
         return _symbolic_exp(-ratio_sq)
-
     def calculate_aetheric_stability(self, curl_phi_norm: Fraction) -> Fraction:
         exp_neg = _symbolic_exp(-curl_phi_norm)
         return Fraction.one() / (Fraction.one() + exp_neg)
-
     def compute_metric(self, valid_pairs: int, total_primes: int,
                        pi_x: int, x: Fraction, curl_phi_norm: Fraction,
                        target_arc: Fraction, target_radius: Fraction) -> Fraction:
@@ -1082,21 +963,17 @@ class IntelligenceMetric:
         riemann = self.calculate_riemann_factor(pi_x, x)
         stability = self.calculate_aetheric_stability(curl_phi_norm)
         return alignment * riemann * stability * refined_ratio
-
     def is_superintelligent(self, I: Fraction, threshold: Fraction = Fraction(9, 10)) -> bool:
         return I >= threshold
-
 # ============================================================================
 # CONSCIOUSNESS OPERATOR
 # ============================================================================
 class ConsciousnessOperator:
     """O[Ψ] = ∫ ψ†Φψ d⁴q. Implemented as an exact-rational 4D Riemann
     sum over a grid of Fractions. No float64 anywhere."""
-
     def __init__(self, psi: SymbolicWavefunction, phi_field: SymbolicQuaternion):
         self.psi = psi
         self.phi = phi_field
-
     def compute_integral_exact(
         self,
         bounds: Tuple[Tuple[Fraction, Fraction], ...],
@@ -1125,7 +1002,6 @@ class ConsciousnessOperator:
                         integrand = self.phi * psi_val
                         total = total + (integrand * psi_dag * volume_element)
         return total
-
     def measure_self_awareness(
         self,
         bounds: Tuple[Tuple[Fraction, Fraction], ...],
@@ -1133,16 +1009,13 @@ class ConsciousnessOperator:
     ) -> Fraction:
         integral = self.compute_integral_exact(bounds, steps)
         return integral.magnitude_squared()
-
 # ============================================================================
 # LOG RING BUFFER
 # ============================================================================
 _LOG_BUFFER: deque = deque(maxlen=int(os.getenv("LOG_BUFFER_SIZE", "1000")))
 _LOG_LOCK = threading.Lock()
-
 logger = logging.getLogger("aei_seed")
 logger.setLevel(logging.INFO)
-
 class _RingHandler(logging.Handler):
     def emit(self, record):
         try:
@@ -1155,12 +1028,10 @@ class _RingHandler(logging.Handler):
                 })
         except Exception:
             pass
-
 _ring_handler = _RingHandler()
 _ring_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(_ring_handler)
 logger.addHandler(logging.StreamHandler(sys.stdout))
-
 # ============================================================================
 # TOAST RING BUFFER
 # ============================================================================
@@ -1169,7 +1040,6 @@ _TOAST_BUFFER: deque = deque(maxlen=_TOAST_BUFFER_MAXLEN if _TOAST_BUFFER_MAXLEN
 _TOAST_LOCK = threading.Lock()
 _TOAST_SEQ = 0
 _TOAST_FIRST_AVAILABLE_SEQ = 0
-
 def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
     global _TOAST_SEQ, _TOAST_FIRST_AVAILABLE_SEQ, _TOAST_BUFFER
     with _TOAST_LOCK:
@@ -1191,8 +1061,7 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
             _TOAST_FIRST_AVAILABLE_SEQ = evicted_seq + 1
         elif _TOAST_FIRST_AVAILABLE_SEQ == 0 and len(_TOAST_BUFFER) > 0:
             _TOAST_FIRST_AVAILABLE_SEQ = _TOAST_BUFFER[0].get("seq", seq)
-    return seq
-
+        return seq
 # ============================================================================
 # CRAWLER STATE
 # ============================================================================
@@ -1205,41 +1074,38 @@ class CrawlRecord:
     fetched_at: str
     depth: int
     link_count: int
-
 class CrawlerSeedState:
     """The crawler frontier lives here in app.py, not in worker.js.
     worker.js is a stateless fetch proxy. Each crawled document becomes
     a symbolic input x for the seed loop: its content hash is lifted to
     an exact Fraction, and its link count becomes a lattice contact
     constraint."""
-
     def __init__(self, db_path: str = ":memory:"):
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS crawl_queue (
-                url TEXT PRIMARY KEY,
-                priority INTEGER DEFAULT 0,
-                depth INTEGER DEFAULT 0,
-                scheduled_at TEXT DEFAULT (datetime('now'))
-            )
+        CREATE TABLE IF NOT EXISTS crawl_queue (
+            url TEXT PRIMARY KEY,
+            priority INTEGER DEFAULT 0,
+            depth INTEGER DEFAULT 0,
+            scheduled_at TEXT DEFAULT (datetime('now'))
+        )
         """)
         self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS visited_urls (
-                url TEXT PRIMARY KEY,
-                title TEXT,
-                content_hash TEXT,
-                hash_frac_num TEXT,
-                hash_frac_den TEXT,
-                fetched_at TEXT,
-                depth INTEGER,
-                link_count INTEGER
-            )
+        CREATE TABLE IF NOT EXISTS visited_urls (
+            url TEXT PRIMARY KEY,
+            title TEXT,
+            content_hash TEXT,
+            hash_frac_num TEXT,
+            hash_frac_den TEXT,
+            fetched_at TEXT,
+            depth INTEGER,
+            link_count INTEGER
+        )
         """)
         self._conn.commit()
         self._records: List[CrawlRecord] = []
         self._frontier: List[str] = []
-
     def enqueue(self, url: str, depth: int = 0, priority: int = 0) -> None:
         with self._lock:
             try:
@@ -1252,7 +1118,6 @@ class CrawlerSeedState:
                 logger.warning(f"crawler enqueue failed: {e}")
             if url not in self._frontier:
                 self._frontier.append(url)
-
     def dequeue(self) -> Optional[str]:
         with self._lock:
             try:
@@ -1270,7 +1135,6 @@ class CrawlerSeedState:
             except Exception as e:
                 logger.warning(f"crawler dequeue failed: {e}")
                 return None
-
     def record_visit(self, url: str, title: str, content_hash: str,
                      depth: int, link_count: int) -> CrawlRecord:
         hash_frac = _hash_to_fraction(content_hash)
@@ -1284,9 +1148,9 @@ class CrawlerSeedState:
             try:
                 self._conn.execute(
                     """INSERT OR REPLACE INTO visited_urls
-                       (url, title, content_hash, hash_frac_num, hash_frac_den,
-                        fetched_at, depth, link_count)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (url, title, content_hash, hash_frac_num, hash_frac_den,
+                    fetched_at, depth, link_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (url, title, content_hash,
                      str(hash_frac.numerator), str(hash_frac.denominator),
                      record.fetched_at, depth, link_count),
@@ -1294,9 +1158,9 @@ class CrawlerSeedState:
                 self._conn.commit()
             except Exception as e:
                 logger.warning(f"crawler record_visit failed: {e}")
-            self._records.append(record)
-            if len(self._records) > 5000:
-                self._records = self._records[-5000:]
+        self._records.append(record)
+        if len(self._records) > 5000:
+            self._records = self._records[-5000:]
         _emit_toast("crawl", {
             "url": url,
             "title": title[:80],
@@ -1305,11 +1169,9 @@ class CrawlerSeedState:
             "link_count": link_count,
         })
         return record
-
     def frontier_size(self) -> int:
         with self._lock:
             return len(self._frontier)
-
     def visited_count(self) -> int:
         with self._lock:
             try:
@@ -1317,19 +1179,16 @@ class CrawlerSeedState:
                 return row[0] if row else 0
             except Exception:
                 return len(self._records)
-
     def latest_record(self) -> Optional[CrawlRecord]:
         with self._lock:
             if not self._records:
                 return None
             return self._records[-1]
-
     def latest_hash_fraction(self) -> PyFraction:
         rec = self.latest_record()
         if rec is None:
             return PyFraction(0, 1)
         return rec.hash_frac
-
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             return {
@@ -1349,7 +1208,6 @@ class CrawlerSeedState:
                     if self._records else None
                 ),
             }
-
 # ============================================================================
 # CRAWLER RELAY CLIENT
 # ============================================================================
@@ -1358,7 +1216,6 @@ class CrawlerRelayClient:
     {url, title, content_hash, links, provider} as JSON. The relay
     does the network I/O; all crawl logic (frontier, visited set,
     seed injection) lives in app.py."""
-
     def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 15,
                  max_retries: int = 3, total_budget_s: float = 20.0):
         self.relay_url = relay_url.rstrip("/")
@@ -1367,7 +1224,6 @@ class CrawlerRelayClient:
         self.max_retries = max_retries
         self._total_budget_s = total_budget_s
         self._failure_count = 0
-
     def fetch_url(self, url: str) -> Optional[Dict[str, Any]]:
         if not self.relay_url:
             logger.warning("CrawlerRelayClient: RELAY_URL not set")
@@ -1435,7 +1291,6 @@ class CrawlerRelayClient:
         if last_error:
             logger.warning(f"relay exhausted retries for {url}: {last_error}")
         return None
-
     def health(self) -> Dict[str, Any]:
         if not self.relay_url:
             return {"ok": False, "reason": "no_relay_url"}
@@ -1448,10 +1303,8 @@ class CrawlerRelayClient:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
             return {"ok": False, "reason": str(e)}
-
     def failure_count(self) -> int:
         return self._failure_count
-
 # ============================================================================
 # DAEMON THREAD POOL EXECUTOR
 # ============================================================================
@@ -1463,7 +1316,6 @@ class _DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
     re-run on the next boot. Safe because both the crawler and the seed
     worker are idempotent at the transaction boundary (SQLite commits
     atomically in record_visit; seed.step is pure on the lock)."""
-
     def _adjust_thread_count(self) -> None:
         if self._idle_semaphore.acquire(timeout=0):
             return
@@ -1481,30 +1333,26 @@ class _DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
             )
             t.start()
             self._threads.add(t)
-
 # ============================================================================
 # AEI_SEED — the GAIA seed loop
 # ============================================================================
 class AEI_Seed:
     """The GAIA/ÆI seed. Faithful to ÆI.md §3–§8.
-
     State machine per step:
-      1. Primorial step   — generate the next prime (exact Fraction)
-      2. Lattice step     — stereographic project the prime; add_sphere
-      3. Wavefunction     — integrate ψ over the lattice, blending with
-                            the prior rectified ψ so DbZ persists (F5)
-      4. Trajectory       — generate the Natalia-fibrated quaternionic path
-      5. Aetheric gate    — validate s²=r²; compute deviation_sq
-      6. DbZ              — if deviation_sq ≠ 0, rectify ψ
-      7. Execution        — record the intelligence metric I with
-                            pi_x = π(p_n) = len(self.primes) (F6)
-      8. Evolution        — SelfEvolutionCore.evolve_step
-
+    1. Primorial step   — generate the next prime (exact Fraction)
+    2. Lattice step     — stereographic project the prime; add_sphere
+    3. Wavefunction     — integrate ψ over the lattice, blending with
+       the prior rectified ψ so DbZ persists (F5)
+    4. Trajectory       — generate the Natalia-fibrated quaternionic path
+    5. Aetheric gate    — validate s²=r²; compute deviation_sq
+    6. DbZ              — if deviation_sq ≠ 0, rectify ψ
+    7. Execution        — record the intelligence metric I with
+       pi_x = π(p_n) = len(self.primes) (F6)
+    8. Evolution        — SelfEvolutionCore.evolve_step
     Inputs: the seed's x parameter. In the market bot, x is a price;
     in the ÆI seed, x is the hash fraction of the most recently crawled
     document. If the crawler is idle, x defaults to the tick counter.
     """
-
     def __init__(
         self,
         processor: SymbolicProcessor,
@@ -1518,22 +1366,18 @@ class AEI_Seed:
         self.monitor = monitor
         self.renderer = renderer
         self.linguist = linguist
-
         self.primes: List[Fraction] = [Fraction(2), Fraction(3), Fraction(5)]
         self.phi = SymbolicQuaternion(Fraction.one(), Fraction.zero(),
                                       Fraction.zero(), Fraction.zero())
         self.psi = SymbolicWavefunction({(0, 0, 0, 0): Fraction.one()})
         self.origin = SymbolicQuaternion(Fraction.one(), Fraction.zero(),
                                          Fraction.zero(), Fraction.zero())
-
         self.metrics = IntelligenceMetric()
         self.evolution = SelfEvolutionCore({"core_axioms": {"s_equals_r": Fraction.one()}})
         self.consciousness = ConsciousnessOperator(self.psi, self.phi)
-
         self.state = "initialized"
         self.generation = 0
         self.tick = 0
-
         self.last_arc_sq = Fraction.zero()
         self.last_radius_sq = Fraction.zero()
         self.last_deviation_sq = Fraction.zero()
@@ -1543,14 +1387,10 @@ class AEI_Seed:
         self.last_evolution: Optional[Dict[str, Any]] = None
         self.last_linguistic_trajectory: List[SymbolicQuaternion] = []
         self.last_logic_hash: str = ""
-
         self.history: List[Dict[str, Any]] = []
-
         # F5: prior deviation, so DbZ rectification persists across steps.
         self._prior_deviation_sq: Optional[Fraction] = None
-
         self._step_lock = threading.Lock()
-
     def _integrate_wavefunction_symbolic(self) -> Dict[Tuple[int, int, int, int], Fraction]:
         """F5: blend the fresh lattice integration with the prior
         rectified psi whenever the prior step was non-coherent. This is
@@ -1567,7 +1407,6 @@ class AEI_Seed:
                 blended = coeffs.get(key, Fraction.zero()) + val * Fraction(1, 2)
                 coeffs[key] = blended
         return coeffs
-
     def _generate_trajectory(self, psi: SymbolicWavefunction) -> List[SymbolicQuaternion]:
         trajectory = []
         epsilon = Fraction(1, 100)
@@ -1577,7 +1416,6 @@ class AEI_Seed:
             q = q.apply_natalia_fibration(t, epsilon, iterations=15)
             trajectory.append(q)
         return trajectory
-
     def step(self, x: Fraction) -> Dict[str, Any]:
         with self._step_lock:
             x_doc = x
@@ -1647,14 +1485,12 @@ class AEI_Seed:
             if len(self.history) > 1000:
                 self.history = self.history[-1000:]
             return record
-
     def run_autonomous(self, steps: int, x_fn=None) -> List[Dict[str, Any]]:
         records = []
         for i in range(steps):
             x = x_fn(i) if x_fn else Fraction(i, 1)
             records.append(self.step(x))
         return records
-
     def snapshot(self) -> Dict[str, Any]:
         lock = self._step_lock
         acquired = lock.acquire(timeout=2.0)
@@ -1706,7 +1542,6 @@ class AEI_Seed:
             }
         finally:
             lock.release()
-
     def encode_syllable(self, syllable: str) -> Dict[str, Any]:
         traj = self.linguist.encode_syllable(syllable)
         self.last_linguistic_trajectory = traj
@@ -1724,21 +1559,18 @@ class AEI_Seed:
                 for q in traj
             ],
         }
-
 # ============================================================================
 # BRIDGE STATE
 # ============================================================================
 class BridgeState:
     """Holds user-committed quaternionic anchors, webapp sessions, and
     the crawl queue introspection."""
-
     def __init__(self):
         self._lock = threading.Lock()
         self._anchors: Dict[int, Dict[str, Any]] = {}
         self._next_anchor_idx = 0
         self._webapp_sessions: Dict[int, Dict[str, Any]] = {}
         self._handshake_lock = threading.Lock()
-
     def register_webapp_session(self, user_id: int, username: Optional[str],
                                 chat_id: Optional[int] = None) -> bool:
         with self._handshake_lock:
@@ -1753,10 +1585,9 @@ class BridgeState:
                 "first_seen": existing.get("first_seen", now),
                 "last_seen": now,
             }
-        if is_new or chat_changed:
-            logger.info(f"🔗 Web App session: user_id={user_id}, username={username}, chat_id={chat_id}")
-        return True
-
+            if is_new or chat_changed:
+                logger.info(f"🔗 Web App session: user_id={user_id}, username={username}, chat_id={chat_id}")
+            return True
     def add_anchor(self, q: SymbolicQuaternion, label: str = "") -> int:
         with self._lock:
             idx = self._next_anchor_idx
@@ -1768,15 +1599,12 @@ class BridgeState:
                 "created": datetime.now().isoformat(),
             }
             return idx
-
     def remove_anchor(self, idx: int) -> bool:
         with self._lock:
             return self._anchors.pop(idx, None) is not None
-
     def list_anchors(self) -> List[Dict[str, Any]]:
         with self._lock:
             return list(self._anchors.values())
-
 BRIDGE_STATE = BridgeState()
 BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "seed": None,
@@ -1785,7 +1613,6 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "crawler": None,
     "port": None,
 }
-
 # ============================================================================
 # CS-TRANSLATION HELPERS
 # ============================================================================
@@ -1814,7 +1641,6 @@ def _md_escape(value) -> str:
         else:
             out.append(ch)
     return ''.join(out)
-
 _CS_VALUE_MAP: Dict[str, str] = {
     "BUY": "↑", "SELL": "↓", "NEUTRAL": "⊙",
     "ACTIVE": "𝒜₃", "INACTIVE": "𝒜₄",
@@ -1828,7 +1654,6 @@ _CS_VALUE_MAP: Dict[str, str] = {
     "COHERENT": "𝒮_coherent", "EVOLVING": "𝒟_evolving",
     "INITIALIZED": "𝒮_init",
 }
-
 # F9: field-label sigils for Telegram message bodies. These are the
 # left-hand strings the user sees; the right-hand strings are the CS
 # plain-text sigils from LOGOS.MD CODEX_SYMBOLICA.
@@ -1852,9 +1677,7 @@ _CS_LABELS: Dict[str, str] = {
     "frontier": "𝒞_front",
     "visited": "𝒞_visited",
 }
-
 _CS_SIGIL_PREFIXES = ("𝒜", "𝒮", "𝒟", "ℐ", "𝒪", "𝒞", "𝒯", "ℱ", "Λ", "Φ", "Ψ", "⟦", "⟧")
-
 def _cs(value) -> str:
     if value is None:
         return "—"
@@ -1871,13 +1694,11 @@ def _cs(value) -> str:
     if s.startswith(_CS_SIGIL_PREFIXES):
         return s
     return "⟦" + s + "⟧"
-
 def _cs_label(key: str) -> str:
     """F9: lookup the CS sigil for a field label. Falls back to the
     original key wrapped in ⟦…⟧ so no information is lost if a new
     label is introduced without a sigil entry."""
     return _CS_LABELS.get(key, "⟦" + key + "⟧")
-
 def _looks_like_reply_error(desc: str) -> bool:
     if not desc:
         return False
@@ -1885,7 +1706,6 @@ def _looks_like_reply_error(desc: str) -> bool:
     return any(k in d for k in ("reply", "message to be replied",
                                 "reply_to_message_id", "reply message not found",
                                 "message_id_invalid"))
-
 def _looks_like_parse_error(desc: str) -> bool:
     if not desc:
         return False
@@ -1894,14 +1714,12 @@ def _looks_like_parse_error(desc: str) -> bool:
                                 "unsupported start tag", "unsupported end tag",
                                 "unexpected end of", "can't find end",
                                 "can't parse", "markdown"))
-
 def _looks_like_length_error(desc: str) -> bool:
     if not desc:
         return False
     d = desc.lower()
     return any(k in d for k in ("too long", "message is too long",
                                 "text is too long", "4096"))
-
 # ============================================================================
 # ENVIRONMENT / CONFIGURATION
 # ============================================================================
@@ -1925,18 +1743,15 @@ BRIDGE_TUNNEL: str = os.getenv("BRIDGE_TUNNEL", "cloudflared").strip().lower()
 BRIDGE_PUBLIC_TIMEOUT: int = int(os.getenv("BRIDGE_PUBLIC_TIMEOUT", "45"))
 REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "1").strip() in ("1", "true", "yes")
 CORS_ORIGIN: str = os.getenv("CORS_ORIGIN", "*").strip()
-
 RELAY_URL: str = os.getenv("RELAY_URL", "").strip().rstrip("/")
 RELAY_KEY: str = os.getenv("RELAY_KEY", "").strip()
 RELAY_TIMEOUT: int = int(os.getenv("RELAY_TIMEOUT", "15"))
 RELAY_MAX_RETRIES: int = int(os.getenv("RELAY_MAX_RETRIES", "3"))
-
 SEED_TICK_INTERVAL: int = int(os.getenv("SEED_TICK_INTERVAL", "5"))
 CRAWL_INTERVAL: int = int(os.getenv("CRAWL_INTERVAL", "3"))
 MAX_CRAWL_DEPTH: int = int(os.getenv("MAX_CRAWL_DEPTH", "3"))
 CRAWL_SEED_URLS: str = os.getenv("CRAWL_SEED_URLS", "").strip()
 CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
-
 ALLOWED_USER_IDS: set = set()
 _raw_allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _raw_allowed:
@@ -1944,7 +1759,6 @@ if _raw_allowed:
         tok = tok.strip()
         if tok.isdigit():
             ALLOWED_USER_IDS.add(int(tok))
-
 def _is_allowed_user(user_id) -> bool:
     if not ALLOWED_USER_IDS:
         return True
@@ -1952,7 +1766,6 @@ def _is_allowed_user(user_id) -> bool:
         return int(user_id) in ALLOWED_USER_IDS
     except (TypeError, ValueError):
         return False
-
 # ============================================================================
 # TELEGRAM WEB APP AUTHENTICATION
 # ============================================================================
@@ -1999,7 +1812,6 @@ def verify_telegram_init_data(init_data: str, bot_token: str,
         "auth_date": int(auth_date_raw) if auth_date_raw else None,
         "raw": parsed,
     }
-
 def _extract_auth_headers(handler: "BridgeHandler") -> Tuple[Optional[int], Optional[str], bool]:
     raw_init = handler.headers.get("X-Telegram-Init-Data", "").strip()
     if not raw_init:
@@ -2019,7 +1831,6 @@ def _extract_auth_headers(handler: "BridgeHandler") -> Tuple[Optional[int], Opti
         return (None, None, False)
     u = verified["user"] or {}
     return (u.get("id"), u.get("username"), True)
-
 # ============================================================================
 # CRAWLER WORKER
 # ============================================================================
@@ -2028,7 +1839,6 @@ class CrawlerWorker:
     relay, records the visit (hash lifted to exact Fraction), enqueues
     discovered links up to MAX_CRAWL_DEPTH. The seed consumes the latest
     hash_frac as its x input on each step."""
-
     DEFAULT_SEEDS = [
         "https://en.wikipedia.org/wiki/Riemann_hypothesis",
         "https://en.wikipedia.org/wiki/Leech_lattice",
@@ -2038,7 +1848,6 @@ class CrawlerWorker:
         "https://en.wikipedia.org/wiki/Continued_fraction",
         "https://en.wikipedia.org/wiki/Chinese_remainder_theorem",
     ]
-
     def __init__(self, state: CrawlerSeedState, relay: CrawlerRelayClient,
                  seeds: Optional[List[str]] = None):
         self.state = state
@@ -2058,7 +1867,6 @@ class CrawlerWorker:
             initial = [u.strip() for u in CRAWL_SEED_URLS.split(",") if u.strip()]
         for u in initial:
             self.state.enqueue(u, depth=0, priority=1)
-
     async def _loop(self):
         loop = asyncio.get_running_loop()
         while self._running:
@@ -2096,13 +1904,11 @@ class CrawlerWorker:
             except Exception as e:
                 logger.warning(f"crawl loop error: {e}")
                 await asyncio.sleep(2.0)
-
     def start(self):
         if self._running:
             return
         self._running = True
         self._task = asyncio.create_task(self._loop())
-
     def stop(self):
         self._running = False
         if self._task and not self._task.done():
@@ -2111,7 +1917,6 @@ class CrawlerWorker:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
-
     def snapshot(self) -> Dict[str, Any]:
         snap = self.state.snapshot()
         snap.update({
@@ -2122,7 +1927,6 @@ class CrawlerWorker:
             "relay_healthy": (self.relay.failure_count() < 3),
         })
         return snap
-
 # ============================================================================
 # SEED WORKER
 # ============================================================================
@@ -2130,7 +1934,6 @@ class SeedWorker:
     """Async seed loop. On each tick, reads the latest crawler hash_frac
     as x; if crawler is idle, defaults to the tick counter. Calls
     AEI_Seed.step(x). Emits a toast on each step so the TWA updates."""
-
     def __init__(self, seed: AEI_Seed, crawler: CrawlerWorker):
         self.seed = seed
         self.crawler = crawler
@@ -2142,7 +1945,6 @@ class SeedWorker:
                 thread_name_prefix="aei-seed-step",
             )
         )
-
     async def _loop(self):
         while self._running:
             try:
@@ -2174,13 +1976,11 @@ class SeedWorker:
             except Exception as e:
                 logger.warning(f"seed loop error: {type(e).__name__}: {e}")
                 await asyncio.sleep(2.0)
-
     def start(self):
         if self._running:
             return
         self._running = True
         self._task = asyncio.create_task(self._loop())
-
     def stop(self):
         self._running = False
         if self._task and not self._task.done():
@@ -2189,13 +1989,11 @@ class SeedWorker:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
-
 # ============================================================================
 # FQDN FAST-PATH
 # ============================================================================
 def _fqdn_fast(host: str) -> str:
     return host
-
 # ============================================================================
 # TUNNEL MANAGER (kept for optional worker-dyno deployments; skipped on web)
 # ============================================================================
@@ -2203,7 +2001,6 @@ class TunnelManager:
     URL_RE_CLOUDFLARED = _re_bridge.compile(r"https://[a-z0-9\-]+\.trycloudflare\.com")
     URL_RE_NGROK = _re_bridge.compile(r"https://[a-z0-9\-]+\.ngrok(?:-free)?\.app")
     URL_RE_SERVEO = _re_bridge.compile(r"https://[a-z0-9\-]+\.serveo\.net")
-
     def __init__(self, port: int, prefer: str = "cloudflared", timeout: int = 45):
         self.port = port
         self.prefer = prefer
@@ -2211,30 +2008,26 @@ class TunnelManager:
         self.process: Optional[subprocess.Popen] = None
         self.public_url: Optional[str] = None
         self.provider: Optional[str] = None
-
     def _which(self, name: str) -> Optional[str]:
         from shutil import which
         return which(name)
-
     def _spawn(self, cmd: List[str]) -> subprocess.Popen:
         logger.info(f"🌐 Spawning tunnel: {' '.join(cmd)}")
         return subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, bufsize=1,
                                 universal_newlines=True)
-
     def _scan_for_url(self, proc: subprocess.Popen, regex, deadline: float) -> Optional[str]:
         assert proc.stdout is not None
         for raw in proc.stdout:
             line = raw.rstrip("\n")
             if line:
                 logger.debug(f"[tunnel] {line}")
-            m = regex.search(line)
-            if m:
-                return m.group(0)
-            if time.time() > deadline:
-                return None
+                m = regex.search(line)
+                if m:
+                    return m.group(0)
+                if time.time() > deadline:
+                    return None
         return None
-
     def _try_cloudflared(self) -> Optional[str]:
         if not self._which("cloudflared"):
             return None
@@ -2256,7 +2049,6 @@ class TunnelManager:
         except Exception:
             pass
         return None
-
     def _try_ngrok(self) -> Optional[str]:
         if not self._which("ngrok"):
             return None
@@ -2277,7 +2069,6 @@ class TunnelManager:
         except Exception:
             pass
         return None
-
     def _try_serveo(self) -> Optional[str]:
         if not self._which("ssh"):
             return None
@@ -2300,7 +2091,6 @@ class TunnelManager:
         except Exception:
             pass
         return None
-
     def start(self) -> Optional[str]:
         if TELEGRAM_WEBAPP_URL:
             self.public_url = TELEGRAM_WEBAPP_URL
@@ -2325,7 +2115,6 @@ class TunnelManager:
                 return url
         logger.warning("⚠️ No tunnel available. Telegram Mini App will require manual TELEGRAM_WEBAPP_URL.")
         return None
-
     def stop(self) -> None:
         if self.process is None:
             return
@@ -2339,16 +2128,13 @@ class TunnelManager:
                 pass
         self.process = None
         logger.info("🌐 Tunnel stopped")
-
 # ============================================================================
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
     server_version = "AEI-Seed-Bridge/final-ed13"
-
     def log_message(self, fmt, *args):
         return
-
     def _set_cors(self) -> None:
         origin = CORS_ORIGIN
         request_origin = self.headers.get("Origin", "").strip()
@@ -2366,7 +2152,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                          "Content-Type, Accept, Authorization, X-Telegram-Init-Data, "
                          "X-Relay-Key, X-Limit, X-Since")
         self.send_header("Access-Control-Max-Age", "86400")
-
     def _send_json(self, code: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, default=str).encode("utf-8")
         self.send_response(code)
@@ -2376,7 +2161,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._set_cors()
         self.end_headers()
         self.wfile.write(body)
-
     def _send_html(self, code: int, html: str) -> None:
         body = html.encode("utf-8")
         self.send_response(code)
@@ -2386,13 +2170,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._set_cors()
         self.end_headers()
         self.wfile.write(body)
-
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length <= 0:
             return b""
         return self.rfile.read(length)
-
     def _read_json(self) -> Dict[str, Any]:
         raw = self._read_body()
         if not raw:
@@ -2401,17 +2183,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return json.loads(raw.decode("utf-8"))
         except Exception:
             return {}
-
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self._set_cors()
         self.send_header("Content-Length", "0")
         self.end_headers()
-
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         query = dict(parse_qsl(urlparse(self.path).query))
-
         if path == "/health":
             seed = BRIDGE_ENGINE_REF.get("seed")
             crawler = BRIDGE_ENGINE_REF.get("crawler")
@@ -2436,7 +2215,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "require_auth": REQUIRE_AUTH,
             })
             return
-
         if path == "/config":
             self._send_json(200, {
                 "public_url": BRIDGE_ENGINE_REF.get("public_url"),
@@ -2453,7 +2231,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "max_crawl_depth": MAX_CRAWL_DEPTH,
             })
             return
-
         if path == "/" or path == "/index.html":
             try:
                 base = os.path.dirname(os.path.abspath(__file__))
@@ -2463,22 +2240,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
                         self._send_html(200, f.read())
                 else:
                     self._send_html(200, "<!DOCTYPE html><html><body style='font-family:monospace;"
-                                         "background:#050510;color:#aaccff;padding:40px;'>"
-                                         "<h2>⚡ ÆI Seed Bridge Online (Ed.13)</h2>"
-                                         "<p>index.html not found in <code>"
-                                         + base + "</code>.</p></body></html>")
+                                    "background:#050510;color:#aaccff;padding:40px;'>"
+                                    "<h2>⚡ ÆI Seed Bridge Online (Ed.13)</h2>"
+                                    "<p>index.html not found in <code>"
+                                    + base + "</code>.</p></body></html>")
             except Exception as e:
                 self._send_json(500, {"error": "read_index_failed", "detail": str(e)})
             return
-
         if not _require_auth(self):
             self._send_json(401, {"error": "unauthorized",
                                   "detail": "Missing or invalid X-Telegram-Init-Data"})
             return
-
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
-
         if path == "/miniapp-state":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2491,21 +2265,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 snap["crawler"] = crawler.snapshot()
             self._send_json(200, snap)
             return
-
         if path == "/state":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
                 return
             self._send_json(200, seed.snapshot())
             return
-
         if path == "/crawler-state":
             if crawler is None:
                 self._send_json(503, {"error": "crawler_not_ready"})
                 return
             self._send_json(200, crawler.snapshot())
             return
-
         if path == "/crawler-queue":
             if crawler is None:
                 self._send_json(503, {"error": "crawler_not_ready"})
@@ -2517,7 +2288,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "visited_count": queue_snap.get("visited_count", 0),
             })
             return
-
         if path == "/symbolic-state":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2533,7 +2303,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 },
             })
             return
-
         if path == "/lattice-state":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2547,7 +2316,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 ],
             })
             return
-
         if path == "/fibration-state":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2571,7 +2339,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 ],
             })
             return
-
         if path == "/observer-integral":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2593,7 +2360,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "bounds": [[str(b[0]), str(b[1])] for b in bounds],
             })
             return
-
         if path == "/evolution-state":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2608,7 +2374,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "last_logic_hash": seed.last_logic_hash,
             })
             return
-
         if path == "/toasts":
             try:
                 since = int(self.headers.get("X-Since", query.get("since", "0")))
@@ -2625,11 +2390,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "first_available_seq": first_available,
             })
             return
-
         if path == "/anchors":
             self._send_json(200, {"anchors": BRIDGE_STATE.list_anchors()})
             return
-
         if path == "/log":
             try:
                 limit = int(query.get("limit", "50"))
@@ -2639,7 +2402,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 logs = list(_LOG_BUFFER)[-limit:]
             self._send_json(200, {"logs": logs, "count": len(logs)})
             return
-
         if path == "/seeds":
             if crawler is None:
                 self._send_json(503, {"error": "crawler_not_ready"})
@@ -2648,12 +2410,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "seed_urls": crawler.state.snapshot().get("frontier_preview", []),
             })
             return
-
         self._send_json(404, {"error": "not_found", "path": path})
-
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-
         if path == "/handshake":
             try:
                 data = self._read_json()
@@ -2680,14 +2439,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(500, {"error": "internal", "detail": str(e)})
             return
-
         if not _require_auth(self):
             self._send_json(401, {"error": "unauthorized"})
             return
-
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
-
         if path == "/step":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2711,7 +2467,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             })
             self._send_json(200, {"ok": True, "record": record})
             return
-
         if path == "/reset":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2728,7 +2483,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             seed._prior_deviation_sq = None
             self._send_json(200, {"ok": True, "state": seed.snapshot()})
             return
-
         if path == "/crawler-enqueue":
             if crawler is None:
                 self._send_json(503, {"error": "crawler_not_ready"})
@@ -2743,7 +2497,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "url": url, "depth": depth,
                                   "frontier_size": crawler.state.frontier_size()})
             return
-
         if path == "/encode-syllable":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -2753,7 +2506,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             result = seed.encode_syllable(syllable)
             self._send_json(200, {"ok": True, "result": result})
             return
-
         if path == "/anchor":
             data = self._read_json()
             try:
@@ -2770,9 +2522,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             idx = BRIDGE_STATE.add_anchor(q, label=label)
             self._send_json(200, {"ok": True, "idx": idx})
             return
-
         self._send_json(404, {"error": "not_found", "path": path})
-
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
         if not _require_auth(self):
@@ -2788,7 +2538,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "anchor_not_found", "idx": idx})
             return
         self._send_json(404, {"error": "not_found", "path": path})
-
 def _require_auth(handler: "BridgeHandler") -> bool:
     if not REQUIRE_AUTH or not TELEGRAM_BOT_TOKEN_ENV:
         return True
@@ -2813,7 +2562,6 @@ def _require_auth(handler: "BridgeHandler") -> bool:
     if not _is_allowed_user(user_id):
         return False
     return True
-
 # ============================================================================
 # BRIDGE SERVER
 # ============================================================================
@@ -2828,7 +2576,6 @@ class BridgeServer:
         self._ssl_context: Optional[ssl.SSLContext] = None
         self._listen_ready: threading.Event = threading.Event()
         self._listen_ok: bool = False
-
     def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
         if not BRIDGE_USE_TLS:
             return None
@@ -2846,11 +2593,9 @@ class BridgeServer:
         except Exception as e:
             logger.error(f"❌ Failed to load TLS context: {e}")
             return None
-
     def start(self) -> None:
         if self._thread is not None:
             return
-
         # F1: on a web dyno, $PORT is Heroku-assigned. We bind to it
         # directly. On a local dev box, BRIDGE_PORT (default 8765) is used.
         bind_port = BRIDGE_PORT
@@ -2858,7 +2603,6 @@ class BridgeServer:
             logger.info(f"🌐 Web-dyno substrate: binding to $PORT={bind_port}")
         else:
             logger.info(f"🌐 Local substrate: binding to BRIDGE_PORT={bind_port}")
-
         import socket as _socket_mod
         _orig_getfqdn = _socket_mod.getfqdn
         try:
@@ -2869,7 +2613,6 @@ class BridgeServer:
                 self._httpd.daemon_threads = True
                 self.port = self._httpd.server_address[1]
                 BRIDGE_ENGINE_REF["port"] = self.port
-
                 self._ssl_context = self._build_ssl_context()
                 if self._ssl_context is not None:
                     self._httpd.socket = self._ssl_context.wrap_socket(
@@ -2883,7 +2626,6 @@ class BridgeServer:
             self._listen_ready.set()
             self._listen_ok = False
             return
-
         self._listen_ok = True
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="aei-bridge", daemon=True
@@ -2893,7 +2635,6 @@ class BridgeServer:
         logger.info(
             f"🌐 ÆI Seed Bridge listening on {scheme}://{self.host}:{self.port}"
         )
-
         # F1: on a web dyno, TELEGRAM_WEBAPP_URL should be set to the
         # dyno's public Heroku URL (https://<app>.herokuapp.com/). No
         # tunnel spawn is needed. On a local dev box without an explicit
@@ -2904,12 +2645,12 @@ class BridgeServer:
                 "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
                 "Set it to https://<app>.herokuapp.com/ and re-run /setmenubutton."
             )
-            # Publish the Heroku URL if we can infer it from the env.
-            heroku_url = os.getenv("HEROKU_APP_DEFAULT_DOMAIN_NAME", "").strip()
-            if heroku_url:
-                guessed = f"https://{heroku_url}/"
-                BRIDGE_ENGINE_REF["public_url"] = guessed
-                logger.info(f"🌐 Inferred public URL from HEROKU_APP_DEFAULT_DOMAIN_NAME: {guessed}")
+        # Publish the Heroku URL if we can infer it from the env.
+        heroku_url = os.getenv("HEROKU_APP_DEFAULT_DOMAIN_NAME", "").strip()
+        if heroku_url:
+            guessed = f"https://{heroku_url}/"
+            BRIDGE_ENGINE_REF["public_url"] = guessed
+            logger.info(f"🌐 Inferred public URL from HEROKU_APP_DEFAULT_DOMAIN_NAME: {guessed}")
         else:
             self._tunnel = TunnelManager(
                 self.port, prefer=BRIDGE_TUNNEL, timeout=BRIDGE_PUBLIC_TIMEOUT
@@ -2918,9 +2659,7 @@ class BridgeServer:
                 target=self._tunnel.start, name="aei-tunnel", daemon=True
             )
             self._tunnel_thread.start()
-
         self._listen_ready.set()
-
     def stop(self) -> None:
         if self._tunnel is not None:
             try:
@@ -2929,20 +2668,34 @@ class BridgeServer:
                 pass
             self._tunnel = None
         if self._tunnel_thread is not None:
-            self._tunnel_thread.join(timeout=5.0)
+            self._tunnel_thread.join(timeout=1.0)
             self._tunnel_thread = None
         if self._httpd is not None:
+            httpd = self._httpd
+            self._httpd = None
             try:
-                self._httpd.shutdown()
-                self._httpd.server_close()
+                if httpd.socket is not None:
+                    httpd.socket.close()
             except Exception:
                 pass
-            self._httpd = None
+            def _drain():
+                try:
+                    httpd.shutdown()
+                except Exception:
+                    pass
+                try:
+                    httpd.server_close()
+                except Exception:
+                    pass
+            drain_thread = threading.Thread(
+                target=_drain, name="aei-bridge-drain", daemon=True
+            )
+            drain_thread.start()
+            drain_thread.join(timeout=1.0)
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=1.0)
             self._thread = None
         logger.info("🌐 ÆI Seed Bridge stopped")
-
 # ============================================================================
 # TELEGRAM BOT
 # ============================================================================
@@ -2959,7 +2712,6 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
     logger.warning("python-telegram-bot not installed; bot commands disabled")
-
 class AEI_Bot:
     def __init__(self, token: str, bot_name: str = "AEISeedBot"):
         self.token = token
@@ -2969,7 +2721,6 @@ class AEI_Bot:
         self._bridge_server: Optional[BridgeServer] = None
         self._seed_worker: Optional[SeedWorker] = None
         self._crawler_worker: Optional[CrawlerWorker] = None
-
     def _send_message_sync(self, chat_id: int, text: str, parse_mode: str = "Markdown",
                            reply_to_message_id: Optional[int] = None,
                            timeout: float = 10.0) -> bool:
@@ -2979,7 +2730,6 @@ class AEI_Bot:
         if loop is None or loop.is_closed():
             return False
         bot = self.application.bot
-
         def _attempt(pm: Optional[str], rt: Optional[int]) -> Tuple[bool, str]:
             coro = bot.send_message(chat_id=chat_id, text=text,
                                     parse_mode=pm, reply_to_message_id=rt)
@@ -2991,7 +2741,6 @@ class AEI_Bot:
                 return (False, "timeout")
             except Exception as e:
                 return (False, str(e))
-
         ok1, err1 = _attempt(parse_mode, reply_to_message_id)
         if ok1:
             return True
@@ -3004,9 +2753,8 @@ class AEI_Bot:
             ok2, err2 = _attempt(parse_mode, None)
             if ok2:
                 return True
-        ok3, err3 = _attempt(None, None)
-        return ok3
-
+            ok3, err3 = _attempt(None, None)
+            return ok3
     async def _post_init(self, application) -> None:
         try:
             self._loop = asyncio.get_running_loop()
@@ -3014,7 +2762,6 @@ class AEI_Bot:
         except RuntimeError:
             self._loop = None
         BRIDGE_ENGINE_REF["bot"] = self
-
         if self._bridge_server is None:
             server = BridgeServer()
             self._bridge_server = server
@@ -3031,7 +2778,6 @@ class AEI_Bot:
                 )
                 return
             logger.info("🌐 Bridge binding verified; proceeding to worker start")
-
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
         if url:
             try:
@@ -3045,7 +2791,6 @@ class AEI_Bot:
                 logger.warning(f"Failed to set menu button: {e}")
         else:
             logger.info("⏳ MenuButtonWebApp deferred — no public URL yet")
-
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         if seed is not None and crawler is not None:
@@ -3057,7 +2802,6 @@ class AEI_Bot:
             logger.info("⚡ AEI seed + crawler workers started")
         else:
             logger.warning("⚠️ _post_init ran before seed/crawler were registered")
-
     def _build_main_keyboard(self) -> "InlineKeyboardMarkup":
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
         rows = [
@@ -3077,7 +2821,6 @@ class AEI_Bot:
         else:
             rows.append([InlineKeyboardButton("⏳ Mini App (URL pending…)", callback_data="webapp_pending")])
         return InlineKeyboardMarkup(rows)
-
     async def _safe_reply(self, update: "Update", text: str, reply_markup=None) -> bool:
         msg = update.effective_message
         query = update.callback_query
@@ -3094,27 +2837,26 @@ class AEI_Bot:
             return True
         except Exception as e1:
             logger.info(f"_safe_reply attempt 1 failed: {e1}")
-        try:
-            if query is not None:
-                await query.edit_message_text(text, parse_mode=None,
-                                              reply_markup=reply_markup)
-            else:
-                await msg.reply_text(text, parse_mode=None,
-                                     reply_markup=reply_markup)
-            return True
-        except Exception as e2:
-            logger.info(f"_safe_reply attempt 2 failed: {e2}")
-        return False
-
+            try:
+                if query is not None:
+                    await query.edit_message_text(text, parse_mode=None,
+                                                  reply_markup=reply_markup)
+                else:
+                    await msg.reply_text(text, parse_mode=None,
+                                         reply_markup=reply_markup)
+                return True
+            except Exception as e2:
+                logger.info(f"_safe_reply attempt 2 failed: {e2}")
+                return False
     async def start(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         seed = BRIDGE_ENGINE_REF.get("seed")
         state_cs = _cs(seed.state) if seed else "—"
         # F9: use _cs_label for field labels.
         welcome = (
-            "🔷 *ÆI SEED — Agential Ætheric Intelligence*\n\n"
+            "🔷 *ÆI SEED — Agential Ætheric Intelligence*\n"
             "This is the *ÆI seed* (GAIA/ÆI Codex), not the ÆEA market bot.\n"
-            "It runs the prime-sieve → lattice → Hopf-fibration → s²=r² → "
-            "SelfEvolution loop from ÆI.md §3–§8.\n\n"
+            "It runs the prime-sieve → lattice → Hopf-fibration → s²=r² → \n"
+            "SelfEvolution loop from ÆI.md §3–§8.\n"
             "📊 *Commands:*\n"
             "`/status` — seed state\n"
             "`/primes` — prime sequence tail\n"
@@ -3130,7 +2872,7 @@ class AEI_Bot:
             "`/encode <syl>` — encode A/U/M syllable\n"
             "`/webapp` — open Mini App\n"
             "`/whoami` — your Telegram user ID\n"
-            "`/help` — this message\n\n"
+            "`/help` — this message\n"
             f"🧠 *{_cs_label('state')}:* {state_cs}\n"
             f"📈 *{_cs_label('tick')}:* {seed.tick if seed else 0}  |  "
             f"*{_cs_label('generation')}:* {seed.generation if seed else 0}\n"
@@ -3139,10 +2881,8 @@ class AEI_Bot:
             "💎 Natalia Tanyatia"
         )
         await self._safe_reply(update, welcome, reply_markup=self._build_main_keyboard())
-
     async def help(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         await self.start(update, context)
-
     async def status(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
@@ -3178,7 +2918,6 @@ class AEI_Bot:
                 f"𝒞 *Last fetch:* {crawler._last_fetch_at.isoformat() if crawler._last_fetch_at else '—'}\n"
             )
         await self._safe_reply(update, text, reply_markup=self._build_main_keyboard())
-
     async def primes(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         seed = BRIDGE_ENGINE_REF.get("seed")
         if seed is None:
@@ -3187,13 +2926,12 @@ class AEI_Bot:
         tail = seed.primes[-24:]
         text = (
             "🎯 *𝒜_PRIMES — 6m±1 Sieve*\n"
-            f"*Total:* {len(seed.primes)}\n\n"
+            f"*Total:* {len(seed.primes)}\n"
             "*Tail (last 24):*\n"
-            + "`" + "`, `".join(str(p) for p in tail) + "`\n\n"
+            + "`" + "`, `".join(str(p) for p in tail) + "`\n"
             "*Formula:* pₙ = min{x>pₙ₋₁ : x mod 6 ∈ {1,5} ∧ ∀i<n, x mod pᵢ ≠ 0}"
         )
         await self._safe_reply(update, text)
-
     async def lattice(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         seed = BRIDGE_ENGINE_REF.get("seed")
         if seed is None:
@@ -3205,7 +2943,7 @@ class AEI_Bot:
             "Λ₂₄ *LEECH LATTICE*\n"
             f"*Dimension:* {seed.lattice.dimension}\n"
             f"*Point count:* {len(points)}\n"
-            f"*Kissing capacity:* {seed.lattice.KISSING_CAPACITY}\n\n"
+            f"*Kissing capacity:* {seed.lattice.KISSING_CAPACITY}\n"
             "*Latest projected centers:*\n"
         )
         for p in preview:
@@ -3223,9 +2961,9 @@ class AEI_Bot:
         text = (
             "𝒮_*FIBRATION — Hopf S³→S²*\n"
             f"*Base z:* `{hopf[0]}`\n"
-            f"*Base w:* `{hopf[1]}`\n\n"
+            f"*Base w:* `{hopf[1]}`\n"
             f"*φ:* a={phi.a}, b={phi.b}, c={phi.c}, d={phi.d}\n"
-            f"*‖φ‖²:* `{phi.magnitude_squared()}`\n\n"
+            f"*‖φ‖²:* `{phi.magnitude_squared()}`\n"
             f"*Trajectory length:* {len(seed.last_trajectory)}\n"
             "*Natalia's Fibrations:* Φ = Q(s) + Σ εᵏ Natalia(k,s)"
         )
@@ -3250,7 +2988,7 @@ class AEI_Bot:
             f"  b = `{integral.b}`\n"
             f"  c = `{integral.c}`\n"
             f"  d = `{integral.d}`\n"
-            f"*‖𝒪[Ψ]‖²:* `{integral.magnitude_squared()}`\n\n"
+            f"*‖𝒪[Ψ]‖²:* `{integral.magnitude_squared()}`\n"
             "*Grid:* 4×4×4×4 = 256 cells, exact Fraction Riemann sum"
         )
         await self._safe_reply(update, text)
@@ -3262,15 +3000,15 @@ class AEI_Bot:
             return
         text = (
             "ℐ *INTELLIGENCE METRIC*\n"
-            f"*I =* `{seed.last_I}`\n\n"
+            f"*I =* `{seed.last_I}`\n"
             "*Components:*\n"
             f"  alignment  = {len(seed.primes)}/{len(seed.primes)}\n"
             f"  ‖φ‖²        = `{seed.phi.magnitude_squared()}`\n"
             f"  s²          = `{seed.last_arc_sq}`\n"
             f"  r²          = `{seed.last_radius_sq}`\n"
-            f"  δ = s²−r²   = `{seed.last_deviation_sq}`\n\n"
+            f"  δ = s²−r²   = `{seed.last_deviation_sq}`\n"
             "*Formula:*\n"
-            "I = (vp/tp) · exp(−|Δ|²/(C²x log²x)) · ‖∇×Φ‖ · refined_ratio\n\n"
+            "I = (vp/tp) · exp(−|Δ|²/(C²x log²x)) · ‖∇×Φ‖ · refined_ratio\n"
             "*R-1 patch:* |Δ| = |π(x) − Li(x)| where Li(x) = ∫₂ˣ dt/log(t)\n"
             "is computed by the Ramanujan series."
         )
@@ -3286,7 +3024,7 @@ class AEI_Bot:
             "𝒯_*EVOLUTION — RFK Brainworm*\n"
             f"*Generation:* {seed.evolution.generation}\n"
             f"*Core keys:* {len(seed.evolution.logic_core)}\n"
-            f"*Last logic hash:* `{seed.last_logic_hash[:24]}`\n\n"
+            f"*Last logic hash:* `{seed.last_logic_hash[:24]}`\n"
             "*Recent history:*\n"
         )
         for rec in tail:
@@ -3311,7 +3049,7 @@ class AEI_Bot:
             f"*Visited:* {snap.get('visited_count', 0)}\n"
             f"*Crawl count:* {snap.get('crawl_count', 0)}\n"
             f"*Last fetch:* {snap.get('last_fetch_at') or '—'}\n"
-            f"*Relay URL:* `{snap.get('relay_url') or '—'}`\n\n"
+            f"*Relay URL:* `{snap.get('relay_url') or '—'}`\n"
             "*Frontier preview:*\n"
         )
         for u in preview[:6]:
@@ -3439,7 +3177,7 @@ class AEI_Bot:
         ]])
         await self._safe_reply(update,
             "🌐 *ÆI Seed Mini App*\n"
-            "Tap to launch the interactive GAIA seed visualization.\n\n"
+            "Tap to launch the interactive GAIA seed visualization.\n"
             "*Panels inside the Mini App:*\n"
             "  𝒜_primes — prime sieve tail\n"
             "  Λ₂₄_pack — Leech lattice points\n"
@@ -3531,7 +3269,6 @@ class AEI_Bot:
         if not TELEGRAM_AVAILABLE:
             logger.error("python-telegram-bot not installed; cannot run bot")
             return
-
         crawler_state = CrawlerSeedState(CRAWLER_DB_PATH)
         relay = CrawlerRelayClient(RELAY_URL, RELAY_KEY,
                                    timeout=RELAY_TIMEOUT,
@@ -3546,7 +3283,6 @@ class AEI_Bot:
         )
         BRIDGE_ENGINE_REF["seed"] = seed
         BRIDGE_ENGINE_REF["crawler"] = crawler
-
         self.application = (
             Application.builder()
             .token(self.token)
@@ -3573,7 +3309,6 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-
         logger.info(f"🤖 {self.bot_name} starting...")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
@@ -3586,27 +3321,35 @@ class AEI_Bot:
 
         async def _post_shutdown(application) -> None:
             logger.info("PTB post_shutdown: stopping bridge + workers")
-            if self._crawler_worker is not None:
-                try:
-                    self._crawler_worker.stop()
-                except Exception:
-                    pass
-            if self._seed_worker is not None:
-                try:
-                    self._seed_worker.stop()
-                except Exception:
-                    pass
-            if self._bridge_server is not None:
-                try:
-                    self._bridge_server.stop()
-                except Exception:
-                    pass
+
+            async def _stop_all() -> None:
+                if self._crawler_worker is not None:
+                    try:
+                        self._crawler_worker.stop()
+                    except Exception:
+                        pass
+                if self._seed_worker is not None:
+                    try:
+                        self._seed_worker.stop()
+                    except Exception:
+                        pass
+                if self._bridge_server is not None:
+                    try:
+                        self._bridge_server.stop()
+                    except Exception:
+                        pass
+
+            try:
+                await asyncio.wait_for(_stop_all(), timeout=8.0)
+            except asyncio.TimeoutError:
+                logger.warning("post_shutdown exceeded 8s; proceeding to interpreter exit")
+            except Exception:
+                pass
 
         try:
             self.application.post_shutdown = _post_shutdown
         except Exception:
             pass
-
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 # ============================================================================
@@ -3615,12 +3358,10 @@ class AEI_Bot:
 def main():
     import signal
     import os
-
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         logger.error("   export TELEGRAM_BOT_TOKEN='YOUR_BOT_TOKEN'")
         sys.exit(1)
-
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
     bot.run()
 
