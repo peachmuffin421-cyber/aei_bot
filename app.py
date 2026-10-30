@@ -405,28 +405,33 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
     return result
 
 # ============================================================================
-# AUDIT PATCH — CACHING FOR H12 FIX (P1)
+# AUDIT PATCH 13.4 — CACHING + R12 INSTANT EXIT (app.py only)
 # ============================================================================
 from functools import lru_cache
 _CACHED_LI: dict = {}
 _CACHED_LOG: dict = {}
-def _cached_log_integral(x: Fraction) -> Fraction:
-    key = str(x._f)
+def _cached_log_integral(x):
+    try:
+        key=str(x._f)
+    except Exception:
+        key=str(x)
     if key in _CACHED_LI:
         return _CACHED_LI[key]
-    v = _symbolic_log_integral_approx(x)
-    _CACHED_LI[key] = v
-    if len(_CACHED_LI) > 256:
+    v=_symbolic_log_integral_approx(x)
+    _CACHED_LI[key]=v
+    if len(_CACHED_LI)>256:
         _CACHED_LI.pop(next(iter(_CACHED_LI)))
     return v
-
-def _cached_symbolic_log(x: Fraction) -> Fraction:
-    key = str(x._f)
+def _cached_symbolic_log(x):
+    try:
+        key=str(x._f)
+    except Exception:
+        key=str(x)
     if key in _CACHED_LOG:
         return _CACHED_LOG[key]
-    v = _symbolic_log(x)
-    _CACHED_LOG[key] = v
-    if len(_CACHED_LOG) > 256:
+    v=_symbolic_log(x)
+    _CACHED_LOG[key]=v
+    if len(_CACHED_LOG)>256:
         _CACHED_LOG.pop(next(iter(_CACHED_LOG)))
     return v
 
@@ -969,8 +974,14 @@ class IntelligenceMetric:
             return Fraction.one()
         sqrt_x = x.sqrt()
         bound = self.C * sqrt_x * log_x
-        li_x = _symbolic_log_integral_approx(x)
-        li_2 = _symbolic_log_integral_approx(Fraction(2))
+        try:
+            li_x=_CACHED_LI.get(str(x._f)) or _cached_log_integral(x)
+        except Exception:
+            li_x=_symbolic_log_integral_approx(x)
+        try:
+            li_2=_CACHED_LI.get(str(Fraction(2)._f)) or _cached_log_integral(Fraction(2))
+        except Exception:
+            li_2=_symbolic_log_integral_approx(Fraction(2))
         pi_x_frac = Fraction(pi_x)
         deviation = (pi_x_frac - (li_x - li_2)).abs()
         if bound.is_zero():
@@ -1983,7 +1994,7 @@ class SeedWorker:
                 loop = asyncio.get_running_loop()
                 record = await asyncio.wait_for(
                     loop.run_in_executor(self._executor, self.seed.step, x),
-                    timeout=20.0,
+                    timeout=10.0,
                 )
                 _emit_toast("seed", {
                     "tick": record["tick"],
@@ -2009,9 +2020,12 @@ class SeedWorker:
         self._running = True
         self._task = asyncio.create_task(self._loop())
     def stop(self):
-        self._running = False
-        if self._task and not self._task.done():
-            self._task.cancel()
+        self._running=False
+        try:
+            if self._task and not self._task.done():
+                self._task.cancel()
+        except Exception:
+            pass
         try:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
@@ -2142,17 +2156,8 @@ class TunnelManager:
                 return url
         logger.warning("⚠️ No tunnel available. Telegram Mini App will require manual TELEGRAM_WEBAPP_URL.")
         return None
-    def stop_quick(self):
-        try:
-            if hasattr(self, '_httpd') and self._httpd:
-                self._httpd.shutdown()
-        except Exception:
-            pass
     def stop(self) -> None:
-        self.stop_quick()
-        if getattr(self, 'process', None) is None and not hasattr(self, 'process'):
-            pass
-        if hasattr(self, 'process') and self.process is None:
+        if self.process is None:
             return
         try:
             self.process.terminate()
@@ -2168,7 +2173,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed13-patched"
+    server_version = "AEI-Seed-Bridge/final-ed13-patched-r12"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -2577,10 +2582,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"error": "not_found", "path": path})
 def _require_auth(handler: "BridgeHandler") -> bool:
-    # AUDIT PATCH C3: /health must bypass auth to avoid H12 on Heroku health checks
     try:
-        p = urlparse(handler.path).path
-        if p in ("/health", "/", "/favicon.ico"):
+        p=urlparse(handler.path).path
+        if p in ("/health","/","/favicon.ico"):
             return True
     except Exception:
         pass
@@ -2672,7 +2676,7 @@ class BridgeServer:
             self._listen_ok = False
             return
         self._listen_ok = True
-        BRIDGE_ENGINE_REF["bridge_server_ref"] = self
+        BRIDGE_ENGINE_REF["bridge_server_ref"]=self
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="aei-bridge", daemon=True
         )
@@ -2738,10 +2742,19 @@ class BridgeServer:
             )
             drain_thread.start()
             drain_thread.join(timeout=1.0)
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
-            self._thread = None
-        logger.info("🌐 ÆI Seed Bridge stopped")
+        # AUDIT PATCH 13.4: instant stop, no joins, daemon threads die on _exit
+        if self._httpd is not None:
+            try:
+                self._httpd.shutdown()
+            except Exception:
+                pass
+            try:
+                self._httpd.server_close()
+            except Exception:
+                pass
+        self._thread=None
+        self._httpd=None
+        logger.info("🌐 ÆI Seed Bridge stopped (instant)")
 # ============================================================================
 # TELEGRAM BOT
 # ============================================================================
@@ -3366,29 +3379,33 @@ class AEI_Bot:
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
         async def _post_shutdown(application) -> None:
-            logger.info("PTB post_shutdown: stopping bridge + workers")
+            logger.info("PTB post_shutdown: stopping bridge + workers (R12-fast instant)")
 
-            async def _stop_all() -> None:
-                if self._crawler_worker is not None:
-                    try:
-                        self._crawler_worker.stop()
-                    except Exception:
-                        pass
-                if self._seed_worker is not None:
-                    try:
-                        self._seed_worker.stop()
-                    except Exception:
-                        pass
-                if self._bridge_server is not None:
-                    try:
-                        self._bridge_server.stop()
-                    except Exception:
-                        pass
-
+            if self._crawler_worker is not None:
+                try:
+                    self._crawler_worker._running=False
+                    self._crawler_worker.stop()
+                except Exception:
+                    pass
+            if self._seed_worker is not None:
+                try:
+                    self._seed_worker._running=False
+                    self._seed_worker.stop()
+                except Exception:
+                    pass
+            if self._bridge_server is not None:
+                try:
+                    self._bridge_server.stop()
+                except Exception:
+                    pass
             try:
-                await asyncio.wait_for(_stop_all(), timeout=8.0)
-            except asyncio.TimeoutError:
-                logger.warning("post_shutdown exceeded 8s; proceeding to interpreter exit")
+                await asyncio.sleep(0.3)
+            except Exception:
+                pass
+            logger.info("PTB post_shutdown: forcing os._exit(0) to avoid R12")
+            try:
+                import os as _os_mod
+                _os_mod._exit(0)
             except Exception:
                 pass
 
@@ -3396,7 +3413,15 @@ class AEI_Bot:
             self.application.post_shutdown = _post_shutdown
         except Exception:
             pass
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        import signal as _sig_mod
+        try:
+            self.application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                stop_signals=(_sig_mod.SIGTERM, _sig_mod.SIGINT, _sig_mod.SIGABRT),
+                close_loop=False,
+            )
+        except TypeError:
+            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 # ============================================================================
 # MAIN
@@ -3404,18 +3429,17 @@ class AEI_Bot:
 def main():
     import signal
     import os
-    def _sigterm_handler(signum, frame):
-        logger.info(f"Received signal {signum}, shutting down gracefully...")
-        # Stop bridge server quickly to satisfy Heroku R12 30s deadline
+    def _emergency_exit(signum, frame):
         try:
-            bs = BRIDGE_ENGINE_REF.get('bridge_server_ref')
-            if bs:
-                bs.stop_quick()
+            import os as __o
+            __o._exit(0)
         except Exception:
             pass
-        sys.exit(0)
-    signal.signal(signal.SIGTERM, _sigterm_handler)
-    signal.signal(signal.SIGINT, _sigterm_handler)
+    try:
+        signal.signal(signal.SIGTERM, _emergency_exit)
+        signal.signal(signal.SIGINT, _emergency_exit)
+    except Exception:
+        pass
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         logger.error("   export TELEGRAM_BOT_TOKEN='YOUR_BOT_TOKEN'")
