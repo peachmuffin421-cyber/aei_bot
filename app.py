@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.13 (Audit-Patched: F1–F9, P1-11, P1-12, P1-13).
 """
-__version__ = "final-ed15-r12fix"
+__version__ = "final-ed14-r12fix"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -185,10 +185,10 @@ class Fraction:
             return Fraction(ns, ds)
         two = PyFraction(2, 1)
         # exact rational round half-up, no float
-        _num = self._f.numerator
-        _den = self._f.denominator
-        _q = (_num + _den // 2) // _den if _num >= 0 else -((-_num + _den // 2) // _den)
-        x = PyFraction(max(1, _q), 1)
+_num = self._f.numerator
+_den = self._f.denominator
+_q = (_num + _den // 2) // _den if _num >= 0 else -((-_num + _den // 2) // _den)
+x = PyFraction(max(1, _q), 1)
         for _ in range(iterations):
             x = (x + self._f / x) / two
         return Fraction(x)
@@ -1302,7 +1302,7 @@ class CrawlerRelayClient:
                     if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
                         last_error = "budget_exhausted"
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.5)
                     continue
                 break
             except urllib.error.URLError as e:
@@ -1312,7 +1312,7 @@ class CrawlerRelayClient:
                     if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
                         last_error = "budget_exhausted"
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.5)
                     continue
                 break
             except json.JSONDecodeError as e:
@@ -1326,7 +1326,7 @@ class CrawlerRelayClient:
                     if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
                         last_error = "budget_exhausted"
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.5)
                     continue
                 break
         self._failure_count += 1
@@ -2177,7 +2177,7 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed13-patched-r12"
+    server_version = "AEI-Seed-Bridge/final-ed14-r12fix"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -2245,7 +2245,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed13",
+                "version": "final-ed14-r12fix",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -2715,13 +2715,14 @@ class BridgeServer:
             self._tunnel_thread.start()
         self._listen_ready.set()
     def stop(self) -> None:
-        # R12-fix v15: shutdown before close, no blocking joins
+        # R12-fix: shutdown before close, no blocking joins
         if self._tunnel is not None:
             try:
                 self._tunnel.stop()
             except Exception:
                 pass
             self._tunnel = None
+        # do not join tunnel thread - daemon, let os._exit handle
         self._tunnel_thread = None
         if self._httpd is not None:
             httpd = self._httpd
@@ -2736,10 +2737,7 @@ class BridgeServer:
                 pass
         self._thread = None
         self._httpd = None
-        try:
-            logger.info("🌐 ÆI Seed Bridge stopped (R12-fast)")
-        except Exception:
-            pass
+        logger.info("🌐 ÆI Seed Bridge stopped (R12-fast)")
 # ============================================================================
 # TELEGRAM BOT
 # ============================================================================
@@ -3315,8 +3313,8 @@ class AEI_Bot:
             return
         crawler_state = CrawlerSeedState(CRAWLER_DB_PATH)
         relay = CrawlerRelayClient(RELAY_URL, RELAY_KEY,
-                                   timeout=5,
-                                   max_retries=2)
+                                   timeout=RELAY_TIMEOUT,
+                                   max_retries=RELAY_MAX_RETRIES)
         crawler = CrawlerWorker(crawler_state, relay)
         seed = AEI_Seed(
             processor=DefaultSymbolicProcessor(),
@@ -3364,7 +3362,7 @@ class AEI_Bot:
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
         async def _post_shutdown(application) -> None:
-            # R12-fix v15: instant, no awaits that can hang
+            logger.info("PTB post_shutdown: stopping bridge + workers (R12-fast instant)")
             try:
                 if self._crawler_worker is not None:
                     try:
@@ -3384,17 +3382,27 @@ class AEI_Bot:
                     except Exception:
                         pass
             finally:
+                # always force exit, even if stop() hangs
                 try:
-                    os._exit(0)
+                    await asyncio.sleep(0.2)
                 except Exception:
                     pass
+                logger.info("PTB post_shutdown: forcing os._exit(0) to avoid R12")
+                try:
+                    import os as _os_mod
+                    _os_mod._exit(0)
+                except Exception:
+                    pass
+                # fallback
+                os._exit(0)
 
         try:
             self.application.post_shutdown = _post_shutdown
         except Exception:
             pass
-        # R12-fix v15: PTB must NOT own SIGTERM, main thread does
+        import signal as _sig_mod
         try:
+            # R12-fix: don't let PTB own SIGTERM, we handle it via _emergency_exit + post_shutdown -> os._exit
             self.application.run_polling(
                 allowed_updates=Update.ALL_TYPES,
                 stop_signals=[],
@@ -3410,20 +3418,21 @@ def main():
     import signal
     import os
     def _emergency_exit(signum, frame):
-        # R12 ultra-fast, no locks, no logger
         try:
-            os._exit(0)
+            logger.info(f"🚨 Emergency exit on signal {signum} -> os._exit(0)")
         except Exception:
             pass
+        try:
+            import os as __o
+            __o._exit(0)
+        except Exception:
+            os._exit(0)
     try:
         signal.signal(signal.SIGTERM, _emergency_exit)
         signal.signal(signal.SIGINT, _emergency_exit)
+        # also handle SIGABRT if possible
         try:
             signal.signal(signal.SIGABRT, _emergency_exit)
-        except Exception:
-            pass
-        try:
-            signal.signal(signal.SIGQUIT, _emergency_exit)
         except Exception:
             pass
     except Exception:
