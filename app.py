@@ -185,10 +185,10 @@ class Fraction:
             return Fraction(ns, ds)
         two = PyFraction(2, 1)
         # exact rational round half-up, no float
-_num = self._f.numerator
-_den = self._f.denominator
-_q = (_num + _den // 2) // _den if _num >= 0 else -((-_num + _den // 2) // _den)
-x = PyFraction(max(1, _q), 1)
+        _num = self._f.numerator
+        _den = self._f.denominator
+        _q = (_num + _den // 2) // _den if _num >= 0 else -((-_num + _den // 2) // _den)
+        x = PyFraction(max(1, _q), 1)
         for _ in range(iterations):
             x = (x + self._f / x) / two
         return Fraction(x)
