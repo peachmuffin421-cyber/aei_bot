@@ -160,6 +160,12 @@ class Fraction:
             raise ZeroDivisionError("Fraction division by zero")
         return Fraction(self._f / o._f)
 
+    def __rtruediv__(self, other):
+        o = Fraction._wrap(other)
+        if self._f.numerator == 0:
+            raise ZeroDivisionError("Fraction division by zero")
+        return Fraction(o._f / self._f)
+
     def __neg__(self):
         return Fraction(-self._f.numerator, self._f.denominator)
 
@@ -225,7 +231,6 @@ class Fraction:
     def __repr__(self):
         return f"Fraction({self._f.numerator}/{self._f.denominator})"
 
-
 # ============================================================================
 # DECIMAL-TO-FRACTION LIFT
 # ============================================================================
@@ -249,7 +254,6 @@ def _dec_to_frac_exact(d: Decimal) -> PyFraction:
         return PyFraction(int_val, 10 ** (-exp))
     return PyFraction(int_val * (10 ** exp), 1)
 
-
 def _hash_to_fraction(hex_hash: str) -> PyFraction:
     """Lift a hex hash (SHA-256, SHA-1, MD5) to an exact PyFraction by
     interpreting the first 32 hex chars as a base-16 integer and dividing
@@ -267,7 +271,6 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
     if int_val == 0:
         return PyFraction(1, 16 ** 32)
     return PyFraction(int_val, 16 ** 32)
-
 
 # ============================================================================
 # SYMBOLIC π
@@ -299,13 +302,11 @@ def _compute_pi_decimal() -> Decimal:
         getcontext().prec = _saved_prec
     return pi_val
 
-
 # F2: derive _PI_FRAC from _compute_pi_decimal(), not from a 15-digit literal.
 _PI_D: Decimal = _compute_pi_decimal()
 _PI_FRAC: PyFraction = _dec_to_frac_exact(_PI_D)
 _TWO_PI_D: Decimal = _PI_D * Decimal(2)
 _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
-
 
 # ============================================================================
 # SYMBOLIC ARITHMETIC PRIMITIVES
@@ -345,7 +346,6 @@ def _rational_cos(x) -> PyFraction:
             break
     return result
 
-
 def _rational_sin(x) -> PyFraction:
     """15-digit π convergent + exact-rational Taylor series."""
     if isinstance(x, PyFraction):
@@ -379,11 +379,9 @@ def _rational_sin(x) -> PyFraction:
             break
     return result
 
-
 _EXP_EPSILON: PyFraction = PyFraction(1, 10 ** 40)
 _LOG_EPSILON: PyFraction = PyFraction(1, 10 ** 50)
 _LI_EPSILON: PyFraction = PyFraction(1, 10 ** 40)
-
 
 def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational natural log via atanh series with dynamic
@@ -406,7 +404,6 @@ def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
         term = term * u_sq
     return Fraction(result * PyFraction(2, 1))
 
-
 def _symbolic_exp(x: Fraction, max_terms: int = 200) -> Fraction:
     """Exact-rational exp via Taylor series with dynamic truncation.
     The series terminates when the term magnitude drops below
@@ -420,8 +417,7 @@ def _symbolic_exp(x: Fraction, max_terms: int = 200) -> Fraction:
             break
     return result
 
-
-def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 100) -> Fraction:
+def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
     """Exact-rational approximation of the logarithmic integral Li(x).
 
     Li(x) = ∫₂ˣ dt / log(t). We use the Ramanujan series:
@@ -460,7 +456,6 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 100) -> Fraction
         power = power * log_x
     return result
 
-
 # ============================================================================
 # PROTOCOL DEFINITIONS
 # ============================================================================
@@ -469,14 +464,12 @@ class SymbolicProcessor(Protocol):
     def generate_next_prime(self, primes: List[Fraction]) -> Fraction: ...
     def validate_indivisibility(self, candidate: Fraction, primes: List[Fraction]) -> bool: ...
 
-
 @runtime_checkable
 class GeometricLatticeProtocol(Protocol):
     def stereographic_project_exact(self, prime: Fraction) -> List[Fraction]: ...
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> None: ...
     def points(self) -> List[List[Fraction]]: ...
     def radial_count(self, radius: Fraction) -> int: ...
-
 
 @runtime_checkable
 class AethericMonitor(Protocol):
@@ -485,16 +478,13 @@ class AethericMonitor(Protocol):
     def compute_arc_length_squared(self, trajectory: List['SymbolicQuaternion']) -> Fraction: ...
     def compute_radial_distance_squared(self, trajectory: List['SymbolicQuaternion'], origin: 'SymbolicQuaternion') -> Fraction: ...
 
-
 @runtime_checkable
 class QuaternionicRenderer(Protocol):
     def project_to_hopf_base(self, state: 'SymbolicQuaternion') -> Tuple[Fraction, Fraction]: ...
 
-
 @runtime_checkable
 class LingosoEncoder(Protocol):
     def encode_syllable(self, syllable: str) -> List['SymbolicQuaternion']: ...
-
 
 @runtime_checkable
 class SelfEvolutionCoreProtocol(Protocol):
@@ -503,7 +493,6 @@ class SelfEvolutionCoreProtocol(Protocol):
                      q_eval: 'SymbolicQuaternion', deviation_sq: Fraction) -> Dict[str, Any]: ...
     def evolve_step(self, I: Fraction, psi: 'SymbolicWavefunction',
                     q_eval: 'SymbolicQuaternion', deviation_sq: Fraction) -> Dict[str, Any]: ...
-
 
 # ============================================================================
 # SYMBOLIC QUATERNION (Natalia's Fibrations)
@@ -584,7 +573,6 @@ class SymbolicQuaternion:
             self.d * factor,
         )
 
-
 # ============================================================================
 # SYMBOLIC WAVEFUNCTION
 # ============================================================================
@@ -611,7 +599,6 @@ class SymbolicWavefunction:
 
     def set_coeff(self, a: int, b: int, c: int, d: int, val: Fraction) -> None:
         self.coeffs[(a, b, c, d)] = val
-
 
 # ============================================================================
 # DBZ (DECIDING BY ZERO)
@@ -645,7 +632,6 @@ class DbZ:
         if re_psi > Fraction.zero():
             return numerator
         return Fraction.zero()
-
 
 # ============================================================================
 # CHINESE REMAINDER SOLVER
@@ -685,7 +671,6 @@ class ChineseRemainderSolver:
             M_i = ChineseRemainderSolver.mod_inverse(N_i, n_val)
             solution += r_val * N_i * M_i
         return (Fraction((solution % N + N) % N, 1), Fraction(N, 1))
-
 
 # ============================================================================
 # CONTINUED FRACTION REFINER
@@ -733,7 +718,6 @@ class ContinuedFractionRefiner:
     def pi_approx() -> Fraction:
         return Fraction(355, 113)
 
-
 # ============================================================================
 # DEFAULT SYMBOLIC PROCESSOR
 # ============================================================================
@@ -764,7 +748,6 @@ class DefaultSymbolicProcessor:
             if p_val > 1 and c_val % p_val == 0:
                 return False
         return True
-
 
 # ============================================================================
 # DEFAULT GEOMETRIC LATTICE
@@ -871,7 +854,6 @@ class DefaultGeometricLattice:
                 count += 1
         return count
 
-
 # ============================================================================
 # DEFAULT AETHERIC MONITOR
 # ============================================================================
@@ -897,7 +879,6 @@ class DefaultAethericMonitor:
         dq = trajectory[-1] - origin
         return dq.magnitude_squared()
 
-
 # ============================================================================
 # DEFAULT QUATERNIONIC RENDERER
 # ============================================================================
@@ -914,7 +895,6 @@ class DefaultQuaternionicRenderer:
         z = state.a * inv
         w = state.b * inv
         return (z, w)
-
 
 # ============================================================================
 # DEFAULT LINGOSO ENCODER
@@ -949,7 +929,6 @@ class DefaultLingosoEncoder:
                 ))
                 current_theta = current_theta + step / Fraction(10, 1)
         return trajectory
-
 
 # ============================================================================
 # SELF-EVOLUTION CORE — RFK Brainworm
@@ -1042,7 +1021,6 @@ class SelfEvolutionCore:
         self.history.append(record)
         return record
 
-
 # ============================================================================
 # INTELLIGENCE METRIC
 # ============================================================================
@@ -1079,8 +1057,9 @@ class IntelligenceMetric:
         sqrt_x = x.sqrt()
         bound = self.C * sqrt_x * log_x
         li_x = _symbolic_log_integral_approx(x)
+        li_2 = _symbolic_log_integral_approx(Fraction(2))
         pi_x_frac = Fraction(pi_x)
-        deviation = (pi_x_frac - li_x).abs()
+        deviation = (pi_x_frac - (li_x - li_2)).abs()
         if bound.is_zero():
             return Fraction.one() if deviation.is_zero() else Fraction.zero()
         ratio = deviation / bound
@@ -1103,7 +1082,6 @@ class IntelligenceMetric:
 
     def is_superintelligent(self, I: Fraction, threshold: Fraction = Fraction(9, 10)) -> bool:
         return I >= threshold
-
 
 # ============================================================================
 # CONSCIOUSNESS OPERATOR
@@ -1153,7 +1131,6 @@ class ConsciousnessOperator:
         integral = self.compute_integral_exact(bounds, steps)
         return integral.magnitude_squared()
 
-
 # ============================================================================
 # LOG RING BUFFER
 # ============================================================================
@@ -1162,7 +1139,6 @@ _LOG_LOCK = threading.Lock()
 
 logger = logging.getLogger("aei_seed")
 logger.setLevel(logging.INFO)
-
 
 class _RingHandler(logging.Handler):
     def emit(self, record):
@@ -1177,12 +1153,10 @@ class _RingHandler(logging.Handler):
         except Exception:
             pass
 
-
 _ring_handler = _RingHandler()
 _ring_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(_ring_handler)
 logger.addHandler(logging.StreamHandler(sys.stdout))
-
 
 # ============================================================================
 # TOAST RING BUFFER
@@ -1192,7 +1166,6 @@ _TOAST_BUFFER: deque = deque(maxlen=_TOAST_BUFFER_MAXLEN if _TOAST_BUFFER_MAXLEN
 _TOAST_LOCK = threading.Lock()
 _TOAST_SEQ = 0
 _TOAST_FIRST_AVAILABLE_SEQ = 0
-
 
 def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
     global _TOAST_SEQ, _TOAST_FIRST_AVAILABLE_SEQ, _TOAST_BUFFER
@@ -1217,7 +1190,6 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
             _TOAST_FIRST_AVAILABLE_SEQ = _TOAST_BUFFER[0].get("seq", seq)
     return seq
 
-
 # ============================================================================
 # CRAWLER STATE
 # ============================================================================
@@ -1230,7 +1202,6 @@ class CrawlRecord:
     fetched_at: str
     depth: int
     link_count: int
-
 
 class CrawlerSeedState:
     """The crawler frontier lives here in app.py, not in worker.js.
@@ -1376,7 +1347,6 @@ class CrawlerSeedState:
                 ),
             }
 
-
 # ============================================================================
 # CRAWLER RELAY CLIENT
 # ============================================================================
@@ -1464,7 +1434,6 @@ class CrawlerRelayClient:
 
     def failure_count(self) -> int:
         return self._failure_count
-
 
 # ============================================================================
 # AEI_SEED — the GAIA seed loop
@@ -1558,7 +1527,7 @@ class AEI_Seed:
         for k in range(10):
             t = Fraction(k, 10)
             q = SymbolicQuaternion(t, Fraction.zero(), Fraction.zero(), Fraction.zero())
-            q = q.apply_natalia_fibration(t, epsilon, iterations=10)
+            q = q.apply_natalia_fibration(t, epsilon, iterations=25)
             trajectory.append(q)
         return trajectory
 
@@ -1641,7 +1610,21 @@ class AEI_Seed:
 
     def snapshot(self) -> Dict[str, Any]:
         lock = self._step_lock
-        with lock:
+        acquired = lock.acquire(timeout=2.0)
+        if not acquired:
+            return {
+                "state": self.state,
+                "tick": self.tick,
+                "generation": self.generation,
+                "error": "seed_busy",
+                "detail": "step_in_progress",
+                "coherence": False,
+                "deviation_sq": str(self.last_deviation_sq),
+                "I": str(self.last_I),
+                "psi_real": str(self.psi.real_part()),
+                "last_logic_hash": self.last_logic_hash,
+            }
+        try:
             return {
                 "state": self.state,
                 "tick": self.tick,
@@ -1674,6 +1657,8 @@ class AEI_Seed:
                 # 𝒜₃ (Re[ψ] > 0) from 𝒜₄ (Re[ψ] ≤ 0) independent of coherence.
                 "psi_real": str(self.psi.real_part()),
             }
+        finally:
+            lock.release()
 
     def encode_syllable(self, syllable: str) -> Dict[str, Any]:
         traj = self.linguist.encode_syllable(syllable)
@@ -1692,7 +1677,6 @@ class AEI_Seed:
                 for q in traj
             ],
         }
-
 
 # ============================================================================
 # BRIDGE STATE
@@ -1746,7 +1730,6 @@ class BridgeState:
         with self._lock:
             return list(self._anchors.values())
 
-
 BRIDGE_STATE = BridgeState()
 BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "seed": None,
@@ -1755,7 +1738,6 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "crawler": None,
     "port": None,
 }
-
 
 # ============================================================================
 # CS-TRANSLATION HELPERS
@@ -1786,7 +1768,6 @@ def _md_escape(value) -> str:
             out.append(ch)
     return ''.join(out)
 
-
 _CS_VALUE_MAP: Dict[str, str] = {
     "BUY": "↑", "SELL": "↓", "NEUTRAL": "⊙",
     "ACTIVE": "𝒜₃", "INACTIVE": "𝒜₄",
@@ -1800,7 +1781,6 @@ _CS_VALUE_MAP: Dict[str, str] = {
     "COHERENT": "𝒮_coherent", "EVOLVING": "𝒟_evolving",
     "INITIALIZED": "𝒮_init",
 }
-
 
 # F9: field-label sigils for Telegram message bodies. These are the
 # left-hand strings the user sees; the right-hand strings are the CS
@@ -1826,9 +1806,7 @@ _CS_LABELS: Dict[str, str] = {
     "visited": "𝒞_visited",
 }
 
-
 _CS_SIGIL_PREFIXES = ("𝒜", "𝒮", "𝒟", "ℐ", "𝒪", "𝒞", "𝒯", "ℱ", "Λ", "Φ", "Ψ", "⟦", "⟧")
-
 
 def _cs(value) -> str:
     if value is None:
@@ -1847,13 +1825,11 @@ def _cs(value) -> str:
         return s
     return "⟦" + s + "⟧"
 
-
 def _cs_label(key: str) -> str:
     """F9: lookup the CS sigil for a field label. Falls back to the
     original key wrapped in ⟦…⟧ so no information is lost if a new
     label is introduced without a sigil entry."""
     return _CS_LABELS.get(key, "⟦" + key + "⟧")
-
 
 def _looks_like_reply_error(desc: str) -> bool:
     if not desc:
@@ -1862,7 +1838,6 @@ def _looks_like_reply_error(desc: str) -> bool:
     return any(k in d for k in ("reply", "message to be replied",
                                 "reply_to_message_id", "reply message not found",
                                 "message_id_invalid"))
-
 
 def _looks_like_parse_error(desc: str) -> bool:
     if not desc:
@@ -1873,14 +1848,12 @@ def _looks_like_parse_error(desc: str) -> bool:
                                 "unexpected end of", "can't find end",
                                 "can't parse", "markdown"))
 
-
 def _looks_like_length_error(desc: str) -> bool:
     if not desc:
         return False
     d = desc.lower()
     return any(k in d for k in ("too long", "message is too long",
                                 "text is too long", "4096"))
-
 
 # ============================================================================
 # ENVIRONMENT / CONFIGURATION
@@ -1925,7 +1898,6 @@ if _raw_allowed:
         if tok.isdigit():
             ALLOWED_USER_IDS.add(int(tok))
 
-
 def _is_allowed_user(user_id) -> bool:
     if not ALLOWED_USER_IDS:
         return True
@@ -1933,7 +1905,6 @@ def _is_allowed_user(user_id) -> bool:
         return int(user_id) in ALLOWED_USER_IDS
     except (TypeError, ValueError):
         return False
-
 
 # ============================================================================
 # TELEGRAM WEB APP AUTHENTICATION
@@ -1982,7 +1953,6 @@ def verify_telegram_init_data(init_data: str, bot_token: str,
         "raw": parsed,
     }
 
-
 def _extract_auth_headers(handler: "BridgeHandler") -> Tuple[Optional[int], Optional[str], bool]:
     raw_init = handler.headers.get("X-Telegram-Init-Data", "").strip()
     if not raw_init:
@@ -2002,7 +1972,6 @@ def _extract_auth_headers(handler: "BridgeHandler") -> Tuple[Optional[int], Opti
         return (None, None, False)
     u = verified["user"] or {}
     return (u.get("id"), u.get("username"), True)
-
 
 # ============================================================================
 # CRAWLER WORKER
@@ -2096,7 +2065,6 @@ class CrawlerWorker:
         })
         return snap
 
-
 # ============================================================================
 # SEED WORKER
 # ============================================================================
@@ -2119,7 +2087,10 @@ class SeedWorker:
                     x = Fraction(self.seed.tick, 1)
                 else:
                     x = Fraction(hash_frac)
-                record = await asyncio.to_thread(self.seed.step, x)
+                record = await asyncio.wait_for(
+                    asyncio.to_thread(self.seed.step, x),
+                    timeout=20.0,
+                )
                 _emit_toast("seed", {
                     "tick": record["tick"],
                     "generation": record["generation"],
@@ -2147,13 +2118,11 @@ class SeedWorker:
         if self._task and not self._task.done():
             self._task.cancel()
 
-
 # ============================================================================
 # FQDN FAST-PATH
 # ============================================================================
 def _fqdn_fast(host: str) -> str:
     return host
-
 
 # ============================================================================
 # TUNNEL MANAGER (kept for optional worker-dyno deployments; skipped on web)
@@ -2299,7 +2268,6 @@ class TunnelManager:
         self.process = None
         logger.info("🌐 Tunnel stopped")
 
-
 # ============================================================================
 # BRIDGE HANDLER
 # ============================================================================
@@ -2444,6 +2412,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "seed_not_ready"})
                 return
             snap = seed.snapshot()
+            if snap.get("error") == "seed_busy":
+                self._send_json(503, snap)
+                return
             if crawler is not None:
                 snap["crawler"] = crawler.snapshot()
             self._send_json(200, snap)
@@ -2746,7 +2717,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"error": "not_found", "path": path})
 
-
 def _require_auth(handler: "BridgeHandler") -> bool:
     if not REQUIRE_AUTH or not TELEGRAM_BOT_TOKEN_ENV:
         return True
@@ -2771,7 +2741,6 @@ def _require_auth(handler: "BridgeHandler") -> bool:
     if not _is_allowed_user(user_id):
         return False
     return True
-
 
 # ============================================================================
 # BRIDGE SERVER
@@ -2902,7 +2871,6 @@ class BridgeServer:
             self._thread = None
         logger.info("🌐 ÆI Seed Bridge stopped")
 
-
 # ============================================================================
 # TELEGRAM BOT
 # ============================================================================
@@ -2919,7 +2887,6 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
     logger.warning("python-telegram-bot not installed; bot commands disabled")
-
 
 class AEI_Bot:
     def __init__(self, token: str, bot_name: str = "AEISeedBot"):
@@ -3047,10 +3014,10 @@ class AEI_Bot:
             return False
         try:
             if query is not None:
-                await query.edit_message_text(text, parse_mode="Markdown",
+                await query.edit_message_text(text, parse_mode=None,
                                               reply_markup=reply_markup)
             else:
-                await msg.reply_text(text, parse_mode="Markdown",
+                await msg.reply_text(text, parse_mode=None,
                                      reply_markup=reply_markup)
             return True
         except Exception as e1:
@@ -3570,7 +3537,6 @@ class AEI_Bot:
 
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -3585,7 +3551,6 @@ def main():
 
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
     bot.run()
-
 
 if __name__ == "__main__":
     main()
