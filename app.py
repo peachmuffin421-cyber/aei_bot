@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.13 (Audit-Patched: F1–F9, P1-11, P1-12, P1-13).
 """
-__version__ = "final-ed14-r12fix-v2"
+__version__ = "final-ed15-r12fix"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -2715,7 +2715,7 @@ class BridgeServer:
             self._tunnel_thread.start()
         self._listen_ready.set()
     def stop(self) -> None:
-        # R12-fix v14.1: shutdown before close, no blocking joins
+        # R12-fix v15: shutdown before close, no blocking joins
         if self._tunnel is not None:
             try:
                 self._tunnel.stop()
@@ -2736,7 +2736,10 @@ class BridgeServer:
                 pass
         self._thread = None
         self._httpd = None
-        logger.info("🌐 ÆI Seed Bridge stopped (R12-fast)")
+        try:
+            logger.info("🌐 ÆI Seed Bridge stopped (R12-fast)")
+        except Exception:
+            pass
 # ============================================================================
 # TELEGRAM BOT
 # ============================================================================
@@ -3312,8 +3315,8 @@ class AEI_Bot:
             return
         crawler_state = CrawlerSeedState(CRAWLER_DB_PATH)
         relay = CrawlerRelayClient(RELAY_URL, RELAY_KEY,
-                                   timeout=RELAY_TIMEOUT,
-                                   max_retries=RELAY_MAX_RETRIES)
+                                   timeout=5,
+                                   max_retries=2)
         crawler = CrawlerWorker(crawler_state, relay)
         seed = AEI_Seed(
             processor=DefaultSymbolicProcessor(),
@@ -3361,7 +3364,7 @@ class AEI_Bot:
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
         async def _post_shutdown(application) -> None:
-            logger.info("PTB post_shutdown: R12-fast")
+            # R12-fix v15: instant, no awaits that can hang
             try:
                 if self._crawler_worker is not None:
                     try:
@@ -3382,10 +3385,6 @@ class AEI_Bot:
                         pass
             finally:
                 try:
-                    await asyncio.sleep(0.1)
-                except Exception:
-                    pass
-                try:
                     os._exit(0)
                 except Exception:
                     pass
@@ -3394,7 +3393,7 @@ class AEI_Bot:
             self.application.post_shutdown = _post_shutdown
         except Exception:
             pass
-        import signal as _sig_mod
+        # R12-fix v15: PTB must NOT own SIGTERM, main thread does
         try:
             self.application.run_polling(
                 allowed_updates=Update.ALL_TYPES,
@@ -3402,7 +3401,7 @@ class AEI_Bot:
                 close_loop=False,
             )
         except TypeError:
-            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+            self.application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=[])
 
 # ============================================================================
 # MAIN
@@ -3411,6 +3410,7 @@ def main():
     import signal
     import os
     def _emergency_exit(signum, frame):
+        # R12 ultra-fast, no locks, no logger
         try:
             os._exit(0)
         except Exception:
