@@ -403,6 +403,33 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
             break
         power = power * log_x
     return result
+
+# ============================================================================
+# AUDIT PATCH — CACHING FOR H12 FIX (P1)
+# ============================================================================
+from functools import lru_cache
+_CACHED_LI: dict = {}
+_CACHED_LOG: dict = {}
+def _cached_log_integral(x: Fraction) -> Fraction:
+    key = str(x._f)
+    if key in _CACHED_LI:
+        return _CACHED_LI[key]
+    v = _symbolic_log_integral_approx(x)
+    _CACHED_LI[key] = v
+    if len(_CACHED_LI) > 256:
+        _CACHED_LI.pop(next(iter(_CACHED_LI)))
+    return v
+
+def _cached_symbolic_log(x: Fraction) -> Fraction:
+    key = str(x._f)
+    if key in _CACHED_LOG:
+        return _CACHED_LOG[key]
+    v = _symbolic_log(x)
+    _CACHED_LOG[key] = v
+    if len(_CACHED_LOG) > 256:
+        _CACHED_LOG.pop(next(iter(_CACHED_LOG)))
+    return v
+
 # ============================================================================
 # PROTOCOL DEFINITIONS
 # ============================================================================
@@ -2115,8 +2142,17 @@ class TunnelManager:
                 return url
         logger.warning("⚠️ No tunnel available. Telegram Mini App will require manual TELEGRAM_WEBAPP_URL.")
         return None
+    def stop_quick(self):
+        try:
+            if hasattr(self, '_httpd') and self._httpd:
+                self._httpd.shutdown()
+        except Exception:
+            pass
     def stop(self) -> None:
-        if self.process is None:
+        self.stop_quick()
+        if getattr(self, 'process', None) is None and not hasattr(self, 'process'):
+            pass
+        if hasattr(self, 'process') and self.process is None:
             return
         try:
             self.process.terminate()
@@ -2132,7 +2168,9 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed13"
+    server_version = "AEI-Seed-Bridge/final-ed13-patched"
+    timeout = 10
+    protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
         return
     def _set_cors(self) -> None:
@@ -2539,6 +2577,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"error": "not_found", "path": path})
 def _require_auth(handler: "BridgeHandler") -> bool:
+    # AUDIT PATCH C3: /health must bypass auth to avoid H12 on Heroku health checks
+    try:
+        p = urlparse(handler.path).path
+        if p in ("/health", "/", "/favicon.ico"):
+            return True
+    except Exception:
+        pass
     if not REQUIRE_AUTH or not TELEGRAM_BOT_TOKEN_ENV:
         return True
     raw_init = handler.headers.get("X-Telegram-Init-Data", "").strip()
@@ -2627,6 +2672,7 @@ class BridgeServer:
             self._listen_ok = False
             return
         self._listen_ok = True
+        BRIDGE_ENGINE_REF["bridge_server_ref"] = self
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="aei-bridge", daemon=True
         )
@@ -3358,6 +3404,18 @@ class AEI_Bot:
 def main():
     import signal
     import os
+    def _sigterm_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        # Stop bridge server quickly to satisfy Heroku R12 30s deadline
+        try:
+            bs = BRIDGE_ENGINE_REF.get('bridge_server_ref')
+            if bs:
+                bs.stop_quick()
+        except Exception:
+            pass
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    signal.signal(signal.SIGINT, _sigterm_handler)
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         logger.error("   export TELEGRAM_BOT_TOKEN='YOUR_BOT_TOKEN'")
