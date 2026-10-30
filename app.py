@@ -1358,21 +1358,26 @@ class CrawlerRelayClient:
     seed injection) lives in app.py."""
 
     def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 15,
-                 max_retries: int = 3):
+                 max_retries: int = 3, total_budget_s: float = 20.0):
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
         self.timeout = timeout
         self.max_retries = max_retries
+        self._total_budget_s = total_budget_s
         self._failure_count = 0
 
     def fetch_url(self, url: str) -> Optional[Dict[str, Any]]:
         if not self.relay_url:
             logger.warning("CrawlerRelayClient: RELAY_URL not set")
             return None
+        start = time.monotonic()
         qs = urllib.parse.urlencode({"url": url})
         target = f"{self.relay_url}/?{qs}"
         last_error = None
         for attempt in range(self.max_retries):
+            if time.monotonic() - start > self._total_budget_s:
+                last_error = "budget_exhausted"
+                break
             try:
                 headers = {
                     "Accept": "application/json",
@@ -1394,6 +1399,9 @@ class CrawlerRelayClient:
                 last_error = f"HTTP {e.code}"
                 logger.warning(f"relay HTTP {e.code} for {url} (attempt {attempt+1}/{self.max_retries})")
                 if e.code == 429 and attempt < self.max_retries - 1:
+                    if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
+                        last_error = "budget_exhausted"
+                        break
                     time.sleep(1 + attempt * 2)
                     continue
                 break
@@ -1401,6 +1409,9 @@ class CrawlerRelayClient:
                 last_error = f"URLError: {e.reason}"
                 logger.warning(f"relay URLError for {url}: {e.reason}")
                 if attempt < self.max_retries - 1:
+                    if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
+                        last_error = "budget_exhausted"
+                        break
                     time.sleep(1 + attempt * 2)
                     continue
                 break
@@ -1412,6 +1423,9 @@ class CrawlerRelayClient:
                 last_error = f"{type(e).__name__}: {e}"
                 logger.warning(f"relay error for {url}: {e}")
                 if attempt < self.max_retries - 1:
+                    if time.monotonic() - start + 1 + attempt * 2 > self._total_budget_s:
+                        last_error = "budget_exhausted"
+                        break
                     time.sleep(1 + attempt * 2)
                     continue
                 break
@@ -2001,6 +2015,12 @@ class CrawlerWorker:
         self._task: Optional[asyncio.Task] = None
         self._last_fetch_at: Optional[datetime] = None
         self._crawl_count = 0
+        self._executor: concurrent.futures.ThreadPoolExecutor = (
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="aei-crawl",
+            )
+        )
         initial = seeds if seeds else self.DEFAULT_SEEDS
         if CRAWL_SEED_URLS:
             initial = [u.strip() for u in CRAWL_SEED_URLS.split(",") if u.strip()]
@@ -2008,13 +2028,14 @@ class CrawlerWorker:
             self.state.enqueue(u, depth=0, priority=1)
 
     async def _loop(self):
+        loop = asyncio.get_running_loop()
         while self._running:
             try:
-                url = await asyncio.to_thread(self.state.dequeue)
+                url = await loop.run_in_executor(self._executor, self.state.dequeue)
                 if url is None:
                     await asyncio.sleep(1.0)
                     continue
-                payload = await asyncio.to_thread(self.relay.fetch_url, url)
+                payload = await loop.run_in_executor(self._executor, self.relay.fetch_url, url)
                 if payload and not payload.get("error"):
                     title = str(payload.get("title", ""))
                     content_hash = str(payload.get("content_hash", ""))
@@ -2054,6 +2075,10 @@ class CrawlerWorker:
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
     def snapshot(self) -> Dict[str, Any]:
         snap = self.state.snapshot()
@@ -3544,10 +3569,6 @@ class AEI_Bot:
                     self._bridge_server.stop()
                 except Exception:
                     pass
-            try:
-                await asyncio.get_running_loop().shutdown_default_executor()
-            except Exception:
-                pass
 
         try:
             self.application.post_shutdown = _post_shutdown
