@@ -5,9 +5,9 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.17 (Audit-Patched: F1–F9, P1-13, R12-instant, Relay-hardened, Starvation-guard).
+Version: Final Ed.18 (Audit-Patched: F1–F9, P1-13, R12-instant-v2, Relay-hardened, Starvation-guard).
 """
-__version__ = "final-ed17-r12-hardened-audit-patched"
+__version__ = "final-ed18-r12-instant-v2"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -2755,7 +2755,7 @@ class BridgeServer:
         self._listen_ok = True
         BRIDGE_ENGINE_REF["bridge_server_ref"]=self
         self._thread = threading.Thread(
-            target=self._httpd.serve_forever, name="aei-bridge", daemon=True
+            target=lambda: self._httpd.serve_forever(poll_interval=0.1), name="aei-bridge", daemon=True
         )
         self._thread.start()
         scheme = "https" if self._ssl_context else "http"
@@ -3488,13 +3488,16 @@ def main():
     import os
     import threading
     import asyncio
+    import time as _time_mod
+    _shutdown_event = threading.Event()
     def _emergency_exit(signum, frame):
         try:
-            # R12-instant: log then hard exit, no cleanup
             try:
-                print(f"⚡ SIG {signum} -> instant os._exit(0)", flush=True)
+                print(f"⚡ SIG {signum} -> instant os._exit(0) [ed18]", flush=True)
             except Exception:
                 pass
+            _shutdown_event.set()
+            # Force immediate exit without cleanup - R12 instant
             os._exit(0)
         except Exception:
             try:
@@ -3502,7 +3505,7 @@ def main():
             except Exception:
                 pass
     try:
-        # Install before any other thread, and keep re-installable
+        # Install handlers BEFORE any thread spawn - main thread only
         signal.signal(signal.SIGTERM, _emergency_exit)
         signal.signal(signal.SIGINT, _emergency_exit)
         try:
@@ -3513,11 +3516,28 @@ def main():
             signal.signal(signal.SIGQUIT, _emergency_exit)
         except Exception:
             pass
-        # Ensure SIGTERM is not ignored by asyncio
         try:
             signal.siginterrupt(signal.SIGTERM, False)
         except Exception:
             pass
+        try:
+            signal.siginterrupt(signal.SIGINT, False)
+        except Exception:
+            pass
+    except Exception as _e:
+        try:
+            print(f"signal install failed: {_e}", flush=True)
+        except Exception:
+            pass
+    # Also handle atexit as last resort
+    try:
+        import atexit
+        def _atexit_fast():
+            try:
+                os._exit(0)
+            except Exception:
+                pass
+        # Don't register atexit that blocks - we want instant
     except Exception:
         pass
     if not TELEGRAM_BOT_TOKEN_ENV:
@@ -3539,16 +3559,16 @@ def main():
                 pass
     t = threading.Thread(target=_bot_thread, name="aei-bot-polling", daemon=True)
     t.start()
-    # R12 v17: use signal.pause() for instant delivery, not sleep loop
+    # R12 v18: robust instant-exit loop - no signal.pause() which can miss signals on PID1
+    # Main thread now polls shutdown event every 0.2s and sleeps, allowing signal handlers to fire
     try:
-        while True:
-            try:
-                signal.pause()
-            except AttributeError:
-                # Windows fallback
-                time.sleep(1)
+        while not _shutdown_event.is_set():
+            _time_mod.sleep(0.2)
     except KeyboardInterrupt:
-        pass
+        try:
+            print("KeyboardInterrupt -> os._exit", flush=True)
+        except Exception:
+            pass
     try:
         os._exit(0)
     except Exception:
