@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.20 (R12 no-subprocess) (Audit-Patched: F1–F9, P1-13, R12-instant-v2, Relay-hardened, Starvation-guard).
 """
-__version__ = "final-ed21-r12-exit0"
+__version__ = "final-ed22-r12-sigwait"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -3431,7 +3431,7 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting... ed20 exit0 instant - no killpg")
+        logger.info(f"🤖 {self.bot_name} starting... ed22 sigwait + exit0")
         logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
@@ -3494,11 +3494,10 @@ def main():
     def _emergency_exit(signum, frame):
         try:
             try:
-                print(f"⚡ SIG {signum} -> instant exit0 [ed21] pid={os.getpid()}", flush=True)
+                print(f"⚡ SIG {signum} -> instant exit0 [ed22] pid={os.getpid()} pgid={os.getpgid(0)}", flush=True)
             except Exception:
                 pass
             _shutdown_event.set()
-            # Ed21: hard exit 0 immediately, no SIGKILL so status 0 not 137
             try:
                 os._exit(0)
             except Exception:
@@ -3508,36 +3507,73 @@ def main():
                 os._exit(0)
             except Exception:
                 pass
+    def _install_handlers(tag=""):
+        try:
+            signal.signal(signal.SIGTERM, _emergency_exit)
+            signal.signal(signal.SIGINT, _emergency_exit)
+            try:
+                signal.signal(signal.SIGABRT, _emergency_exit)
+            except Exception:
+                pass
+            try:
+                signal.signal(signal.SIGQUIT, _emergency_exit)
+            except Exception:
+                pass
+            try:
+                signal.siginterrupt(signal.SIGTERM, False)
+            except Exception:
+                pass
+            try:
+                signal.siginterrupt(signal.SIGINT, False)
+            except Exception:
+                pass
+            try:
+                signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM, signal.SIGINT])
+            except Exception:
+                pass
+            # print(f"handlers installed {tag}", flush=True)
+        except Exception as _e:
+            try:
+                print(f"signal install failed {tag}: {_e}", flush=True)
+            except Exception:
+                pass
+
+    _install_handlers("boot")
+
+    # Dedicated sigwait thread - catches SIGTERM even if main thread blocked in Fraction sqrt / GIL
+    def _sigwaiter():
+        try:
+            # Block SIGTERM in this thread? Actually sigwait requires signal to be blocked in all threads
+            # We'll use sigwait if available, otherwise loop polling for _shutdown_event
+            try:
+                # On Linux, sigwait works
+                while True:
+                    try:
+                        # pthread_sigmask to block TERM so sigwait can catch it
+                        signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM])
+                    except Exception:
+                        pass
+                    try:
+                        sig = signal.sigwait([signal.SIGTERM, signal.SIGINT])
+                        print(f"⚡ sigwait got {sig} -> instant exit0 [ed22-sigwait] pid={os.getpid()}", flush=True)
+                        _shutdown_event.set()
+                        os._exit(0)
+                    except AttributeError:
+                        # sigwait not available on this Python - fallback to polling
+                        _time_mod.sleep(1)
+                    except Exception as e:
+                        print(f"sigwait error {e} -> polling", flush=True)
+                        _time_mod.sleep(1)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     try:
-        # Install handlers BEFORE any thread spawn - main thread only, unblock signals
-        signal.signal(signal.SIGTERM, _emergency_exit)
-        signal.signal(signal.SIGINT, _emergency_exit)
-        try:
-            signal.signal(signal.SIGABRT, _emergency_exit)
-        except Exception:
-            pass
-        try:
-            signal.signal(signal.SIGQUIT, _emergency_exit)
-        except Exception:
-            pass
-        try:
-            signal.siginterrupt(signal.SIGTERM, False)
-        except Exception:
-            pass
-        try:
-            signal.siginterrupt(signal.SIGINT, False)
-        except Exception:
-            pass
-        try:
-            # Ensure SIGTERM is not blocked
-            signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM])
-        except Exception:
-            pass
-    except Exception as _e:
-        try:
-            print(f"signal install failed: {_e}", flush=True)
-        except Exception:
-            pass
+        _wt = threading.Thread(target=_sigwaiter, name="aei-sigwait", daemon=True)
+        _wt.start()
+    except Exception:
+        pass
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         sys.exit(1)
@@ -3557,10 +3593,14 @@ def main():
                 pass
     t = threading.Thread(target=_bot_thread, name="aei-bot-polling", daemon=True)
     t.start()
-    # R12 v19: ultra-robust loop - checks event every 0.1s, also checks for orphaned main
+    # Ed22: re-install handlers every 1s to survive PTB overwriting, plus fast poll
+    _loop_count = 0
     try:
         while not _shutdown_event.is_set():
-            _time_mod.sleep(0.1)
+            _time_mod.sleep(0.2)
+            _loop_count += 1
+            if _loop_count % 5 == 0:
+                _install_handlers(f"loop-{_loop_count}")
     except KeyboardInterrupt:
         try:
             print("KeyboardInterrupt -> os._exit [ed19]", flush=True)
