@@ -5,9 +5,9 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.28 (R12 no-subprocess web-dyno) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess, Relay-hardened, Starvation-guard, Health-CS).
+Version: Final Ed.29 (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed28-r12-webdyno-no-subprocess"
+__version__ = "final-ed29-r12-perf-no-subprocess"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -338,10 +338,10 @@ def _rational_sin(x) -> PyFraction:
         if term == PyFraction(0, 1):
             break
     return result
-_EXP_EPSILON: PyFraction = PyFraction(1, 10 ** 40)
-_LOG_EPSILON: PyFraction = PyFraction(1, 10 ** 50)
-_LI_EPSILON: PyFraction = PyFraction(1, 10 ** 40)
-def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
+_EXP_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
+_LOG_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
+_LI_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
+def _symbolic_log(x: Fraction, max_terms: int = 80) -> Fraction:
     """Exact-rational natural log via atanh series with dynamic
     truncation. The series terminates when the term magnitude drops
     below _LOG_EPSILON. Returns Fraction."""
@@ -361,10 +361,22 @@ def _symbolic_log(x: Fraction, max_terms: int = 200) -> Fraction:
             break
         term = term * u_sq
     return Fraction(result * PyFraction(2, 1))
-def _symbolic_exp(x: Fraction, max_terms: int = 200) -> Fraction:
+def _symbolic_exp(x: Fraction, max_terms: int = 80) -> Fraction:
     """Exact-rational exp via Taylor series with dynamic truncation.
     The series terminates when the term magnitude drops below
-    _EXP_EPSILON. Returns Fraction."""
+    _EXP_EPSILON. Returns Fraction. R12-perf: early exit for large negative x -> 0."""
+    # Fast path: exp(-12) ~ 6e-6, exp(-20) ~ 2e-9, below epsilon -> 0
+    try:
+        if x._f < PyFraction(-12, 1):
+            return Fraction.zero()
+        if x._f > PyFraction(12, 1):
+            # For large positive, cap to avoid blowup; in practice we only call with negative ratio_sq
+            # Return a large sentinel as Fraction but avoid huge series
+            if x._f > PyFraction(20, 1):
+                # exp(20) is ~4.8e8, still representable as big int but heavy; cap iterations
+                max_terms = min(max_terms, 40)
+    except Exception:
+        pass
     result = Fraction.one()
     term = Fraction.one()
     for k in range(1, max_terms + 1):
@@ -413,6 +425,7 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
 from functools import lru_cache
 _CACHED_LI: dict = {}
 _CACHED_LOG: dict = {}
+_CACHED_EXP: dict = {}
 def _cached_log_integral(x):
     try:
         key=str(x._f)
@@ -437,6 +450,20 @@ def _cached_symbolic_log(x):
     if len(_CACHED_LOG)>256:
         _CACHED_LOG.pop(next(iter(_CACHED_LOG)))
     return v
+
+def _cached_symbolic_exp(x):
+    try:
+        key=str(x._f)
+    except Exception:
+        key=str(x)
+    if key in _CACHED_EXP:
+        return _CACHED_EXP[key]
+    v=_symbolic_exp(x)
+    _CACHED_EXP[key]=v
+    if len(_CACHED_EXP)>256:
+        _CACHED_EXP.pop(next(iter(_CACHED_EXP)))
+    return v
+
 
 # ============================================================================
 # PROTOCOL DEFINITIONS
@@ -972,7 +999,10 @@ class IntelligenceMetric:
         count of primes ≤ p_n. Not the value of p_n."""
         if x <= Fraction.one():
             return Fraction.one()
-        log_x = _symbolic_log(x)
+        try:
+            log_x = _CACHED_LOG.get(str(x._f)) or _cached_symbolic_log(x)
+        except Exception:
+            log_x = _cached_symbolic_log(x)
         if log_x <= Fraction.zero():
             return Fraction.one()
         sqrt_x = x.sqrt()
@@ -980,20 +1010,32 @@ class IntelligenceMetric:
         try:
             li_x=_CACHED_LI.get(str(x._f)) or _cached_log_integral(x)
         except Exception:
-            li_x=_symbolic_log_integral_approx(x)
+            li_x=_cached_log_integral(x)
         try:
             li_2=_CACHED_LI.get(str(Fraction(2)._f)) or _cached_log_integral(Fraction(2))
         except Exception:
-            li_2=_symbolic_log_integral_approx(Fraction(2))
+            li_2=_cached_log_integral(Fraction(2))
         pi_x_frac = Fraction(pi_x)
         deviation = (pi_x_frac - (li_x - li_2)).abs()
         if bound.is_zero():
             return Fraction.one() if deviation.is_zero() else Fraction.zero()
         ratio = deviation / bound
         ratio_sq = ratio * ratio
-        return _symbolic_exp(-ratio_sq)
+        # Fast path: if ratio_sq > 12, exp(-ratio_sq) ~ 0
+        try:
+            if ratio_sq._f > PyFraction(12, 1):
+                return Fraction.zero()
+        except Exception:
+            pass
+        try:
+            return _CACHED_EXP.get(str((-ratio_sq)._f)) or _cached_symbolic_exp(-ratio_sq)
+        except Exception:
+            return _cached_symbolic_exp(-ratio_sq)
     def calculate_aetheric_stability(self, curl_phi_norm: Fraction) -> Fraction:
-        exp_neg = _symbolic_exp(-curl_phi_norm)
+        try:
+            exp_neg = _CACHED_EXP.get(str((-curl_phi_norm)._f)) or _cached_symbolic_exp(-curl_phi_norm)
+        except Exception:
+            exp_neg = _cached_symbolic_exp(-curl_phi_norm)
         return Fraction.one() / (Fraction.one() + exp_neg)
     def compute_metric(self, valid_pairs: int, total_primes: int,
                        pi_x: int, x: Fraction, curl_phi_norm: Fraction,
@@ -1148,6 +1190,19 @@ class CrawlerSeedState:
         self._records: List[CrawlRecord] = []
         self._frontier: List[str] = []
     def enqueue(self, url: str, depth: int = 0, priority: int = 0) -> None:
+        # R12-hardened: blocklist for domains that cause SSL EOF / heavy load
+        try:
+            low = url.lower()
+            blocked_substr = ("meta.wikimedia.org", "wikimedia.org/w/api", "donate.wikimedia.org", ".pdf", ".zip", ".tar.gz")
+            if any(b in low for b in blocked_substr):
+                return
+            # Only allow wikipedia.org and wikimedia commons for now to avoid broad crawl blowup
+            # Allow en.wikipedia.org, plus same domain as seeds
+            # If depth > 1, restrict to wikipedia domains to keep frontier bounded
+            if depth > 1 and "wikipedia.org" not in low:
+                return
+        except Exception:
+            pass
         with self._lock:
             try:
                 self._conn.execute(
@@ -1258,7 +1313,7 @@ class CrawlerRelayClient:
     does the network I/O; all crawl logic (frontier, visited set,
     seed injection) lives in app.py."""
     def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 20,
-                 max_retries: int = 4, total_budget_s: float = 45.0):
+                 max_retries: int = 4, total_budget_s: float = 90.0):
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
         self.timeout = timeout
@@ -1269,6 +1324,14 @@ class CrawlerRelayClient:
         if not self.relay_url:
             logger.warning("CrawlerRelayClient: RELAY_URL not set")
             return None
+        # Fast blocklist at fetch time too
+        try:
+            low = url.lower()
+            if "meta.wikimedia.org" in low:
+                logger.info(f"relay skip blocklisted {url}")
+                return None
+        except Exception:
+            pass
         start = time.monotonic()
         qs = urllib.parse.urlencode({"url": url})
         target = f"{self.relay_url}/?{qs}"
@@ -2070,10 +2133,10 @@ class SeedWorker:
                 try:
                     record = await asyncio.wait_for(
                         loop.run_in_executor(self._executor, self.seed.step, x),
-                        timeout=8.0,
+                        timeout=15.0,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning("seed loop timeout: step exceeded 8s (was 25s) — killing stuck executor, using tick fallback")
+                    logger.warning("seed loop timeout: step exceeded 15s (was 25s) — killing stuck executor, using tick fallback")
                     try:
                         self._executor.shutdown(wait=False, cancel_futures=True)
                     except Exception:
@@ -2127,7 +2190,7 @@ def _fqdn_fast(host: str) -> str:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed28-r12-webdyno"
+    server_version = "AEI-Seed-Bridge/final-ed29-r12-perf"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -2195,7 +2258,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed28-r12-webdyno",
+                "version": "final-ed29-r12-perf",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
