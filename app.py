@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.20 (R12 no-subprocess) (Audit-Patched: F1–F9, P1-13, R12-instant-v2, Relay-hardened, Starvation-guard).
 """
-__version__ = "final-ed24-r12-nuclear"
+__version__ = "final-ed25-r12-nuclear-gilfree"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -2060,7 +2060,6 @@ class SeedWorker:
     async def _loop(self):
         while self._running:
             try:
-                # starvation guard: if crawler has no data for >30s, use tick as x (deterministic fallback)
                 hash_frac = self.crawler.state.latest_hash_fraction()
                 crawler_idle = (self.crawler.state.visited_count() == 0 and self.crawler.state.frontier_size() == 0)
                 if hash_frac == PyFraction(0, 1) or crawler_idle:
@@ -2068,11 +2067,24 @@ class SeedWorker:
                 else:
                     x = Fraction(hash_frac)
                 loop = asyncio.get_running_loop()
-                # R12-hardened: 25s timeout matches log message, prevents executor pile-up
-                record = await asyncio.wait_for(
-                    loop.run_in_executor(self._executor, self.seed.step, x),
-                    timeout=25.0,
-                )
+                # Ed25: 8s timeout, not 25s, to avoid GIL starvation blocking SIGTERM handling
+                # If timeout, kill executor and recreate so stuck Fraction thread doesn't hold GIL
+                try:
+                    record = await asyncio.wait_for(
+                        loop.run_in_executor(self._executor, self.seed.step, x),
+                        timeout=8.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("seed loop timeout: step exceeded 8s (was 25s) — killing stuck executor, using tick fallback")
+                    try:
+                        self._executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
+                    try:
+                        self._executor = _DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="aei-seed-step")
+                    except Exception:
+                        pass
+                    raise
                 _emit_toast("seed", {
                     "tick": record["tick"],
                     "generation": record["generation"],
@@ -2085,8 +2097,9 @@ class SeedWorker:
                 await asyncio.sleep(SEED_TICK_INTERVAL)
             except asyncio.CancelledError:
                 break
-            except asyncio.TimeoutError:
-                logger.warning("seed loop timeout: step exceeded 25s (queue starvation or slow relay) — using tick fallback next cycle")
+            except asyncio.TimeoutError as _te:
+                # Already handled above, this is fallback
+                logger.warning(f"seed loop timeout outer: {_te} — tick fallback")
                 await asyncio.sleep(2.0)
             except Exception as e:
                 logger.warning(f"seed loop error: {type(e).__name__}: {e}")
@@ -3431,7 +3444,7 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting... ed24 nuclear exit0 + capped sqrt")
+        logger.info(f"🤖 {self.bot_name} starting... ed25 nuclear exit0 + gilfree + 5s timeout")
         logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
