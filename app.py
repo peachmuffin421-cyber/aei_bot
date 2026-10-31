@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.20 (R12 no-subprocess) (Audit-Patched: F1–F9, P1-13, R12-instant-v2, Relay-hardened, Starvation-guard).
 """
-__version__ = "final-ed23-r12-sigwait-block"
+__version__ = "final-ed24-r12-nuclear"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -170,7 +170,7 @@ class Fraction:
         return Decimal(self._f.numerator) / Decimal(self._f.denominator)
     def to_float(self) -> float:  # display only, never used in step()
         return float(self._f.numerator) / float(self._f.denominator)
-    def sqrt(self, iterations: int = 30) -> 'Fraction':
+    def sqrt(self, iterations: int = 8) -> 'Fraction':
         """Newton–Raphson exact-rational square root approximation.
         Each iteration is exact. The result is a Fraction, never a float.
         The FG allows sqrt at the I/O boundary only; the seed's state
@@ -3431,7 +3431,7 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting... ed23 sigwait-block + exit0")
+        logger.info(f"🤖 {self.bot_name} starting... ed24 nuclear exit0 + capped sqrt")
         logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
@@ -3527,9 +3527,9 @@ def main():
                 signal.siginterrupt(signal.SIGINT, False)
             except Exception:
                 pass
-            # Ed23: BLOCK SIGTERM in main so sigwait thread can catch it reliably
+            # Ed24 nuclear: UNBLOCK TERM in main so handler fires instantly
             try:
-                signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM, signal.SIGINT])
+                signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM, signal.SIGINT, signal.SIGQUIT, signal.SIGABRT])
             except Exception:
                 pass
         except Exception as _e:
@@ -3541,8 +3541,8 @@ def main():
     _install_handlers("boot")
 
     def _sigwaiter():
+        # Backup catcher - runs in separate thread with TERM blocked, uses sigwait as last resort
         try:
-            # Ensure TERM is blocked in this thread too
             try:
                 signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM, signal.SIGINT])
             except Exception:
@@ -3550,13 +3550,17 @@ def main():
             while True:
                 try:
                     sig = signal.sigwait([signal.SIGTERM, signal.SIGINT])
-                    print(f"⚡ sigwait got {sig} -> instant exit0 [ed23-sigwait] pid={os.getpid()} pgid={os.getpgid(0)}", flush=True)
+                    print(f"⚡ sigwait got {sig} -> instant exit0 [ed24-sigwait] pid={os.getpid()} pgid={os.getpgid(0)}", flush=True)
                     _shutdown_event.set()
                     os._exit(0)
                 except AttributeError:
-                    _time_mod.sleep(0.5)
+                    # No sigwait - just poll shutdown event
+                    while not _shutdown_event.is_set():
+                        _time_mod.sleep(0.5)
+                    print(f"⚡ shutdown_event set -> exit0 [ed24-poll] pid={os.getpid()}", flush=True)
+                    os._exit(0)
                 except Exception as e:
-                    print(f"sigwait error {e} -> exit0 fallback", flush=True)
+                    print(f"sigwait error {e} -> exit0 fallback [ed24]", flush=True)
                     try:
                         os._exit(0)
                     except Exception:
@@ -3564,9 +3568,25 @@ def main():
         except Exception:
             pass
 
+    def _watchdog():
+        # Watchdog - if main loop stalls >5s, force exit on shutdown
+        try:
+            while True:
+                _time_mod.sleep(1)
+                if _shutdown_event.is_set():
+                    print(f"⚡ watchdog shutdown_event -> exit0 [ed24-watchdog] pid={os.getpid()}", flush=True)
+                    os._exit(0)
+        except Exception:
+            pass
+
     try:
         _wt = threading.Thread(target=_sigwaiter, name="aei-sigwait", daemon=True)
         _wt.start()
+    except Exception:
+        pass
+    try:
+        _wd = threading.Thread(target=_watchdog, name="aei-watchdog", daemon=True)
+        _wd.start()
     except Exception:
         pass
     if not TELEGRAM_BOT_TOKEN_ENV:
@@ -3588,7 +3608,6 @@ def main():
                 pass
     t = threading.Thread(target=_bot_thread, name="aei-bot-polling", daemon=True)
     t.start()
-    # Ed22: re-install handlers every 1s to survive PTB overwriting, plus fast poll
     _loop_count = 0
     try:
         while not _shutdown_event.is_set():
@@ -3596,6 +3615,8 @@ def main():
             _loop_count += 1
             if _loop_count % 5 == 0:
                 _install_handlers(f"loop-{_loop_count}")
+                # print heartbeat every 5s to prove main thread alive
+                # print(f"♥ main alive { _loop_count } pid={os.getpid()}", flush=True)
     except KeyboardInterrupt:
         try:
             print("KeyboardInterrupt -> os._exit [ed19]", flush=True)
