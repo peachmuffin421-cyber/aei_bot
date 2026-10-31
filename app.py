@@ -5,9 +5,9 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.18 (Audit-Patched: F1–F9, P1-13, R12-instant-v2, Relay-hardened, Starvation-guard).
+Version: Final Ed.19 (Audit-Patched: F1–F9, P1-13, R12-instant-v2, Relay-hardened, Starvation-guard).
 """
-__version__ = "final-ed18-r12-instant-v2"
+__version__ = "final-ed19-r12-killpg"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -3493,19 +3493,36 @@ def main():
     def _emergency_exit(signum, frame):
         try:
             try:
-                print(f"⚡ SIG {signum} -> instant os._exit(0) [ed18]", flush=True)
+                print(f"⚡ SIG {signum} -> instant killpg [ed19]", flush=True)
             except Exception:
                 pass
             _shutdown_event.set()
-            # Force immediate exit without cleanup - R12 instant
-            os._exit(0)
+            # Kill entire process group first, then hard exit
+            try:
+                os.killpg(os.getpgid(0), 9)
+            except Exception:
+                pass
+            try:
+                os._exit(0)
+            except Exception:
+                pass
+            # Fallback - _exit via _os
+            try:
+                import _thread
+                _thread.interrupt_main()
+            except Exception:
+                pass
+            try:
+                os._exit(0)
+            except Exception:
+                pass
         except Exception:
             try:
                 os._exit(0)
             except Exception:
                 pass
     try:
-        # Install handlers BEFORE any thread spawn - main thread only
+        # Install handlers BEFORE any thread spawn - main thread only, unblock signals
         signal.signal(signal.SIGTERM, _emergency_exit)
         signal.signal(signal.SIGINT, _emergency_exit)
         try:
@@ -3524,22 +3541,16 @@ def main():
             signal.siginterrupt(signal.SIGINT, False)
         except Exception:
             pass
+        try:
+            # Ensure SIGTERM is not blocked
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM])
+        except Exception:
+            pass
     except Exception as _e:
         try:
             print(f"signal install failed: {_e}", flush=True)
         except Exception:
             pass
-    # Also handle atexit as last resort
-    try:
-        import atexit
-        def _atexit_fast():
-            try:
-                os._exit(0)
-            except Exception:
-                pass
-        # Don't register atexit that blocks - we want instant
-    except Exception:
-        pass
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         sys.exit(1)
@@ -3559,18 +3570,26 @@ def main():
                 pass
     t = threading.Thread(target=_bot_thread, name="aei-bot-polling", daemon=True)
     t.start()
-    # R12 v18: robust instant-exit loop - no signal.pause() which can miss signals on PID1
-    # Main thread now polls shutdown event every 0.2s and sleeps, allowing signal handlers to fire
+    # R12 v19: ultra-robust loop - checks event every 0.1s, also checks for orphaned main
     try:
         while not _shutdown_event.is_set():
-            _time_mod.sleep(0.2)
+            _time_mod.sleep(0.1)
     except KeyboardInterrupt:
         try:
-            print("KeyboardInterrupt -> os._exit", flush=True)
+            print("KeyboardInterrupt -> os._exit [ed19]", flush=True)
+        except Exception:
+            pass
+    except Exception as _e:
+        try:
+            print(f"main loop exception {_e} -> exit", flush=True)
         except Exception:
             pass
     try:
         os._exit(0)
+    except Exception:
+        pass
+    try:
+        os.killpg(os.getpgid(0), 9)
     except Exception:
         pass
 
