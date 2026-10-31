@@ -5,9 +5,9 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.20 (R12 no-subprocess) (Audit-Patched: F1–F9, P1-13, R12-instant-v2, Relay-hardened, Starvation-guard).
+Version: Final Ed.28 (R12 no-subprocess web-dyno) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess, Relay-hardened, Starvation-guard, Health-CS).
 """
-__version__ = "final-ed27-r12-pruned"
+__version__ = "final-ed28-r12-webdyno-no-subprocess"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -20,7 +20,6 @@ import queue
 import sys
 import ssl
 import logging
-import subprocess
 import threading
 import time
 import re as _re_bridge
@@ -1831,7 +1830,6 @@ else:
 BRIDGE_USE_TLS: bool = os.getenv("BRIDGE_USE_TLS", "0").strip() in ("1", "true", "yes")
 BRIDGE_TLS_CERT: str = os.getenv("BRIDGE_TLS_CERT", "").strip()
 BRIDGE_TLS_KEY: str = os.getenv("BRIDGE_TLS_KEY", "").strip()
-BRIDGE_TUNNEL: str = os.getenv("BRIDGE_TUNNEL", "cloudflared").strip().lower()
 BRIDGE_PUBLIC_TIMEOUT: int = int(os.getenv("BRIDGE_PUBLIC_TIMEOUT", "45"))
 REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "1").strip() in ("1", "true", "yes")
 CORS_ORIGIN: str = os.getenv("CORS_ORIGIN", "*").strip()
@@ -2126,144 +2124,10 @@ class SeedWorker:
 def _fqdn_fast(host: str) -> str:
     return host
 # ============================================================================
-# TUNNEL MANAGER (kept for optional worker-dyno deployments; skipped on web)
-# ============================================================================
-class TunnelManager:
-    URL_RE_CLOUDFLARED = _re_bridge.compile(r"https://[a-z0-9\-]+\.trycloudflare\.com")
-    URL_RE_NGROK = _re_bridge.compile(r"https://[a-z0-9\-]+\.ngrok(?:-free)?\.app")
-    URL_RE_SERVEO = _re_bridge.compile(r"https://[a-z0-9\-]+\.serveo\.net")
-    def __init__(self, port: int, prefer: str = "cloudflared", timeout: int = 45):
-        self.port = port
-        self.prefer = prefer
-        self.timeout = timeout
-        self.process: Optional[subprocess.Popen] = None
-        self.public_url: Optional[str] = None
-        self.provider: Optional[str] = None
-    def _which(self, name: str) -> Optional[str]:
-        from shutil import which
-        return which(name)
-    def _spawn(self, cmd: List[str]) -> subprocess.Popen:
-        logger.info(f"🌐 Spawning tunnel: {' '.join(cmd)}")
-        return subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, bufsize=1,
-                                universal_newlines=True)
-    def _scan_for_url(self, proc: subprocess.Popen, regex, deadline: float) -> Optional[str]:
-        assert proc.stdout is not None
-        for raw in proc.stdout:
-            line = raw.rstrip("\n")
-            if line:
-                logger.debug(f"[tunnel] {line}")
-                m = regex.search(line)
-                if m:
-                    return m.group(0)
-                if time.time() > deadline:
-                    return None
-        return None
-    def _try_cloudflared(self) -> Optional[str]:
-        if not self._which("cloudflared"):
-            return None
-        try:
-            proc = self._spawn(["cloudflared", "tunnel", "--url",
-                                f"http://127.0.0.1:{self.port}", "--no-autoupdate"])
-        except Exception as e:
-            logger.warning(f"cloudflared spawn failed: {e}")
-            return None
-        deadline = time.time() + self.timeout
-        url = self._scan_for_url(proc, self.URL_RE_CLOUDFLARED, deadline)
-        if url:
-            self.process = proc
-            self.public_url = url
-            self.provider = "cloudflared"
-            return url
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-        return None
-    def _try_ngrok(self) -> Optional[str]:
-        if not self._which("ngrok"):
-            return None
-        try:
-            proc = self._spawn(["ngrok", "http", str(self.port), "--log=stdout"])
-        except Exception as e:
-            logger.warning(f"ngrok spawn failed: {e}")
-            return None
-        deadline = time.time() + self.timeout
-        url = self._scan_for_url(proc, self.URL_RE_NGROK, deadline)
-        if url:
-            self.process = proc
-            self.public_url = url
-            self.provider = "ngrok"
-            return url
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-        return None
-    def _try_serveo(self) -> Optional[str]:
-        if not self._which("ssh"):
-            return None
-        try:
-            proc = self._spawn(["ssh", "-o", "StrictHostKeyChecking=no",
-                                "-o", "ServerAliveInterval=30",
-                                "-R", f"80:127.0.0.1:{self.port}", "serveo.net"])
-        except Exception as e:
-            logger.warning(f"serveo spawn failed: {e}")
-            return None
-        deadline = time.time() + self.timeout
-        url = self._scan_for_url(proc, self.URL_RE_SERVEO, deadline)
-        if url:
-            self.process = proc
-            self.public_url = url
-            self.provider = "serveo"
-            return url
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-        return None
-    def start(self) -> Optional[str]:
-        if TELEGRAM_WEBAPP_URL:
-            self.public_url = TELEGRAM_WEBAPP_URL
-            self.provider = "explicit"
-            BRIDGE_ENGINE_REF["public_url"] = self.public_url
-            logger.info(f"🌐 Using explicit TELEGRAM_WEBAPP_URL: {self.public_url}")
-            return self.public_url
-        order = [self.prefer] + [p for p in ("cloudflared", "ngrok", "serveo")
-                                 if p != self.prefer]
-        for provider in order:
-            method = getattr(self, f"_try_{provider}", None)
-            if method is None:
-                continue
-            try:
-                url = method()
-            except Exception as e:
-                logger.warning(f"Tunnel provider {provider} raised: {e}")
-                url = None
-            if url:
-                BRIDGE_ENGINE_REF["public_url"] = url
-                logger.info(f"🌐 Tunnel established via {provider}: {url}")
-                return url
-        logger.warning("⚠️ No tunnel available. Telegram Mini App will require manual TELEGRAM_WEBAPP_URL.")
-        return None
-    def stop(self) -> None:
-        if self.process is None:
-            return
-        try:
-            self.process.terminate()
-            self.process.wait(timeout=5)
-        except Exception:
-            try:
-                self.process.kill()
-            except Exception:
-                pass
-        self.process = None
-        logger.info("🌐 Tunnel stopped")
-# ============================================================================
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed13-patched-r12"
+    server_version = "AEI-Seed-Bridge/final-ed28-r12-webdyno"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -2331,14 +2195,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed13",
+                "version": "final-ed28-r12-webdyno",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
                 "seed_tick": (seed.tick if seed else 0),
                 "seed_generation": (seed.generation if seed else 0),
                 "seed_state": _cs(raw_state),
-                "seed_state_raw": raw_state,
                 "prime_count": (len(seed.primes) if seed else 0),
                 "lattice_points": (len(seed.lattice.points()) if seed else 0),
                 "crawler_frontier": (crawler.state.frontier_size() if crawler else 0),
@@ -2710,8 +2573,6 @@ class BridgeServer:
         self.port = int(port)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
-        self._tunnel: Optional[TunnelManager] = None
-        self._tunnel_thread: Optional[threading.Thread] = None
         self._ssl_context: Optional[ssl.SSLContext] = None
         self._listen_ready: threading.Event = threading.Event()
         self._listen_ok: bool = False
@@ -2785,30 +2646,52 @@ class BridgeServer:
                 "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
                 "Set it to https://<app>.herokuapp.com/ and re-run /setmenubutton."
             )
-        # Publish the Heroku URL if we can infer it from the env.
-        heroku_url = os.getenv("HEROKU_APP_DEFAULT_DOMAIN_NAME", "").strip()
-        if heroku_url:
-            guessed = f"https://{heroku_url}/"
-            BRIDGE_ENGINE_REF["public_url"] = guessed
-            logger.info(f"🌐 Inferred public URL from HEROKU_APP_DEFAULT_DOMAIN_NAME: {guessed}")
+        # R12 no-subprocess: web-dyno substrate never spawns a tunnel.
+        # Heroku router is the public edge. Public URL comes from TELEGRAM_WEBAPP_URL
+        # or from Heroku-inferred domain. Local dev also requires explicit TELEGRAM_WEBAPP_URL.
+        if TELEGRAM_WEBAPP_URL:
+            BRIDGE_ENGINE_REF["public_url"] = TELEGRAM_WEBAPP_URL
+            logger.info(f"🌐 Public URL from TELEGRAM_WEBAPP_URL: {TELEGRAM_WEBAPP_URL}")
+        elif _ENV_PORT:
+            heroku_url = os.getenv("HEROKU_APP_DEFAULT_DOMAIN_NAME", "").strip() or os.getenv("HEROKU_APP_NAME", "").strip()
+            if heroku_url:
+                if not heroku_url.startswith("http"):
+                    guessed = f"https://{heroku_url}.herokuapp.com/" if "." not in heroku_url and "herokuapp.com" not in heroku_url else f"https://{heroku_url}/" if not heroku_url.startswith("https://") else heroku_url
+                    if "herokuapp.com" not in guessed and "." not in heroku_url:
+                        guessed = f"https://{heroku_url}.herokuapp.com/"
+                    elif not guessed.startswith("https://"):
+                        guessed = f"https://{heroku_url}/"
+                    BRIDGE_ENGINE_REF["public_url"] = guessed
+                    logger.info(f"🌐 Inferred public URL from env: {guessed}")
+                else:
+                    BRIDGE_ENGINE_REF["public_url"] = None
+                    logger.warning(
+                        "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
+                        "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ and re-run /setmenubutton. "
+                        "No tunnel is spawned on a web dyno (R12)."
+                    )
+            else:
+                BRIDGE_ENGINE_REF["public_url"] = None
+                logger.warning(
+                    "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
+                    "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ and re-run /setmenubutton. "
+                    "No tunnel is spawned on a web dyno (R12)."
+                )
         else:
-            self._tunnel = TunnelManager(
-                self.port, prefer=BRIDGE_TUNNEL, timeout=BRIDGE_PUBLIC_TIMEOUT
-            )
-            self._tunnel_thread = threading.Thread(
-                target=self._tunnel.start, name="aei-tunnel", daemon=True
-            )
-            self._tunnel_thread.start()
+            if TELEGRAM_WEBAPP_URL:
+                BRIDGE_ENGINE_REF["public_url"] = TELEGRAM_WEBAPP_URL
+                logger.info(f"🌐 Local public URL from TELEGRAM_WEBAPP_URL: {TELEGRAM_WEBAPP_URL}")
+            else:
+                BRIDGE_ENGINE_REF["public_url"] = None
+                logger.warning(
+                    "⚠️ Local substrate but TELEGRAM_WEBAPP_URL is unset. "
+                    "Set TELEGRAM_WEBAPP_URL manually for phone testing. "
+                    "Tunnel spawning removed under R12 no-subprocess."
+                )
         self._listen_ready.set()
     def stop(self) -> None:
         # R12-fast: do not block on shutdown() which can wait for active requests
-        if self._tunnel is not None:
-            try:
-                self._tunnel.stop()
-            except Exception:
-                pass
-            self._tunnel = None
-        self._tunnel_thread = None
+        # R12 no-subprocess: no tunnel to stop
         if self._httpd is not None:
             httpd = self._httpd
             self._httpd = None
