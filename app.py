@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.20 (R12 no-subprocess) (Audit-Patched: F1–F9, P1-13, R12-instant-v2, Relay-hardened, Starvation-guard).
 """
-__version__ = "final-ed22-r12-sigwait"
+__version__ = "final-ed23-r12-sigwait-block"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -3431,7 +3431,7 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting... ed22 sigwait + exit0")
+        logger.info(f"🤖 {self.bot_name} starting... ed23 sigwait-block + exit0")
         logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
@@ -3527,11 +3527,11 @@ def main():
                 signal.siginterrupt(signal.SIGINT, False)
             except Exception:
                 pass
+            # Ed23: BLOCK SIGTERM in main so sigwait thread can catch it reliably
             try:
-                signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM, signal.SIGINT])
+                signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM, signal.SIGINT])
             except Exception:
                 pass
-            # print(f"handlers installed {tag}", flush=True)
         except Exception as _e:
             try:
                 print(f"signal install failed {tag}: {_e}", flush=True)
@@ -3540,32 +3540,27 @@ def main():
 
     _install_handlers("boot")
 
-    # Dedicated sigwait thread - catches SIGTERM even if main thread blocked in Fraction sqrt / GIL
     def _sigwaiter():
         try:
-            # Block SIGTERM in this thread? Actually sigwait requires signal to be blocked in all threads
-            # We'll use sigwait if available, otherwise loop polling for _shutdown_event
+            # Ensure TERM is blocked in this thread too
             try:
-                # On Linux, sigwait works
-                while True:
-                    try:
-                        # pthread_sigmask to block TERM so sigwait can catch it
-                        signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM])
-                    except Exception:
-                        pass
-                    try:
-                        sig = signal.sigwait([signal.SIGTERM, signal.SIGINT])
-                        print(f"⚡ sigwait got {sig} -> instant exit0 [ed22-sigwait] pid={os.getpid()}", flush=True)
-                        _shutdown_event.set()
-                        os._exit(0)
-                    except AttributeError:
-                        # sigwait not available on this Python - fallback to polling
-                        _time_mod.sleep(1)
-                    except Exception as e:
-                        print(f"sigwait error {e} -> polling", flush=True)
-                        _time_mod.sleep(1)
+                signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM, signal.SIGINT])
             except Exception:
                 pass
+            while True:
+                try:
+                    sig = signal.sigwait([signal.SIGTERM, signal.SIGINT])
+                    print(f"⚡ sigwait got {sig} -> instant exit0 [ed23-sigwait] pid={os.getpid()} pgid={os.getpgid(0)}", flush=True)
+                    _shutdown_event.set()
+                    os._exit(0)
+                except AttributeError:
+                    _time_mod.sleep(0.5)
+                except Exception as e:
+                    print(f"sigwait error {e} -> exit0 fallback", flush=True)
+                    try:
+                        os._exit(0)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
