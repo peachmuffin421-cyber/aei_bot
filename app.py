@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.29 (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed31-r12-fixed-int-limit"
+__version__ = "final-ed32-r12-fixed-msglen-conflict"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -2945,6 +2945,10 @@ class AEI_Bot:
             rows.append([InlineKeyboardButton("⏳ Mini App (URL pending…)", callback_data="webapp_pending")])
         return InlineKeyboardMarkup(rows)
     async def _safe_reply(self, update: "Update", text: str, reply_markup=None) -> bool:
+        # Ed32: truncate to avoid Message_too_long with huge Fractions
+        MAX_TG = 3500
+        if len(text) > MAX_TG:
+            text = text[:MAX_TG-100] + f"\n... [truncated {len(text)-MAX_TG} chars]\n"
         msg = update.effective_message
         query = update.callback_query
         target = query if query is not None else msg
@@ -2959,13 +2963,16 @@ class AEI_Bot:
                                      reply_markup=reply_markup)
             return True
         except Exception as e1:
+            # If still too long, truncate more aggressively
+            if "too_long" in str(e1).lower() or "too long" in str(e1).lower():
+                text = text[:1500] + "\n... [hard truncated]"
             logger.info(f"_safe_reply attempt 1 failed: {e1}")
             try:
                 if query is not None:
-                    await query.edit_message_text(text, parse_mode=None,
+                    await query.edit_message_text(text[:1500], parse_mode=None,
                                                   reply_markup=reply_markup)
                 else:
-                    await msg.reply_text(text, parse_mode=None,
+                    await msg.reply_text(text[:1500], parse_mode=None,
                                          reply_markup=reply_markup)
                 return True
             except Exception as e2:
@@ -3386,6 +3393,15 @@ class AEI_Bot:
     async def error_handler(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         err = context.error
         err_str = f"{type(err).__name__}: {err}" if err is not None else "unknown"
+        # Ed32: Conflict means another instance polling - sleep to let it die
+        if "Conflict" in err_str or "terminated by other getUpdates" in err_str:
+            logger.warning(f"Conflict detected (another bot instance): sleeping 5s before retry")
+            try:
+                import asyncio as _asyncio
+                await _asyncio.sleep(5.0)
+            except Exception:
+                pass
+            return
         logger.error(f"handler error: {err_str}")
 
     def run(self):
@@ -3412,6 +3428,12 @@ class AEI_Bot:
             .post_init(self._post_init)
             .build()
         )
+        # Ed32: ensure single polling instance, drop pending to avoid Conflict storm
+        try:
+            # will be used in run_polling
+            self._drop_pending = True
+        except Exception:
+            pass
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("help", self.help))
         self.application.add_handler(CommandHandler("status", self.status))
@@ -3432,7 +3454,7 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting... ed30 no-livelock + graceful SIGTERM")
+        logger.info(f"🤖 {self.bot_name} starting... ed32 msglen-conflict-fix + graceful SIGTERM")
         logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
@@ -3477,9 +3499,10 @@ class AEI_Bot:
                 allowed_updates=Update.ALL_TYPES,
                 stop_signals=[],
                 close_loop=False,
+                drop_pending_updates=True,
             )
         except TypeError:
-            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+            self.application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 # ============================================================================
 # MAIN
@@ -3512,6 +3535,11 @@ def main():
         except Exception as _e:
             print(f"signal install failed {tag}: {_e}", flush=True)
 
+    # Ed32: force WEB_CONCURRENCY=1 to avoid double polling
+    try:
+        os.environ["WEB_CONCURRENCY"] = "1"
+    except Exception:
+        pass
     _install_handlers("boot")
 
     if not TELEGRAM_BOT_TOKEN_ENV:
