@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.29 (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed29-r12-perf-no-subprocess"
+__version__ = "final-ed30-r12-fixed-no-livelock"
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -1327,8 +1327,8 @@ class CrawlerRelayClient:
         # Fast blocklist at fetch time too
         try:
             low = url.lower()
-            if "meta.wikimedia.org" in low:
-                logger.info(f"relay skip blocklisted {url}")
+            if any(d in low for d in ("meta.wikimedia.org", "wikimedia.org/w/api.php", "wikimedia.org/wiki/Special:")):
+                logger.info(f"relay skip blocklisted {low[:120]}")
                 return None
         except Exception:
             pass
@@ -2064,14 +2064,23 @@ class CrawlerWorker:
                     self._last_fetch_at = datetime.now()
                     self._crawl_count += 1
                 else:
-                    logger.info(f"crawl skipped: {url} (no payload) — re-enqueue low priority")
-                    # do not drop forever: re-enqueue with depth+1 and low priority for later retry
-                    # prevents queue starvation when relay flakes
-                    try:
-                        self.state.enqueue(url, depth=1, priority=-1)
-                    except Exception:
-                        pass
-                await asyncio.sleep(CRAWL_INTERVAL)
+                    # Ed30: don't infinite-re-enqueue on relay failure, respect failure_count
+                    if self.relay.failure_count() >= 3:
+                        logger.info(f"crawl skipped: {url} (no payload) — circuit breaker active, not re-enqueueing")
+                    elif "meta.wikimedia.org" in url.lower() or "wikimedia.org" in url.lower():
+                        logger.info(f"crawl skipped: {url} (no payload) — blocked domain, dropping")
+                    else:
+                        logger.info(f"crawl skipped: {url} (no payload) — re-enqueue low priority")
+                        try:
+                            # only retry once, depth+1, low priority
+                            self.state.enqueue(url, depth=1, priority=-1)
+                        except Exception:
+                            pass
+                # Ed30: backoff when relay unhealthy
+                if self.relay.failure_count() >= 3:
+                    await asyncio.sleep(10.0)
+                else:
+                    await asyncio.sleep(CRAWL_INTERVAL)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -2119,6 +2128,8 @@ class SeedWorker:
             )
         )
     async def _loop(self):
+        # Ed30 FIX: no executor kill loop, GIL-safe timeout handling
+        consecutive_timeouts = 0
         while self._running:
             try:
                 hash_frac = self.crawler.state.latest_hash_fraction()
@@ -2128,24 +2139,30 @@ class SeedWorker:
                 else:
                     x = Fraction(hash_frac)
                 loop = asyncio.get_running_loop()
-                # Ed25: 8s timeout, not 25s, to avoid GIL starvation blocking SIGTERM handling
-                # If timeout, kill executor and recreate so stuck Fraction thread doesn't hold GIL
+                # Ed30: 30s timeout, DO NOT destroy executor on timeout (daemon thread keeps GIL)
                 try:
                     record = await asyncio.wait_for(
                         loop.run_in_executor(self._executor, self.seed.step, x),
-                        timeout=15.0,
+                        timeout=30.0,
                     )
+                    consecutive_timeouts = 0
                 except asyncio.TimeoutError:
-                    logger.warning("seed loop timeout: step exceeded 15s (was 25s) — killing stuck executor, using tick fallback")
-                    try:
-                        self._executor.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
-                    try:
-                        self._executor = _DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="aei-seed-step")
-                    except Exception:
-                        pass
-                    raise
+                    consecutive_timeouts += 1
+                    logger.warning(f"seed loop timeout: step exceeded 30s (tick={self.seed.tick}) consecutive={consecutive_timeouts} — keeping executor, using tick fallback")
+                    # Only recreate executor after 3 consecutive timeouts to recover leaked thread
+                    if consecutive_timeouts >= 3:
+                        logger.warning("seed loop: 3 consecutive timeouts — recycling executor")
+                        try:
+                            self._executor.shutdown(wait=False, cancel_futures=True)
+                        except Exception:
+                            pass
+                        try:
+                            self._executor = _DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="aei-seed-step")
+                        except Exception:
+                            pass
+                        consecutive_timeouts = 0
+                    await asyncio.sleep(2.0)
+                    continue
                 _emit_toast("seed", {
                     "tick": record["tick"],
                     "generation": record["generation"],
@@ -2158,10 +2175,6 @@ class SeedWorker:
                 await asyncio.sleep(SEED_TICK_INTERVAL)
             except asyncio.CancelledError:
                 break
-            except asyncio.TimeoutError as _te:
-                # Already handled above, this is fallback
-                logger.warning(f"seed loop timeout outer: {_te} — tick fallback")
-                await asyncio.sleep(2.0)
             except Exception as e:
                 logger.warning(f"seed loop error: {type(e).__name__}: {e}")
                 await asyncio.sleep(2.0)
@@ -3390,7 +3403,7 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting... ed27 pruned lattice + instant exit0")
+        logger.info(f"🤖 {self.bot_name} starting... ed30 no-livelock + graceful SIGTERM")
         logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
@@ -3421,10 +3434,9 @@ class AEI_Bot:
                     except Exception:
                         pass
             finally:
-                try:
-                    os._exit(0)
-                except Exception:
-                    pass
+                # Ed30: no os._exit in post_shutdown, let PTB close gracefully
+                logger.info("post_shutdown complete [ed30]")
+                pass
 
         try:
             self.application.post_shutdown = _post_shutdown
@@ -3450,131 +3462,35 @@ def main():
     import asyncio
     import time as _time_mod
     _shutdown_event = threading.Event()
-    def _emergency_exit(signum, frame):
-        try:
-            try:
-                print(f"⚡ SIG {signum} -> instant exit0 [ed27] pid={os.getpid()} pgid={os.getpgid(0)}", flush=True)
-            except Exception:
-                pass
-            _shutdown_event.set()
-            try:
-                # Try to stop seed and crawler workers immediately to free GIL
-                ref = BRIDGE_ENGINE_REF
-                if ref:
-                    try:
-                        c = ref.get("crawler")
-                        if c:
-                            c._running = False
-                            try:
-                                c.stop()
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    try:
-                        s = ref.get("seed")
-                        if s:
-                            # seed has no _running, but its worker does - handled via global
-                            pass
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            try:
-                os._exit(0)
-            except Exception:
-                pass
-        except Exception:
-            try:
-                os._exit(0)
-            except Exception:
-                pass
+
+    # Ed30 FIX: clean Heroku SIGTERM handling - no sigwaiter/watchdog/os._exit race
     def _install_handlers(tag=""):
         try:
-            signal.signal(signal.SIGTERM, _emergency_exit)
-            signal.signal(signal.SIGINT, _emergency_exit)
+            # Only install simple handlers that set shutdown_event
+            def _handler(signum, frame):
+                print(f"⚡ SIG {signum} -> graceful shutdown [ed30] pid={os.getpid()}", flush=True)
+                _shutdown_event.set()
+            signal.signal(signal.SIGTERM, _handler)
+            signal.signal(signal.SIGINT, _handler)
             try:
-                signal.signal(signal.SIGABRT, _emergency_exit)
+                signal.signal(signal.SIGABRT, _handler)
             except Exception:
                 pass
             try:
-                signal.signal(signal.SIGQUIT, _emergency_exit)
-            except Exception:
-                pass
-            try:
-                signal.siginterrupt(signal.SIGTERM, False)
-            except Exception:
-                pass
-            try:
-                signal.siginterrupt(signal.SIGINT, False)
-            except Exception:
-                pass
-            # Ed24 nuclear: UNBLOCK TERM in main so handler fires instantly
-            try:
-                signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM, signal.SIGINT, signal.SIGQUIT, signal.SIGABRT])
+                signal.signal(signal.SIGQUIT, _handler)
             except Exception:
                 pass
         except Exception as _e:
-            try:
-                print(f"signal install failed {tag}: {_e}", flush=True)
-            except Exception:
-                pass
+            print(f"signal install failed {tag}: {_e}", flush=True)
 
     _install_handlers("boot")
 
-    def _sigwaiter():
-        # Backup catcher - runs in separate thread with TERM blocked, uses sigwait as last resort
-        try:
-            try:
-                signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM, signal.SIGINT])
-            except Exception:
-                pass
-            while True:
-                try:
-                    sig = signal.sigwait([signal.SIGTERM, signal.SIGINT])
-                    print(f"⚡ sigwait got {sig} -> instant exit0 [ed26-sigwait] pid={os.getpid()} pgid={os.getpgid(0)}", flush=True)
-                    _shutdown_event.set()
-                    os._exit(0)
-                except AttributeError:
-                    # No sigwait - just poll shutdown event
-                    while not _shutdown_event.is_set():
-                        _time_mod.sleep(0.5)
-                    print(f"⚡ shutdown_event set -> exit0 [ed24-poll] pid={os.getpid()}", flush=True)
-                    os._exit(0)
-                except Exception as e:
-                    print(f"sigwait error {e} -> exit0 fallback [ed24]", flush=True)
-                    try:
-                        os._exit(0)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-    def _watchdog():
-        # Watchdog - if main loop stalls >5s, force exit on shutdown
-        try:
-            while True:
-                _time_mod.sleep(1)
-                if _shutdown_event.is_set():
-                    print(f"⚡ watchdog shutdown_event -> exit0 [ed24-watchdog] pid={os.getpid()}", flush=True)
-                    os._exit(0)
-        except Exception:
-            pass
-
-    try:
-        _wt = threading.Thread(target=_sigwaiter, name="aei-sigwait", daemon=True)
-        _wt.start()
-    except Exception:
-        pass
-    try:
-        _wd = threading.Thread(target=_watchdog, name="aei-watchdog", daemon=True)
-        _wd.start()
-    except Exception:
-        pass
     if not TELEGRAM_BOT_TOKEN_ENV:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set.")
         sys.exit(1)
+
     bot = AEI_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEISeedBot")
+
     def _bot_thread():
         try:
             try:
@@ -3588,38 +3504,49 @@ def main():
                 print(f"Bot thread error: {e}")
             except Exception:
                 pass
+
     t = threading.Thread(target=_bot_thread, name="aei-bot-polling", daemon=True)
     t.start()
+
     _loop_count = 0
     try:
         while not _shutdown_event.is_set():
             try:
-                # Ed26: use pause() which is instantly woken by SIGTERM, not sleep
-                # If pause not available, fall back to short sleep
-                try:
-                    signal.pause()
-                except AttributeError:
-                    _time_mod.sleep(0.2)
+                # Ed30: use Event.wait with timeout, not signal.pause() which conflicts with sigwaiter
+                _shutdown_event.wait(timeout=1.0)
             except Exception:
-                _time_mod.sleep(0.2)
+                _time_mod.sleep(0.5)
             _loop_count += 1
-            if _loop_count % 5 == 0:
-                _install_handlers(f"loop-{_loop_count}")
-                print(f"♥ main heartbeat { _loop_count } pid={os.getpid()} pgid={os.getpgid(0)} uptime alive [ed26]", flush=True)
+            if _loop_count % 10 == 0:
+                print(f"♥ main heartbeat {_loop_count} pid={os.getpid()} pgid={os.getpgid(0)} alive [ed30]", flush=True)
     except KeyboardInterrupt:
-        try:
-            print("KeyboardInterrupt -> os._exit [ed19]", flush=True)
-        except Exception:
-            pass
+        print("KeyboardInterrupt -> shutdown [ed30]", flush=True)
+        _shutdown_event.set()
     except Exception as _e:
-        try:
-            print(f"main loop exception {_e} -> exit", flush=True)
-        except Exception:
-            pass
+        print(f"main loop exception {_e} -> shutdown", flush=True)
+        _shutdown_event.set()
+
+    # Graceful stop
     try:
-        os._exit(0)
+        ref = BRIDGE_ENGINE_REF
+        if ref:
+            c = ref.get("crawler")
+            if c:
+                try:
+                    c._running = False
+                    c.stop()
+                except Exception:
+                    pass
     except Exception:
         pass
+
+    print("⚡ main exiting cleanly [ed30]", flush=True)
+    try:
+        # Give threads 2s to stop, then exit
+        _time_mod.sleep(2.0)
+    except Exception:
+        pass
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
