@@ -7,7 +7,17 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.29 (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed30-r12-fixed-no-livelock"
+__version__ = "final-ed31-r12-fixed-int-limit"
+import sys
+try:
+    # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
+    # Set to 1M digits to allow full symbolic trace
+    if hasattr(sys, "set_int_max_str_digits"):
+        sys.set_int_max_str_digits(1000000)
+        print(f"int_max_str_digits set to 1000000 [ed31]", flush=True)
+except Exception as _e:
+    print(f"set_int_max_str_digits failed {_e}", flush=True)
+    pass
 import asyncio
 import concurrent.futures
 import concurrent.futures.thread
@@ -167,6 +177,25 @@ class Fraction:
         return hash(self._f)
     def to_decimal(self) -> Decimal:
         return Decimal(self._f.numerator) / Decimal(self._f.denominator)
+    def __str__(self):
+        # Ed31: safe str that avoids 4300-digit limit blowup in logs
+        try:
+            n = self._f.numerator
+            d = self._f.denominator
+            # If huge, truncate for display
+            ns = str(n)
+            if len(ns) > 1000:
+                return f"{str(n)[:20]}...{str(n)[-20:]}/{d} (~{len(ns)} digits)"
+            if d == 1:
+                return ns
+            return f"{n}/{d}"
+        except ValueError as e:
+            if "Exceeds the limit" in str(e):
+                return f"<Fraction {len(str(self._f.numerator)) if hasattr(self._f.numerator, 'bit_length') else '?'} digits>"
+            return "<Fraction error>"
+        except Exception:
+            return f"{self._f}"
+
     def to_float(self) -> float:  # display only, never used in step()
         return float(self._f.numerator) / float(self._f.denominator)
     def sqrt(self, iterations: int = 8) -> 'Fraction':
@@ -1327,7 +1356,7 @@ class CrawlerRelayClient:
         # Fast blocklist at fetch time too
         try:
             low = url.lower()
-            if any(d in low for d in ("meta.wikimedia.org", "wikimedia.org/w/api.php", "wikimedia.org/wiki/Special:")):
+            if any(d in low for d in ("meta.wikimedia.org", "wikimedia.org/w/api.php", "wikimedia.org/wiki/Special:", "auth.wikimedia.org")):
                 logger.info(f"relay skip blocklisted {low[:120]}")
                 return None
         except Exception:
