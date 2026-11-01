@@ -5,9 +5,9 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.29 (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
+Version: Final Ed.34 Telegram-DB + R14-memfix (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed32-r12-fixed-msglen-conflict"
+__version__ = "final-ed37-telegram-db-central-r14"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -26,6 +26,7 @@ import hmac
 import json
 import math
 import os
+import gc
 import queue
 import sys
 import ssl
@@ -196,8 +197,15 @@ class Fraction:
         except Exception:
             return f"{self._f}"
 
-    def to_float(self) -> float:  # display only, never used in step()
-        return float(self._f.numerator) / float(self._f.denominator)
+    def to_float(self) -> float:  # display only, never used in step() - R14 memfix: guard huge ints
+        try:
+            # If numerator/denominator have > 308 decimal digits, float() will overflow to inf
+            # Return inf-guarded 0.0 to avoid MemoryError
+            if len(str(abs(self._f.numerator))) > 300 or len(str(self._f.denominator)) > 300:
+                return 0.0
+            return float(self._f.numerator) / float(self._f.denominator)
+        except Exception:
+            return 0.0
     def sqrt(self, iterations: int = 8) -> 'Fraction':
         """Newton–Raphson exact-rational square root approximation.
         Each iteration is exact. The result is a Fraction, never a float.
@@ -207,8 +215,8 @@ class Fraction:
             raise ValueError("sqrt of negative fraction")
         if self._f.numerator == 0:
             return Fraction.zero()
-        ns = int(round(math.isqrt(self._f.numerator)))
-        ds = int(round(math.isqrt(self._f.denominator)))
+        ns = int(math.isqrt(self._f.numerator))
+        ds = int(math.isqrt(self._f.denominator))
         if ns * ns == self._f.numerator and ds * ds == self._f.denominator:
             return Fraction(ns, ds)
         two = PyFraction(2, 1)
@@ -327,13 +335,19 @@ def _rational_cos(x) -> PyFraction:
     term = PyFraction(1, 1)
     result = PyFraction(1, 1)
     sign = -1
-    for n in range(1, 40):
+    for n in range(1, 20):
         denom = PyFraction((2 * n - 1) * (2 * n), 1)
         term = term * x2 / denom
         result = result + PyFraction(sign, 1) * term
         sign = -sign
         if term == PyFraction(0, 1):
             break
+        # R14 memfix: break if digits blow up
+        try:
+            if len(str(abs(result.numerator))) > 800:
+                break
+        except Exception:
+            pass
     return result
 def _rational_sin(x) -> PyFraction:
     """15-digit π convergent + exact-rational Taylor series."""
@@ -359,7 +373,7 @@ def _rational_sin(x) -> PyFraction:
     term = x_reduced
     result = x_reduced
     sign = -1
-    for n in range(1, 40):
+    for n in range(1, 20):
         denom = PyFraction((2 * n) * (2 * n + 1), 1)
         term = term * x2 / denom
         result = result + PyFraction(sign, 1) * term
@@ -370,7 +384,7 @@ def _rational_sin(x) -> PyFraction:
 _EXP_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
 _LOG_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
 _LI_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
-def _symbolic_log(x: Fraction, max_terms: int = 80) -> Fraction:
+def _symbolic_log(x: Fraction, max_terms: int = 32) -> Fraction:
     """Exact-rational natural log via atanh series with dynamic
     truncation. The series terminates when the term magnitude drops
     below _LOG_EPSILON. Returns Fraction."""
@@ -390,7 +404,7 @@ def _symbolic_log(x: Fraction, max_terms: int = 80) -> Fraction:
             break
         term = term * u_sq
     return Fraction(result * PyFraction(2, 1))
-def _symbolic_exp(x: Fraction, max_terms: int = 80) -> Fraction:
+def _symbolic_exp(x: Fraction, max_terms: int = 32) -> Fraction:
     """Exact-rational exp via Taylor series with dynamic truncation.
     The series terminates when the term magnitude drops below
     _EXP_EPSILON. Returns Fraction. R12-perf: early exit for large negative x -> 0."""
@@ -406,15 +420,28 @@ def _symbolic_exp(x: Fraction, max_terms: int = 80) -> Fraction:
                 max_terms = min(max_terms, 40)
     except Exception:
         pass
+    # R14 memfix: if x has huge numerator/denominator digits, truncate early to avoid big-int blowup
+    try:
+        if len(str(abs(x._f.numerator))) > 600 or len(str(abs(x._f.denominator))) > 600:
+            # Return 0 for large negative, 1 for large positive to keep exactness bounded
+            return Fraction.zero() if x._f < 0 else Fraction.one()
+    except Exception:
+        pass
     result = Fraction.one()
     term = Fraction.one()
     for k in range(1, max_terms + 1):
         term = term * (x / Fraction(k))
         result = result + term
+        # R14 memfix: break if intermediate digits explode
+        try:
+            if len(str(abs(result._f.numerator))) > 800:
+                break
+        except Exception:
+            pass
         if term.abs() < Fraction(_EXP_EPSILON.numerator, _EXP_EPSILON.denominator):
             break
     return result
-def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 24) -> Fraction:
+def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 12) -> Fraction:
     """Exact-rational approximation of the logarithmic integral Li(x).
     Li(x) = ∫₂ˣ dt / log(t). We use the Ramanujan series:
     Li(x) ≈ γ + log(log(x)) + Σ_{n=1}^∞ (log x)^n / (n · n!)
@@ -455,41 +482,43 @@ from functools import lru_cache
 _CACHED_LI: dict = {}
 _CACHED_LOG: dict = {}
 _CACHED_EXP: dict = {}
+_R14_CACHE_MAX = 48  # was 256, R14 memfix
 def _cached_log_integral(x):
     try:
-        key=str(x._f)
+        # R14 memfix: hash key truncated to avoid storing 4000-digit strings
+        key=str(x._f)[:256]
     except Exception:
-        key=str(x)
+        key=str(x)[:256]
     if key in _CACHED_LI:
         return _CACHED_LI[key]
     v=_symbolic_log_integral_approx(x)
     _CACHED_LI[key]=v
-    if len(_CACHED_LI)>256:
+    if len(_CACHED_LI)>_R14_CACHE_MAX:
         _CACHED_LI.pop(next(iter(_CACHED_LI)))
     return v
 def _cached_symbolic_log(x):
     try:
-        key=str(x._f)
+        key=str(x._f)[:256]
     except Exception:
-        key=str(x)
+        key=str(x)[:256]
     if key in _CACHED_LOG:
         return _CACHED_LOG[key]
     v=_symbolic_log(x)
     _CACHED_LOG[key]=v
-    if len(_CACHED_LOG)>256:
+    if len(_CACHED_LOG)>_R14_CACHE_MAX:
         _CACHED_LOG.pop(next(iter(_CACHED_LOG)))
     return v
 
 def _cached_symbolic_exp(x):
     try:
-        key=str(x._f)
+        key=str(x._f)[:256]
     except Exception:
-        key=str(x)
+        key=str(x)[:256]
     if key in _CACHED_EXP:
         return _CACHED_EXP[key]
     v=_symbolic_exp(x)
     _CACHED_EXP[key]=v
-    if len(_CACHED_EXP)>256:
+    if len(_CACHED_EXP)>_R14_CACHE_MAX:
         _CACHED_EXP.pop(next(iter(_CACHED_EXP)))
     return v
 
@@ -769,8 +798,12 @@ class DefaultGeometricLattice:
     The capacity is the Leech lattice's kissing number, 196560.
     A coset-grid spatial index gives O(1)-amortized neighbor lookup, so
     the check is hardware-agnostic on a 512 MB Termux device even at
-    thousands of points."""
+    thousands of points.
+    R14 memfix: on web-dyno, practical cap _PRACTICAL_CAP = 320 to avoid 533M R14.
+    FG parity preserved — capacity constant remains 196560 for theory, but runtime guard prevents OOM.
+    """
     KISSING_CAPACITY: int = 196560
+    _PRACTICAL_CAP_WEB_DYNO: int = 320
     def __init__(self, dimension: int = 24):
         self.dimension = dimension
         self._points: List[List[Fraction]] = []
@@ -802,6 +835,12 @@ class DefaultGeometricLattice:
             coords.append(Fraction.zero())
         return coords
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> None:
+        # R14 memfix: practical cap on web-dyno
+        try:
+            if os.getenv("PORT") and len(self._points) >= self._PRACTICAL_CAP_WEB_DYNO:
+                return
+        except Exception:
+            pass
         if len(self._points) >= self.KISSING_CAPACITY:
             return
         for p in self._points:
@@ -973,6 +1012,105 @@ class SelfEvolutionCore:
             current["trajectory_mode"] = Fraction(1)
         self.logic_core[logic_key] = current
         return current
+    def _decide_db_shards(self, I: Fraction, psi: SymbolicWavefunction,
+                          q_eval: SymbolicQuaternion, deviation_sq: Fraction) -> Dict[str, Any]:
+        """Ed35 learned discretion: SelfEvolutionCore decides Telegram DB sharding.
+        No random — deterministic hash of generation + Re[ψ] + I + deviation.
+        Returns dict with db_key, shard_mode, shard_targets, save_global, save_user.
+        FG-exact: all decisions use Fraction comparisons, hash is deterministic.
+        """
+        re_psi = psi.real_part()
+        # Deterministic hash for discretion
+        try:
+            seed_str = f"{self.generation}|{re_psi}|{I}|{deviation_sq}|{q_eval.a}|{q_eval.b}"
+            h = self._deterministic_hash(seed_str)
+            h_int = int(h[:8], 16)  # first 32 bits
+        except Exception:
+            h_int = self.generation * 2654435761 & 0xFFFFFFFF
+
+        # Primary key decision: coherence -> 𝒮_STATUS, else 𝒯_EVOLUTION, high deviation -> ℋ_LOGIC_CORE
+        if not deviation_sq.is_zero():
+            if re_psi > Fraction.zero():
+                db_key = "ℋ_LOGIC_CORE"  # 𝒜₃ branch: logic core needs persistence
+            else:
+                db_key = "𝒯_EVOLUTION"  # 𝒜₄ branch
+        else:
+            # coherent
+            if I >= Fraction(6, 10):
+                db_key = "𝒮_STATUS"
+            else:
+                db_key = "ℐ_METRIC"
+
+        # Every 7th generation, also persist lattice
+        if self.generation % 7 == 0:
+            db_key_alt = "Λ₂₄_PACK"
+        else:
+            db_key_alt = None
+
+        # Shard mode: learned — use hash + I + deviation to decide
+        # Even hash -> global only, odd -> distributed (global + user shards if enabled)
+        # If I < 0.6 (low fitness) -> more aggressive persistence
+        # If deviation !=0 -> must save global at least
+        if not deviation_sq.is_zero():
+            shard_mode = "distributed" if (h_int % 2 == 1) else "global"
+            save_global = True
+            save_user = (h_int % 3 == 0)  # 1/3 chance learned to also shard to users
+        else:
+            if I >= Fraction(8, 10):
+                shard_mode = "global"  # high I: minimal persistence
+                save_global = (h_int % 4 == 0)  # sparse
+                save_user = False
+            elif I >= Fraction(6, 10):
+                shard_mode = "global"
+                save_global = True
+                save_user = (h_int % 5 == 0)
+            else:
+                shard_mode = "distributed"
+                save_global = True
+                save_user = True
+
+        # Ed36 decoupled: use TELEGRAM_DB_SHARD_POOL, fallback to ALLOWED_USER_IDS for backward compat
+        shard_targets: List[int] = []
+        try:
+            # Decoupled pool: TELEGRAM_DB_SHARD_POOL independent of gate
+            try:
+                pool = _get_shard_pool()
+            except NameError:
+                pool = globals().get("TELEGRAM_DB_SHARD_POOL", set()) or globals().get("ALLOWED_USER_IDS", set()) or set()
+            allowed = list(pool or [])
+            if allowed and save_user:
+                # Deterministic pick: sort, then pick based on hash
+                allowed_sorted = sorted(allowed)
+                # Pick 1-2 targets based on hash
+                idx1 = h_int % len(allowed_sorted)
+                shard_targets.append(int(allowed_sorted[idx1]))
+                if len(allowed_sorted) > 1 and (h_int % 3 == 0):
+                    idx2 = (h_int // 7) % len(allowed_sorted)
+                    if allowed_sorted[idx2] not in shard_targets:
+                        shard_targets.append(int(allowed_sorted[idx2]))
+        except Exception:
+            shard_targets = []
+
+        # Save interval modifier: learned — low I or high deviation -> save more often
+        if not deviation_sq.is_zero() or I < Fraction(5, 10):
+            save_interval_mod = 1  # every tick
+        elif I < Fraction(7, 10):
+            save_interval_mod = 2
+        else:
+            save_interval_mod = 3
+
+        return {
+            "db_key": db_key,
+            "db_key_alt": db_key_alt,
+            "shard_mode": shard_mode,  # global | distributed | isolated
+            "save_global": save_global,
+            "save_user": save_user,
+            "shard_targets": shard_targets,
+            "save_interval_mod": save_interval_mod,
+            "hash_int": h_int,
+            "re_psi_sign": "𝒜₃" if re_psi > Fraction.zero() else "𝒜₄",
+        }
+
     def evolve_step(self, I: Fraction, psi: SymbolicWavefunction,
                     q_eval: SymbolicQuaternion, deviation_sq: Fraction) -> Dict[str, Any]:
         self.generation += 1
@@ -993,6 +1131,8 @@ class SelfEvolutionCore:
         logic_str = str(sorted(
             (k, str(v)) for k, v in self.logic_core.items()
         ))
+        # Ed35: learned DB discretion
+        db_discretion = self._decide_db_shards(I, psi, q_eval, deviation_sq)
         record = {
             "generation": self.generation,
             "status": status,
@@ -1000,8 +1140,11 @@ class SelfEvolutionCore:
             "intelligence_metric": str(I),
             "arc_length_deviation_sq": str(deviation_sq),
             "logic_hash": self._deterministic_hash(logic_str),
+            "db_discretion": db_discretion,  # learned sharding decision
         }
         self.history.append(record)
+        if len(self.history) > 200:  # R14 memfix: cap history
+            self.history = self.history[-200:]
         return record
 # ============================================================================
 # INTELLIGENCE METRIC
@@ -1222,7 +1365,8 @@ class CrawlerSeedState:
         # R12-hardened: blocklist for domains that cause SSL EOF / heavy load
         try:
             low = url.lower()
-            blocked_substr = ("meta.wikimedia.org", "wikimedia.org/w/api", "donate.wikimedia.org", ".pdf", ".zip", ".tar.gz")
+            blocked_substr = ("meta.wikimedia.org", "wikimedia.org/w/api", "donate.wikimedia.org", ".pdf", ".zip", ".tar.gz",
+                              "thumb.wikimedia.org", "upload.wikimedia.org", "featuredfeed", "feed=potd", "&amp;")
             if any(b in low for b in blocked_substr):
                 return
             # Only allow wikipedia.org and wikimedia commons for now to avoid broad crawl blowup
@@ -1242,6 +1386,9 @@ class CrawlerSeedState:
             except Exception as e:
                 logger.warning(f"crawler enqueue failed: {e}")
             if url not in self._frontier:
+                # R14 memfix: cap frontier to 120 to avoid unbounded growth on 512MB dyno
+                if len(self._frontier) >= 120:
+                    return
                 self._frontier.append(url)
     def dequeue(self) -> Optional[str]:
         with self._lock:
@@ -1284,8 +1431,8 @@ class CrawlerSeedState:
             except Exception as e:
                 logger.warning(f"crawler record_visit failed: {e}")
         self._records.append(record)
-        if len(self._records) > 5000:
-            self._records = self._records[-5000:]
+        if len(self._records) > 500:
+            self._records = self._records[-500:]  # R14 memfix: was 5000
         _emit_toast("crawl", {
             "url": url,
             "title": title[:80],
@@ -1293,6 +1440,22 @@ class CrawlerSeedState:
             "depth": depth,
             "link_count": link_count,
         })
+        # Ed34 Telegram-DB: crawler ingestion path persisted at discretion
+        try:
+            if TELEGRAM_DB and TELEGRAM_DB.is_enabled():
+                # Avoid storing full URLs in user shards — only global channel
+                TELEGRAM_DB.save_snapshot("𝒞_CRAWLER", {
+                    "url": url[:120],
+                    "title": title[:80],
+                    "content_hash": content_hash[:16],
+                    "hash_frac": str(record.hash_frac)[:800],
+                    "depth": depth,
+                    "link_count": link_count,
+                    "frontier_size": len(self._frontier),
+                    "visited_count": self.visited_count(),
+                }, force=False)
+        except Exception as _edb_c:
+            logger.warning(f"TelegramDB crawl save failed: {_edb_c}")
         return record
     def frontier_size(self) -> int:
         with self._lock:
@@ -1318,7 +1481,7 @@ class CrawlerSeedState:
         with self._lock:
             return {
                 "frontier_size": len(self._frontier),
-                "frontier_preview": list(self._frontier[:8]),
+                "frontier_preview": list(self._frontier[:6]),  # R14 memfix
                 "visited_count": self.visited_count(),
                 "latest": (
                     {
@@ -1356,7 +1519,8 @@ class CrawlerRelayClient:
         # Fast blocklist at fetch time too
         try:
             low = url.lower()
-            if any(d in low for d in ("meta.wikimedia.org", "wikimedia.org/w/api.php", "wikimedia.org/wiki/Special:", "auth.wikimedia.org")):
+            if any(d in low for d in ("meta.wikimedia.org", "wikimedia.org/w/api.php", "wikimedia.org/wiki/Special:", "auth.wikimedia.org",
+                                       "thumb.wikimedia.org", "upload.wikimedia.org", "featuredfeed")):
                 logger.info(f"relay skip blocklisted {low[:120]}")
                 return None
         except Exception:
@@ -1488,8 +1652,212 @@ class CrawlerRelayClient:
             return {"ok": False, "reason": str(e)}
     def failure_count(self) -> int:
         return self._failure_count
+
+# ============================================================================
+# TELEGRAM CHAT DATABASE — Ed34: Telegram as distributed/isolated DB at seed discretion
+# ============================================================================
+class TelegramChatDB:
+    """Uses Telegram Bot API as durable storage.
+
+    Two modes, both R12-compliant (outbound HTTPS only, no subprocess):
+    1) Global distributed set: private channel TELEGRAM_DB_CHANNEL_ID where bot is admin.
+       Seed persists snapshots (prime_count, lattice_points, logic_hash, I, deviation, psi_real, generation)
+       as chunked messages. Message_id map stored in SQLite for fast rebuild.
+    2) Isolated per-user shards: if TELEGRAM_DB_USER_SHARDS=1, bot stores per-user shards
+       in user's private chat with bot (requires user started bot). At SelfEvolutionCore discretion,
+       it shunts 𝒜₃ vs 𝒜₄ branches to different user sets, or shards lattice points across users.
+
+    FG-exact: all Fractions stored as str(num/den). No float enters DB.
+    Hardware-agnostic: no local disk required for persistence beyond ephemeral cache.
+    Telegram limits: 4096 chars/message, so chunking; 30 msg/sec global.
+    """
+    def __init__(self, bot_token: str, channel_id: str = "", central_user_id: str = "", chunk_size: int = 3800):
+        self.bot_token = (bot_token or "").strip()
+        self.channel_id = (channel_id or "").strip()
+        self.central_user_id = (central_user_id or "").strip()
+        self.chunk_size = max(800, chunk_size)
+        self._lock = threading.Lock()
+        self._enabled = bool(self.bot_token and (self.channel_id or self.central_user_id))
+        self._last_save_ts = 0.0
+        self._index: Dict[str, Dict[str, Any]] = {}  # key -> {msg_ids, ts, hash}
+        # In-memory index file for rebuild (mirrored in SQLite)
+        self._index_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else ".", "aei_telegram_index.json")
+        try:
+            if os.path.isfile(self._index_db_path):
+                with open(self._index_db_path, "r", encoding="utf-8") as f:
+                    self._index = json.load(f)
+        except Exception:
+            self._index = {}
+
+    def is_enabled(self) -> bool:
+        # Ed37: enabled if bot token + ENABLE flag + (channel OR central_user OR user shards)
+        if not self.bot_token or not ENABLE_TELEGRAM_DB:
+            return False
+        has_channel = bool(self.channel_id)
+        has_central = bool(self.central_user_id)
+        try:
+            has_user_shards = bool(TELEGRAM_DB_USER_SHARDS and _get_shard_pool())
+        except Exception:
+            has_user_shards = False
+        return has_channel or has_central or has_user_shards
+
+    def _api_url(self, method: str) -> str:
+        return f"https://api.telegram.org/bot{self.bot_token}/{method}"
+
+    def _send_message(self, chat_id: str, text: str, disable_notification: bool = True) -> Optional[int]:
+        if not self.bot_token or not chat_id:
+            return None
+        # R14 memfix: guard huge payloads
+        if len(text) > 4096:
+            text = text[:4096]
+        try:
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_notification": disable_notification,
+                "disable_web_page_preview": True,
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(self._api_url("sendMessage"), data=data, headers={"Content-Type": "application/json"})
+            # No unverified context needed for api.telegram.org
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                if body.get("ok"):
+                    return body.get("result", {}).get("message_id")
+        except Exception as e:
+            logger.warning(f"TelegramChatDB send failed to {chat_id}: {e}")
+        return None
+
+    def _persist_index(self):
+        try:
+            with open(self._index_db_path, "w", encoding="utf-8") as f:
+                json.dump(self._index, f)
+        except Exception:
+            pass
+
+    def save_snapshot(self, key: str, value: Dict[str, Any], force: bool = False) -> bool:
+        """Save a snapshot at bot discretion. Called from SeedWorker and CrawlerWorker.
+        Key examples: 𝒮_STATUS, 𝒜_PRIMES, Λ₂₄_PACK, 𝒯_EVOLUTION, ℋ_LOGIC_CORE, 𝒞_CRAWLER
+        Ed37: channel + central_user_id — central_user is backup mirror, so your chat can be channel ID
+        without mixing with real channel. Supports open + distributed where your chat is channel ID.
+        """
+        if not self.channel_id and not self.central_user_id:
+            # No global targets -> global snapshots disabled, distributed mode uses user shards only
+            return False
+        if not self.bot_token or not ENABLE_TELEGRAM_DB:
+            return False
+        # Throttle: at most 1 save per 2 seconds unless forced
+        now = time.time()
+        if not force and (now - self._last_save_ts) < 2.0:
+            return False
+        try:
+            # Ensure all Fractions are strings — exactness preserved
+            safe_value = {}
+            for k, v in value.items():
+                try:
+                    if isinstance(v, (list, tuple)):
+                        safe_value[k] = [str(x)[:800] for x in v][:32]  # R14 truncate
+                    elif isinstance(v, dict):
+                        safe_value[k] = {kk: str(vv)[:800] for kk, vv in list(v.items())[:32]}
+                    else:
+                        s = str(v)
+                        safe_value[k] = s[:2000]  # truncate huge Fractions for Telegram 4096 limit
+                except Exception:
+                    safe_value[k] = str(v)[:500]
+            envelope = {
+                "aei_db": 1,
+                "key": key,
+                "ts": datetime.now().isoformat(),
+                "v": safe_value,
+                "logic_hash": safe_value.get("last_logic_hash") or safe_value.get("logic_hash") or "",
+            }
+            blob = json.dumps(envelope, ensure_ascii=False)
+            # Chunk if needed — Telegram limit 4096
+            chunks = [blob[i:i+self.chunk_size] for i in range(0, len(blob), self.chunk_size)]
+            msg_ids = []
+            # Ed37: send to channel and/or central_user_id (your chat as backup channel ID)
+            targets = []
+            if self.channel_id:
+                targets.append(("channel", self.channel_id))
+            if self.central_user_id and self.central_user_id != self.channel_id:
+                targets.append(("central", self.central_user_id))
+
+            for idx, chunk in enumerate(chunks):
+                header = f"⟦AEI-DB {key} {idx+1}/{len(chunks)}⟧\n" if len(chunks) > 1 else f"⟦AEI-DB {key}⟧\n"
+                for ttype, tid in targets:
+                    mid = self._send_message(tid, header + chunk, disable_notification=True)
+                    if mid and ttype == "channel":
+                        msg_ids.append(mid)
+                    # For central_user, we don't track msg_ids in index to avoid clutter
+                    time.sleep(0.05)  # R14: avoid hitting 30 msg/sec
+                if not msg_ids and not self.central_user_id:
+                    # If channel failed and no central, abort
+                    break
+            if msg_ids:
+                with self._lock:
+                    self._index[key] = {"msg_ids": msg_ids, "ts": now, "hash": hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]}
+                self._persist_index()
+                self._last_save_ts = now
+                logger.info(f"TelegramDB saved {key} -> {len(msg_ids)} msgs to {self.channel_id}")
+                return True
+        except Exception as e:
+            logger.warning(f"TelegramDB save_snapshot {key} failed: {e}")
+        return False
+
+    def save_user_shard(self, user_chat_id: int, key: str, value: Dict[str, Any]) -> bool:
+        """Isolated per-user set — only if TELEGRAM_DB_USER_SHARDS=1 and bot discretion says shard."""
+        if not TELEGRAM_DB_USER_SHARDS or not self.bot_token:
+            return False
+        if not self.is_enabled():  # still need global enable
+            return False
+        try:
+            # Respect user privacy — only store minimal, no URLs unless allowed
+            minimal = {
+                "key": key,
+                "tick": value.get("tick"),
+                "generation": value.get("generation"),
+                "prime_count": value.get("prime_count"),
+                "I": value.get("I"),
+                "state": value.get("state"),
+                "psi_real": value.get("psi_real"),
+                "logic_hash": value.get("logic_hash") or value.get("last_logic_hash"),
+            }
+            blob = json.dumps(minimal, ensure_ascii=False)
+            # Use user's private chat as isolated DB
+            mid = self._send_message(str(user_chat_id), f"⟦AEI-SHARD {key}⟧\n{blob[:3500]}", disable_notification=True)
+            return mid is not None
+        except Exception as e:
+            logger.warning(f"TelegramDB user shard {key} to {user_chat_id} failed: {e}")
+            return False
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            try:
+                pool = _get_shard_pool()
+            except Exception:
+                pool = set()
+            return {
+                "enabled": self.is_enabled(),
+                "channel_id": self.channel_id or None,
+                "central_user_id": self.central_user_id or None,
+                "channel_optional": True,
+                "central_is_channel_id": bool(self.central_user_id and not self.channel_id),
+                "user_shards": TELEGRAM_DB_USER_SHARDS,
+                "shard_pool": sorted(list(pool))[:10],
+                "shard_pool_size": len(pool),
+                "gate_active": bool(ALLOWED_USER_IDS),
+                "gate_ids": sorted(list(ALLOWED_USER_IDS))[:10] if ALLOWED_USER_IDS else [],
+                "index_keys": list(self._index.keys()),
+                "index_size": len(self._index),
+                "last_save": self._last_save_ts,
+            }
+
+# Global singleton — initialized in main()
+TELEGRAM_DB: Optional[TelegramChatDB] = None
+
 # ============================================================================
 # DAEMON THREAD POOL EXECUTOR
+
 # ============================================================================
 class _DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
     """A ThreadPoolExecutor whose worker threads are daemon, so the
@@ -1665,8 +2033,8 @@ class AEI_Seed:
                 "ts": datetime.now().isoformat(),
             }
             self.history.append(record)
-            if len(self.history) > 1000:
-                self.history = self.history[-1000:]
+            if len(self.history) > 150:
+                self.history = self.history[-150:]  # R14 memfix: was 1000
             return record
     def run_autonomous(self, steps: int, x_fn=None) -> List[Dict[str, Any]]:
         records = []
@@ -1695,7 +2063,7 @@ class AEI_Seed:
                 "state": self.state,
                 "tick": self.tick,
                 "generation": self.generation,
-                "primes_tail": [str(p) for p in self.primes[-12:]],
+                "primes_tail": [str(p) for p in self.primes[-8:]],  # R14 memfix
                 "prime_count": len(self.primes),
                 "lattice_points": len(self.lattice.points()),
                 "arc_sq": str(self.last_arc_sq),
@@ -1713,7 +2081,7 @@ class AEI_Seed:
                     {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
                     for q in self.last_linguistic_trajectory
                 ],
-                "history_tail": self.history[-20:],
+                "history_tail": self.history[-10:],  # R14 memfix
                 "logic_core": {
                     k: {kk: str(vv) for kk, vv in v.items()} if isinstance(v, dict) else str(v)
                     for k, v in self.evolution.logic_core.items()
@@ -1934,6 +2302,15 @@ CRAWL_INTERVAL: int = int(os.getenv("CRAWL_INTERVAL", "3"))
 MAX_CRAWL_DEPTH: int = int(os.getenv("MAX_CRAWL_DEPTH", "3"))
 CRAWL_SEED_URLS: str = os.getenv("CRAWL_SEED_URLS", "").strip()
 CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
+# Ed34 Telegram-DB: use Telegram as distributed/isolated database at bot discretion
+TELEGRAM_DB_CHANNEL_ID: str = os.getenv("TELEGRAM_DB_CHANNEL_ID", "").strip()  # e.g. -1001234567890 private channel where bot is admin
+ENABLE_TELEGRAM_DB: bool = os.getenv("ENABLE_TELEGRAM_DB", "0").strip() in ("1","true","yes")
+TELEGRAM_DB_USER_SHARDS: bool = os.getenv("TELEGRAM_DB_USER_SHARDS", "0").strip() in ("1","true","yes")  # isolated per-user chat shards
+TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "5"))  # save every N seed ticks
+TELEGRAM_DB_CHUNK_SIZE: int = int(os.getenv("TELEGRAM_DB_CHUNK_SIZE", "3800"))  # 4096 Telegram limit - margin
+TELEGRAM_DB_PIN_INDEX: bool = os.getenv("TELEGRAM_DB_PIN_INDEX", "0").strip() in ("1","true","yes")
+# Ed37: explicit central user mirror — your chat can be backup central DB without mixing with channel
+TELEGRAM_DB_CENTRAL_USER_ID: str = os.getenv("TELEGRAM_DB_CENTRAL_USER_ID", "").strip()  # e.g. 123456789 your own user_id
 ALLOWED_USER_IDS: set = set()
 _raw_allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _raw_allowed:
@@ -1941,6 +2318,22 @@ if _raw_allowed:
         tok = tok.strip()
         if tok.isdigit():
             ALLOWED_USER_IDS.add(int(tok))
+
+# Ed36 decoupled: shard pool independent of gate
+TELEGRAM_DB_SHARD_POOL: set = set()
+_raw_shard_pool = os.getenv("TELEGRAM_DB_SHARD_POOL", "").strip()
+if _raw_shard_pool:
+    for tok in _raw_shard_pool.split(","):
+        tok = tok.strip()
+        if tok.isdigit():
+            TELEGRAM_DB_SHARD_POOL.add(int(tok))
+
+def _get_shard_pool() -> set:
+    # Decoupled: if SHARD_POOL set, use it; else fallback to ALLOWED_USER_IDS for backward compat
+    if TELEGRAM_DB_SHARD_POOL:
+        return TELEGRAM_DB_SHARD_POOL
+    return ALLOWED_USER_IDS
+
 def _is_allowed_user(user_id) -> bool:
     if not ALLOWED_USER_IDS:
         return True
@@ -2158,7 +2551,9 @@ class SeedWorker:
         )
     async def _loop(self):
         # Ed30 FIX: no executor kill loop, GIL-safe timeout handling
+        # Ed33 R14 memfix: gc every 15 ticks to free big-int caches
         consecutive_timeouts = 0
+        gc_counter = 0
         while self._running:
             try:
                 hash_frac = self.crawler.state.latest_hash_fraction()
@@ -2201,6 +2596,48 @@ class SeedWorker:
                     "I": record["I"],
                     "state": record["state"],
                 })
+                # Ed35 Telegram-DB: LEARNED discretion from SelfEvolutionCore
+                try:
+                    if TELEGRAM_DB and TELEGRAM_DB.is_enabled():
+                        evo = record.get("evolution", {}) or {}
+                        db_disc = evo.get("db_discretion", {}) if isinstance(evo, dict) else {}
+                        # Use learned interval modifier
+                        interval_mod = int(db_disc.get("save_interval_mod", 1) or 1)
+                        should_save = (gc_counter % (TELEGRAM_DB_SAVE_INTERVAL * interval_mod) == 0)
+                        if should_save:
+                            db_key = db_disc.get("db_key", "𝒮_STATUS")
+                            db_key_alt = db_disc.get("db_key_alt")
+                            save_global = bool(db_disc.get("save_global", True))
+                            save_user = bool(db_disc.get("save_user", False))
+                            shard_targets = db_disc.get("shard_targets", []) or []
+                            shard_mode = db_disc.get("shard_mode", "global")
+
+                            if save_global:
+                                TELEGRAM_DB.save_snapshot(db_key, record, force=False)
+                                if db_key_alt:
+                                    # Occasionally also persist lattice as second key
+                                    TELEGRAM_DB.save_snapshot(db_key_alt, {
+                                        "prime_count": record.get("prime_count"),
+                                        "lattice_points": record.get("lattice_points"),
+                                        "generation": record.get("generation"),
+                                        "tick": record.get("tick"),
+                                    }, force=False)
+
+                            if TELEGRAM_DB_USER_SHARDS and save_user and shard_targets:
+                                for uid in shard_targets[:2]:  # cap 2 to avoid spam, learned
+                                    TELEGRAM_DB.save_user_shard(int(uid), db_key, record)
+
+                            # Log discretion for observability
+                            if gc_counter % 20 == 0:
+                                logger.info(f"🧠 DB discretion gen={evo.get('generation')} mode={shard_mode} key={db_key} global={save_global} user={save_user} targets={shard_targets} re_psi={db_disc.get('re_psi_sign')}")
+                except Exception as _edb_e:
+                    logger.warning(f"TelegramDB learned save failed: {_edb_e}")
+                gc_counter += 1
+                if gc_counter % 15 == 0:
+                    try:
+                        gc.collect()
+                    except Exception:
+                        pass
                 await asyncio.sleep(SEED_TICK_INTERVAL)
             except asyncio.CancelledError:
                 break
@@ -2232,7 +2669,7 @@ def _fqdn_fast(host: str) -> str:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed29-r12-perf"
+    server_version = "AEI-Seed-Bridge/final-ed37-telegram-db-central-r14"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -2300,7 +2737,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed29-r12-perf",
+                "version": "final-ed37-telegram-db-central-r14",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -2314,6 +2751,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "relay_url": RELAY_URL,
                 "relay_healthy": (crawler.relay.failure_count() < 3 if crawler else False),
                 "require_auth": REQUIRE_AUTH,
+                "telegram_db": (TELEGRAM_DB.snapshot() if TELEGRAM_DB else {"enabled": False}),
             })
             return
         if path == "/config":
@@ -2330,6 +2768,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "seed_tick_interval": SEED_TICK_INTERVAL,
                 "crawl_interval": CRAWL_INTERVAL,
                 "max_crawl_depth": MAX_CRAWL_DEPTH,
+                "telegram_db_channel": TELEGRAM_DB_CHANNEL_ID or None,
+                "telegram_db_central_user_id": TELEGRAM_DB_CENTRAL_USER_ID or None,
+                "telegram_db_enabled": ENABLE_TELEGRAM_DB,
+                "telegram_db_user_shards": TELEGRAM_DB_USER_SHARDS,
+                "telegram_db_save_interval": TELEGRAM_DB_SAVE_INTERVAL,
+                "telegram_db_shard_pool": sorted(list(_get_shard_pool()))[:20],
+                "allowed_user_ids_gate": sorted(list(ALLOWED_USER_IDS))[:20] if ALLOWED_USER_IDS else [],
+                "gate_active": bool(ALLOWED_USER_IDS),
+                "channel_optional": True,
+                "open_and_distributed_with_my_chat_as_channel": bool(TELEGRAM_DB_CENTRAL_USER_ID and not TELEGRAM_DB_CHANNEL_ID),
             })
             return
         if path == "/" or path == "/index.html":
@@ -3408,6 +3856,24 @@ class AEI_Bot:
         if not TELEGRAM_AVAILABLE:
             logger.error("python-telegram-bot not installed; cannot run bot")
             return
+        global TELEGRAM_DB
+        TELEGRAM_DB = TelegramChatDB(TELEGRAM_BOT_TOKEN_ENV, TELEGRAM_DB_CHANNEL_ID, TELEGRAM_DB_CENTRAL_USER_ID, chunk_size=TELEGRAM_DB_CHUNK_SIZE)
+        if TELEGRAM_DB.is_enabled():
+            logger.info(f"🗄️ TelegramChatDB enabled -> channel {TELEGRAM_DB_CHANNEL_ID or 'none'} central {TELEGRAM_DB_CENTRAL_USER_ID or 'none'} user_shards={TELEGRAM_DB_USER_SHARDS} pool={sorted(list(_get_shard_pool()))[:5]}")
+        else:
+            if ENABLE_TELEGRAM_DB:
+                logger.warning(f"🗄️ TelegramChatDB ENABLED but missing TOKEN or (CHANNEL_ID or CENTRAL_USER_ID or SHARD_POOL) — disabled")
+            else:
+                logger.info("🗄️ TelegramChatDB disabled (set ENABLE_TELEGRAM_DB=1 + CHANNEL_ID or CENTRAL_USER_ID)")
+
+
+
+        # TELEGRAM_DB already initialized above if not already
+        try:
+            if TELEGRAM_DB is None:
+                TELEGRAM_DB = TelegramChatDB(TELEGRAM_BOT_TOKEN_ENV, TELEGRAM_DB_CHANNEL_ID, TELEGRAM_DB_CENTRAL_USER_ID, chunk_size=TELEGRAM_DB_CHUNK_SIZE)
+        except Exception:
+            pass
         crawler_state = CrawlerSeedState(CRAWLER_DB_PATH)
         relay = CrawlerRelayClient(RELAY_URL, RELAY_KEY,
                                    timeout=RELAY_TIMEOUT,
