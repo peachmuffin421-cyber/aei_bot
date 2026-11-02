@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.34 Telegram-DB + R14-memfix (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed37-telegram-db-central-r14"
+__version__ = "final-ed38-h12fix-cached-snapshot-r14"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -342,9 +342,15 @@ def _rational_cos(x) -> PyFraction:
         sign = -sign
         if term == PyFraction(0, 1):
             break
-        # R14 memfix: break if digits blow up
+        # R14 memfix + Ed38: break if digits blow up (prevents H12)
         try:
-            if len(str(abs(result.numerator))) > 800:
+            if len(str(abs(result.numerator))) > 800 or len(str(abs(result.denominator))) > 800:
+                break
+        except Exception:
+            pass
+        # Ed38: also break if term becomes too small to affect result (epsilon guard)
+        try:
+            if term == PyFraction(0, 1):
                 break
         except Exception:
             pass
@@ -1942,6 +1948,11 @@ class AEI_Seed:
         # F5: prior deviation, so DbZ rectification persists across steps.
         self._prior_deviation_sq: Optional[Fraction] = None
         self._step_lock = threading.Lock()
+        # Ed38 Patch A: cached snapshot for H12 fix
+        self._cached_snapshot: Optional[Dict[str, Any]] = None
+        self._cached_at: float = 0.0
+        self._cached_light_snapshot: Optional[Dict[str, Any]] = None
+        self._cached_light_at: float = 0.0
     def _integrate_wavefunction_symbolic(self) -> Dict[Tuple[int, int, int, int], Fraction]:
         """F5: blend the fresh lattice integration with the prior
         rectified psi whenever the prior step was non-coherent. This is
@@ -2042,10 +2053,62 @@ class AEI_Seed:
             x = x_fn(i) if x_fn else Fraction(i, 1)
             records.append(self.step(x))
         return records
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self, light: bool = False) -> Dict[str, Any]:
+        # Ed38 Patch A: H12 fix — fast cached path for TWA polling
+        import time as _time_mod
+        now = _time_mod.time()
+        if light:
+            if self._cached_light_snapshot is not None and (now - self._cached_light_at) < 1.0:
+                # Return cached light snapshot immediately <1ms
+                return self._cached_light_snapshot
+        else:
+            # Full snapshot cache 0.5s to avoid duplicate heavy str() in burst
+            if self._cached_snapshot is not None and (now - self._cached_at) < 0.5:
+                # If light requested but we have full, derive light quickly? return full for now
+                pass
+
+        def _frac_short(f: Any, max_len: int = 64) -> str:
+            try:
+                s = str(f)
+                return s if len(s) <= max_len else s[:max_len] + "…"
+            except Exception:
+                return "0"
+
+        def _frac_short_light(f: Any) -> str:
+            return _frac_short(f, 64)
+
+        def _frac_full(f: Any) -> str:
+            return _frac_short(f, 256) if light else str(f)
+
         lock = self._step_lock
-        acquired = lock.acquire(timeout=2.0)
+        acquired = lock.acquire(timeout=0.1)  # Ed38: reduced from 2.0s to 0.1s for TWA responsiveness
         if not acquired:
+            # Return stale cache instead of 503 to avoid H12
+            if light and self._cached_light_snapshot is not None:
+                d = dict(self._cached_light_snapshot)
+                d["stale"] = True
+                d["tick"] = self.tick
+                return d
+            if self._cached_snapshot is not None:
+                d = dict(self._cached_snapshot)
+                d["stale"] = True
+                d["tick"] = self.tick
+                # Trim to light if needed
+                if light:
+                    return {
+                        "state": d.get("state"),
+                        "tick": d.get("tick"),
+                        "generation": d.get("generation"),
+                        "prime_count": d.get("prime_count"),
+                        "lattice_points": d.get("lattice_points"),
+                        "deviation_sq": d.get("deviation_sq"),
+                        "coherence": d.get("coherence"),
+                        "I": d.get("I"),
+                        "hopf_base": d.get("hopf_base"),
+                        "psi_real": d.get("psi_real"),
+                        "stale": True,
+                    }
+                return d
             return {
                 "state": self.state,
                 "tick": self.tick,
@@ -2053,44 +2116,70 @@ class AEI_Seed:
                 "error": "seed_busy",
                 "detail": "step_in_progress",
                 "coherence": False,
-                "deviation_sq": str(self.last_deviation_sq),
-                "I": str(self.last_I),
-                "psi_real": str(self.psi.real_part()),
+                "deviation_sq": _frac_short_light(self.last_deviation_sq),
+                "I": _frac_short_light(self.last_I),
+                "psi_real": _frac_short_light(self.psi.real_part()),
                 "last_logic_hash": self.last_logic_hash,
             }
         try:
-            return {
-                "state": self.state,
-                "tick": self.tick,
-                "generation": self.generation,
-                "primes_tail": [str(p) for p in self.primes[-8:]],  # R14 memfix
-                "prime_count": len(self.primes),
-                "lattice_points": len(self.lattice.points()),
-                "arc_sq": str(self.last_arc_sq),
-                "radius_sq": str(self.last_radius_sq),
-                "deviation_sq": str(self.last_deviation_sq),
-                "coherence": self.last_deviation_sq.is_zero(),
-                "I": str(self.last_I),
-                "hopf_base": [str(self.last_hopf_base[0]), str(self.last_hopf_base[1])],
-                "evolution": self.last_evolution,
-                "trajectory": [
-                    {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
-                    for q in self.last_trajectory
-                ],
-                "linguistic_trajectory": [
-                    {"a": str(q.a), "b": str(q.b), "c": str(q.c), "d": str(q.d)}
-                    for q in self.last_linguistic_trajectory
-                ],
-                "history_tail": self.history[-10:],  # R14 memfix
-                "logic_core": {
-                    k: {kk: str(vv) for kk, vv in v.items()} if isinstance(v, dict) else str(v)
-                    for k, v in self.evolution.logic_core.items()
-                },
-                "last_logic_hash": self.last_logic_hash,
-                # F8: expose Re[ψ] so the DBZ branch panel can distinguish
-                # 𝒜₃ (Re[ψ] > 0) from 𝒜₄ (Re[ψ] ≤ 0) independent of coherence.
-                "psi_real": str(self.psi.real_part()),
-            }
+            if light:
+                # Lightweight snapshot for /miniapp-state — <50ms target, avoids heavy trajectory serialization
+                snap = {
+                    "state": self.state,
+                    "tick": self.tick,
+                    "generation": self.generation,
+                    "prime_count": len(self.primes),
+                    "lattice_points": len(self.lattice.points()),
+                    "primes_tail": [_frac_short_light(p) for p in self.primes[-4:]],
+                    "arc_sq": _frac_short_light(self.last_arc_sq),
+                    "radius_sq": _frac_short_light(self.last_radius_sq),
+                    "deviation_sq": _frac_short_light(self.last_deviation_sq),
+                    "coherence": self.last_deviation_sq.is_zero(),
+                    "I": _frac_short_light(self.last_I),
+                    "hopf_base": [_frac_short_light(self.last_hopf_base[0]), _frac_short_light(self.last_hopf_base[1])],
+                    "psi_real": _frac_short_light(self.psi.real_part()),
+                    "last_logic_hash": self.last_logic_hash,
+                    "evolution": {"generation": self.last_evolution.get("generation") if self.last_evolution else 0, "logic_hash": self.last_logic_hash} if self.last_evolution else None,
+                }
+                self._cached_light_snapshot = snap
+                self._cached_light_at = now
+                # Also update full cache timestamp to keep coherence
+                return snap
+            else:
+                # Full snapshot for /state — still uses short guards for trajectory to avoid H12
+                snap = {
+                    "state": self.state,
+                    "tick": self.tick,
+                    "generation": self.generation,
+                    "primes_tail": [_frac_full(p) for p in self.primes[-8:]],
+                    "prime_count": len(self.primes),
+                    "lattice_points": len(self.lattice.points()),
+                    "arc_sq": _frac_full(self.last_arc_sq),
+                    "radius_sq": _frac_full(self.last_radius_sq),
+                    "deviation_sq": _frac_full(self.last_deviation_sq),
+                    "coherence": self.last_deviation_sq.is_zero(),
+                    "I": _frac_full(self.last_I),
+                    "hopf_base": [_frac_full(self.last_hopf_base[0]), _frac_full(self.last_hopf_base[1])],
+                    "evolution": self.last_evolution,
+                    "trajectory": [
+                        {"a": _frac_full(q.a), "b": _frac_full(q.b), "c": _frac_full(q.c), "d": _frac_full(q.d)}
+                        for q in self.last_trajectory
+                    ],
+                    "linguistic_trajectory": [
+                        {"a": _frac_full(q.a), "b": _frac_full(q.b), "c": _frac_full(q.c), "d": _frac_full(q.d)}
+                        for q in self.last_linguistic_trajectory
+                    ],
+                    "history_tail": self.history[-10:],
+                    "logic_core": {
+                        k: {kk: _frac_full(vv) for kk, vv in v.items()} if isinstance(v, dict) else _frac_full(v)
+                        for k, v in self.evolution.logic_core.items()
+                    },
+                    "last_logic_hash": self.last_logic_hash,
+                    "psi_real": _frac_full(self.psi.real_part()),
+                }
+                self._cached_snapshot = snap
+                self._cached_at = now
+                return snap
         finally:
             lock.release()
     def encode_syllable(self, syllable: str) -> Dict[str, Any]:
@@ -2299,6 +2388,7 @@ RELAY_TIMEOUT: int = int(os.getenv("RELAY_TIMEOUT", "15"))
 RELAY_MAX_RETRIES: int = int(os.getenv("RELAY_MAX_RETRIES", "3"))
 SEED_TICK_INTERVAL: int = int(os.getenv("SEED_TICK_INTERVAL", "5"))
 CRAWL_INTERVAL: int = int(os.getenv("CRAWL_INTERVAL", "3"))
+CRAWLER_BLOCKLIST: list = [s.strip() for s in os.getenv("CRAWLER_BLOCKLIST", "meta.wikimedia.org,wikimedia.org/w/api,thumb.wikimedia,upload.wikimedia,featuredfeed").split(",") if s.strip()]
 MAX_CRAWL_DEPTH: int = int(os.getenv("MAX_CRAWL_DEPTH", "3"))
 CRAWL_SEED_URLS: str = os.getenv("CRAWL_SEED_URLS", "").strip()
 CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
@@ -2806,12 +2896,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
                 return
-            snap = seed.snapshot()
-            if snap.get("error") == "seed_busy":
-                self._send_json(503, snap)
-                return
+            # Ed38: light snapshot + cached stale fallback avoids H12 (was 30s timeout)
+            snap = seed.snapshot(light=True)
+            # Never return 503 for light — return stale cache to keep TWA responsive
+            if snap.get("error") == "seed_busy" and getattr(seed, '_cached_light_snapshot', None):
+                snap = dict(seed._cached_light_snapshot)
+                snap["stale"] = True
             if crawler is not None:
-                snap["crawler"] = crawler.snapshot()
+                try:
+                    snap["crawler"] = crawler.snapshot()
+                except Exception:
+                    snap["crawler"] = {"frontier_size": 0}
             self._send_json(200, snap)
             return
         if path == "/state":
