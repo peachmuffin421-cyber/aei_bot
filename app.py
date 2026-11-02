@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.34 Telegram-DB + R14-memfix (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed38-h12fix-cached-snapshot-r14"
+__version__ = "final-ed39-h12fix-toast-truncate-r14"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -1303,6 +1303,21 @@ _TOAST_SEQ = 0
 _TOAST_FIRST_AVAILABLE_SEQ = 0
 def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
     global _TOAST_SEQ, _TOAST_FIRST_AVAILABLE_SEQ, _TOAST_BUFFER
+    def _short_frac(v, max_len=64):
+        try:
+            s = str(v)
+            if len(s) <= max_len:
+                return s
+            # For fractions, keep head+tail
+            if '/' in s:
+                parts = s.split('/')
+                a = parts[0]
+                b = '/'.join(parts[1:])
+                if len(a) > 20 or len(b) > 20:
+                    return f"{a[:10]}…{a[-3:]}/{b[:10]}…{b[-3:]}…({len(s)}ch)"
+            return s[:max_len] + f"…({len(s)}ch)"
+        except Exception:
+            return str(v)[:max_len]
     with _TOAST_LOCK:
         maxlen = _TOAST_BUFFER.maxlen
         if maxlen is None or maxlen <= 0:
@@ -1312,7 +1327,19 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
         evicted_seq = _TOAST_BUFFER[0].get("seq", 0) if was_full else 0
         _TOAST_SEQ += 1
         seq = _TOAST_SEQ
-        entry = dict(payload)
+        # Ed39: truncate huge fractions in toasts to prevent frontend overflow
+        safe_payload = {}
+        for k, v in payload.items():
+            try:
+                if k in ("deviation_sq", "arc_sq", "radius_sq", "I", "prime", "hash_frac", "psi_real"):
+                    safe_payload[k] = _short_frac(v, 48)
+                elif isinstance(v, str) and len(v) > 200:
+                    safe_payload[k] = v[:200] + f"…({len(v)}ch)"
+                else:
+                    safe_payload[k] = v
+            except Exception:
+                safe_payload[k] = str(v)[:200]
+        entry = dict(safe_payload)
         entry["kind"] = kind
         entry["seq"] = seq
         if "ts" not in entry:
