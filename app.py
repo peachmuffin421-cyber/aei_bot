@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.34 Telegram-DB + R14-memfix (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed40-h12fix-ultimate-r14"
+__version__ = "final-ed40-ultimate-safe-frac-r15"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -2120,21 +2120,59 @@ class AEI_Seed:
                 return self._cached_snapshot
 
         def _frac_short(f: Any, max_len: int = 64) -> str:
+            # Ed40-ultimate: NEVER call str() on huge Fractions — check bit_length first
             try:
+                # Fast path for Fraction-like
+                if hasattr(f, 'numerator') and hasattr(f, 'denominator'):
+                    n = f.numerator
+                    d = f.denominator
+                    # bit_length check ~ 800 decimal digits = ~2658 bits, use 2700 as threshold
+                    try:
+                        nb = n.bit_length() if hasattr(n, 'bit_length') else 0
+                        db = d.bit_length() if hasattr(d, 'bit_length') else 0
+                        if nb > 2700 or db > 2700:
+                            # Estimate decimal digits without str()
+                            nd = int(nb * 0.30103) + 1 if nb else 1
+                            dd = int(db * 0.30103) + 1 if db else 1
+                            # Avoid str() entirely — return size placeholder
+                            # For moderate huge (2700-20000 bits) still try to show leading digits via pow10 approx?
+                            return f"HUGE~{nd}d/{dd}d~({nd+dd}ch)"
+                    except Exception:
+                        pass
+                    # For normal size, try str but with guard
+                    try:
+                        # If still huge, this str will be heavy — but we already filtered >800 digits
+                        s = str(f)
+                    except ValueError as ve:
+                        # Python 3.11+ int_max_str_digits guard
+                        if "exceeds the limit" in str(ve) or "conversion" in str(ve).lower():
+                            return f"HUGE({getattr(n,'bit_length',lambda:0)()}bits)"
+                        raise
+                    if len(s) <= max_len:
+                        return s
+                    if '/' in s:
+                        a,b = s.split('/',1)
+                        if len(a) > 20 or len(b) > 20:
+                            return f"{a[:10]}…{a[-3:]}/{b[:10]}…{b[-3:]}…({len(s)}ch)"
+                    return s[:max_len] + f"…({len(s)}ch)"
+                # Non-Fraction fallback
                 s = str(f)
                 if len(s) <= max_len:
                     return s
-                if '/' in s:
-                    a,b = s.split('/',1)
-                    # keep head+tail for readability
-                    if len(a) > 20 or len(b) > 20:
-                        return f"{a[:10]}…{a[-3:]}/{b[:10]}…{b[-3:]}…({len(s)}ch)"
                 return s[:max_len] + f"…({len(s)}ch)"
             except Exception:
                 try:
+                    # Last resort: try repr without huge int str
+                    if hasattr(f, 'numerator'):
+                        try:
+                            nb = f.numerator.bit_length()
+                            return f"~{int(nb*0.30103)}d frac"
+                        except Exception:
+                            pass
                     return str(f)[:max_len]
                 except Exception:
                     return "0/1"
+
 
         lock = self._step_lock
         acquired = lock.acquire(timeout=0.05)  # Ed40: 50ms max, was 100ms
