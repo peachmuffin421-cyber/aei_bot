@@ -7,7 +7,7 @@ Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 Version: Final Ed.34 Telegram-DB + R14-memfix (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "final-ed39-h12fix-toast-truncate-r14"
+__version__ = "final-ed40-h12fix-ultimate-r14"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -2081,36 +2081,65 @@ class AEI_Seed:
             records.append(self.step(x))
         return records
     def snapshot(self, light: bool = False) -> Dict[str, Any]:
-        # Ed38 Patch A: H12 fix — fast cached path for TWA polling
+        # Ed40: ultimate H12 fix — never block, always return <50ms, always truncated
         import time as _time_mod
         now = _time_mod.time()
+        # Fast cache path — light 1.0s, full 0.5s
         if light:
             if self._cached_light_snapshot is not None and (now - self._cached_light_at) < 1.0:
-                # Return cached light snapshot immediately <1ms
                 return self._cached_light_snapshot
         else:
-            # Full snapshot cache 0.5s to avoid duplicate heavy str() in burst
             if self._cached_snapshot is not None and (now - self._cached_at) < 0.5:
-                # If light requested but we have full, derive light quickly? return full for now
-                pass
+                if light:
+                    # Derive light from full cache quickly
+                    fc = self._cached_snapshot
+                    lc = {
+                        "state": fc.get("state"),
+                        "tick": fc.get("tick"),
+                        "generation": fc.get("generation"),
+                        "prime_count": fc.get("prime_count"),
+                        "lattice_points": fc.get("lattice_points"),
+                        "primes_tail": fc.get("primes_tail", [])[-4:],
+                        "arc_sq": fc.get("arc_sq"),
+                        "radius_sq": fc.get("radius_sq"),
+                        "deviation_sq": fc.get("deviation_sq"),
+                        "coherence": fc.get("coherence"),
+                        "I": fc.get("I"),
+                        "hopf_base": fc.get("hopf_base"),
+                        "psi_real": fc.get("psi_real"),
+                        "phi": fc.get("phi", {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"}),
+                        "phi_magnitude_sq": fc.get("phi_magnitude_sq", "1/1"),
+                        "trajectory": [],
+                        "evolution": fc.get("evolution"),
+                        "logic_core": fc.get("logic_core", {}),
+                        "history_tail": fc.get("history_tail", []),
+                        "last_logic_hash": fc.get("last_logic_hash"),
+                        "stale": False,
+                    }
+                    return lc
+                return self._cached_snapshot
 
         def _frac_short(f: Any, max_len: int = 64) -> str:
             try:
                 s = str(f)
-                return s if len(s) <= max_len else s[:max_len] + "…"
+                if len(s) <= max_len:
+                    return s
+                if '/' in s:
+                    a,b = s.split('/',1)
+                    # keep head+tail for readability
+                    if len(a) > 20 or len(b) > 20:
+                        return f"{a[:10]}…{a[-3:]}/{b[:10]}…{b[-3:]}…({len(s)}ch)"
+                return s[:max_len] + f"…({len(s)}ch)"
             except Exception:
-                return "0"
-
-        def _frac_short_light(f: Any) -> str:
-            return _frac_short(f, 64)
-
-        def _frac_full(f: Any) -> str:
-            return _frac_short(f, 256) if light else str(f)
+                try:
+                    return str(f)[:max_len]
+                except Exception:
+                    return "0/1"
 
         lock = self._step_lock
-        acquired = lock.acquire(timeout=0.1)  # Ed38: reduced from 2.0s to 0.1s for TWA responsiveness
+        acquired = lock.acquire(timeout=0.05)  # Ed40: 50ms max, was 100ms
         if not acquired:
-            # Return stale cache instead of 503 to avoid H12
+            # Never return seed_busy error that causes H12 — return stale cache or minimal placeholder
             if light and self._cached_light_snapshot is not None:
                 d = dict(self._cached_light_snapshot)
                 d["stale"] = True
@@ -2120,89 +2149,130 @@ class AEI_Seed:
                 d = dict(self._cached_snapshot)
                 d["stale"] = True
                 d["tick"] = self.tick
-                # Trim to light if needed
                 if light:
+                    # Trim to light shape but keep required fields for TWA
                     return {
-                        "state": d.get("state"),
-                        "tick": d.get("tick"),
-                        "generation": d.get("generation"),
-                        "prime_count": d.get("prime_count"),
-                        "lattice_points": d.get("lattice_points"),
-                        "deviation_sq": d.get("deviation_sq"),
-                        "coherence": d.get("coherence"),
-                        "I": d.get("I"),
-                        "hopf_base": d.get("hopf_base"),
-                        "psi_real": d.get("psi_real"),
+                        "state": d.get("state", "evolving"),
+                        "tick": d.get("tick", self.tick),
+                        "generation": d.get("generation", 0),
+                        "prime_count": d.get("prime_count", 0),
+                        "lattice_points": d.get("lattice_points", 0),
+                        "primes_tail": d.get("primes_tail", [])[-4:],
+                        "arc_sq": d.get("arc_sq", "0/1"),
+                        "radius_sq": d.get("radius_sq", "1/1"),
+                        "deviation_sq": d.get("deviation_sq", "0/1"),
+                        "coherence": d.get("coherence", False),
+                        "I": d.get("I", "0/1"),
+                        "hopf_base": d.get("hopf_base", ["0/1","0/1"]),
+                        "psi_real": d.get("psi_real", "0/1"),
+                        "phi": d.get("phi", {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"}),
+                        "phi_magnitude_sq": d.get("phi_magnitude_sq", "1/1"),
+                        "trajectory": [],
+                        "evolution": d.get("evolution"),
+                        "logic_core": d.get("logic_core", {}),
+                        "history_tail": d.get("history_tail", []),
+                        "last_logic_hash": d.get("last_logic_hash", ""),
                         "stale": True,
                     }
                 return d
+            # No cache yet — return minimal placeholder instantly (<1ms) to avoid H12 on boot
             return {
                 "state": self.state,
                 "tick": self.tick,
                 "generation": self.generation,
-                "error": "seed_busy",
-                "detail": "step_in_progress",
-                "coherence": False,
-                "deviation_sq": _frac_short_light(self.last_deviation_sq),
-                "I": _frac_short_light(self.last_I),
-                "psi_real": _frac_short_light(self.psi.real_part()),
+                "prime_count": len(self.primes),
+                "lattice_points": len(self.lattice.points()),
+                "primes_tail": [_frac_short(p, 32) for p in self.primes[-4:]],
+                "arc_sq": _frac_short(self.last_arc_sq, 48),
+                "radius_sq": _frac_short(self.last_radius_sq, 48),
+                "deviation_sq": _frac_short(self.last_deviation_sq, 48),
+                "coherence": self.last_deviation_sq.is_zero(),
+                "I": _frac_short(self.last_I, 48),
+                "hopf_base": [_frac_short(self.last_hopf_base[0], 32), _frac_short(self.last_hopf_base[1], 32)],
+                "psi_real": _frac_short(self.psi.real_part(), 32),
+                "phi": {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"},
+                "phi_magnitude_sq": "1/1",
+                "trajectory": [],
+                "evolution": self.last_evolution,
+                "logic_core": {},
+                "history_tail": self.history[-4:],
                 "last_logic_hash": self.last_logic_hash,
+                "stale": True,
+                "booting": True,
             }
         try:
+            # Common short helper for full vs light
             if light:
-                # Lightweight snapshot for /miniapp-state — <50ms target, avoids heavy trajectory serialization
                 snap = {
                     "state": self.state,
                     "tick": self.tick,
                     "generation": self.generation,
                     "prime_count": len(self.primes),
                     "lattice_points": len(self.lattice.points()),
-                    "primes_tail": [_frac_short_light(p) for p in self.primes[-4:]],
-                    "arc_sq": _frac_short_light(self.last_arc_sq),
-                    "radius_sq": _frac_short_light(self.last_radius_sq),
-                    "deviation_sq": _frac_short_light(self.last_deviation_sq),
+                    "primes_tail": [_frac_short(p, 32) for p in self.primes[-4:]],
+                    "arc_sq": _frac_short(self.last_arc_sq, 48),
+                    "radius_sq": _frac_short(self.last_radius_sq, 48),
+                    "deviation_sq": _frac_short(self.last_deviation_sq, 48),
                     "coherence": self.last_deviation_sq.is_zero(),
-                    "I": _frac_short_light(self.last_I),
-                    "hopf_base": [_frac_short_light(self.last_hopf_base[0]), _frac_short_light(self.last_hopf_base[1])],
-                    "psi_real": _frac_short_light(self.psi.real_part()),
-                    "last_logic_hash": self.last_logic_hash,
+                    "I": _frac_short(self.last_I, 48),
+                    "hopf_base": [_frac_short(self.last_hopf_base[0], 32), _frac_short(self.last_hopf_base[1], 32)],
+                    "psi_real": _frac_short(self.psi.real_part(), 32),
+                    "phi": {
+                        "a": _frac_short(self.phi.a if hasattr(self, 'phi') else "1/1", 32),
+                        "b": _frac_short(self.phi.b if hasattr(self, 'phi') else "0/1", 32),
+                        "c": _frac_short(self.phi.c if hasattr(self, 'phi') else "0/1", 32),
+                        "d": _frac_short(self.phi.d if hasattr(self, 'phi') else "0/1", 32),
+                    } if hasattr(self, 'phi') else {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"},
+                    "phi_magnitude_sq": _frac_short(self.phi.magnitude_squared() if hasattr(self, 'phi') else "1/1", 32),
+                    "trajectory": [],  # Ed40: omit heavy trajectory in light mode to stay <50ms
                     "evolution": {"generation": self.last_evolution.get("generation") if self.last_evolution else 0, "logic_hash": self.last_logic_hash} if self.last_evolution else None,
+                    "logic_core": {},
+                    "history_tail": self.history[-4:],
+                    "last_logic_hash": self.last_logic_hash,
+                    "stale": False,
                 }
                 self._cached_light_snapshot = snap
                 self._cached_light_at = now
-                # Also update full cache timestamp to keep coherence
                 return snap
             else:
-                # Full snapshot for /state — still uses short guards for trajectory to avoid H12
+                # Full snapshot — still truncated to avoid H12, but includes trajectory (truncated)
                 snap = {
                     "state": self.state,
                     "tick": self.tick,
                     "generation": self.generation,
-                    "primes_tail": [_frac_full(p) for p in self.primes[-8:]],
+                    "primes_tail": [_frac_short(p, 64) for p in self.primes[-8:]],
                     "prime_count": len(self.primes),
                     "lattice_points": len(self.lattice.points()),
-                    "arc_sq": _frac_full(self.last_arc_sq),
-                    "radius_sq": _frac_full(self.last_radius_sq),
-                    "deviation_sq": _frac_full(self.last_deviation_sq),
+                    "arc_sq": _frac_short(self.last_arc_sq, 128),
+                    "radius_sq": _frac_short(self.last_radius_sq, 128),
+                    "deviation_sq": _frac_short(self.last_deviation_sq, 128),
                     "coherence": self.last_deviation_sq.is_zero(),
-                    "I": _frac_full(self.last_I),
-                    "hopf_base": [_frac_full(self.last_hopf_base[0]), _frac_full(self.last_hopf_base[1])],
+                    "I": _frac_short(self.last_I, 128),
+                    "hopf_base": [_frac_short(self.last_hopf_base[0], 64), _frac_short(self.last_hopf_base[1], 64)],
                     "evolution": self.last_evolution,
                     "trajectory": [
-                        {"a": _frac_full(q.a), "b": _frac_full(q.b), "c": _frac_full(q.c), "d": _frac_full(q.d)}
-                        for q in self.last_trajectory
+                        {"a": _frac_short(q.a, 48), "b": _frac_short(q.b, 48), "c": _frac_short(q.c, 48), "d": _frac_short(q.d, 48)}
+                        for q in self.last_trajectory[:10]
                     ],
                     "linguistic_trajectory": [
-                        {"a": _frac_full(q.a), "b": _frac_full(q.b), "c": _frac_full(q.c), "d": _frac_full(q.d)}
-                        for q in self.last_linguistic_trajectory
+                        {"a": _frac_short(q.a, 48), "b": _frac_short(q.b, 48), "c": _frac_short(q.c, 48), "d": _frac_short(q.d, 48)}
+                        for q in self.last_linguistic_trajectory[:10]
                     ],
                     "history_tail": self.history[-10:],
                     "logic_core": {
-                        k: {kk: _frac_full(vv) for kk, vv in v.items()} if isinstance(v, dict) else _frac_full(v)
+                        k: {kk: _frac_short(vv, 64) for kk, vv in v.items()} if isinstance(v, dict) else _frac_short(v, 64)
                         for k, v in self.evolution.logic_core.items()
                     },
                     "last_logic_hash": self.last_logic_hash,
-                    "psi_real": _frac_full(self.psi.real_part()),
+                    "psi_real": _frac_short(self.psi.real_part(), 64),
+                    "phi": {
+                        "a": _frac_short(self.phi.a, 64),
+                        "b": _frac_short(self.phi.b, 64),
+                        "c": _frac_short(self.phi.c, 64),
+                        "d": _frac_short(self.phi.d, 64),
+                    } if hasattr(self, 'phi') else {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"},
+                    "phi_magnitude_sq": _frac_short(self.phi.magnitude_squared() if hasattr(self, 'phi') else "1/1", 64),
+                    "stale": False,
                 }
                 self._cached_snapshot = snap
                 self._cached_at = now
@@ -2921,19 +2991,27 @@ class BridgeHandler(BaseHTTPRequestHandler):
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         if path == "/miniapp-state":
             if seed is None:
-                self._send_json(503, {"error": "seed_not_ready"})
+                self._send_json(200, {"state": "initializing", "tick": 0, "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True, "booting": True})
                 return
-            # Ed38: light snapshot + cached stale fallback avoids H12 (was 30s timeout)
-            snap = seed.snapshot(light=True)
-            # Never return 503 for light — return stale cache to keep TWA responsive
-            if snap.get("error") == "seed_busy" and getattr(seed, '_cached_light_snapshot', None):
-                snap = dict(seed._cached_light_snapshot)
-                snap["stale"] = True
+            # Ed40: ultimate H12 fix — light snapshot, never 503, always 200
+            try:
+                snap = seed.snapshot(light=True)
+            except Exception as e:
+                # Fallback minimal placeholder on any exception
+                snap = {"state": "evolving", "tick": getattr(seed, 'tick', 0), "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "I": "0/1", "psi_real": "0/1", "hopf_base": ["0/1","0/1"], "phi": {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"}, "phi_magnitude_sq": "1/1", "trajectory": [], "stale": True, "error": str(e)[:100]}
+            # Ed40: never return 503 for miniapp-state — always 200 to avoid TWA state error badge
+            if snap.get("error") == "seed_busy":
+                # Replace with cached or placeholder
+                if getattr(seed, '_cached_light_snapshot', None):
+                    snap = dict(seed._cached_light_snapshot)
+                    snap["stale"] = True
+                else:
+                    snap = {"state": "evolving", "tick": getattr(seed, 'tick', 0), "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True}
             if crawler is not None:
                 try:
                     snap["crawler"] = crawler.snapshot()
                 except Exception:
-                    snap["crawler"] = {"frontier_size": 0}
+                    snap["crawler"] = {"frontier_size": 0, "running": False}
             self._send_json(200, snap)
             return
         if path == "/state":
