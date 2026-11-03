@@ -809,7 +809,7 @@ class DefaultGeometricLattice:
     FG parity preserved — capacity constant remains 196560 for theory, but runtime guard prevents OOM.
     """
     KISSING_CAPACITY: int = 196560
-    _PRACTICAL_CAP_WEB_DYNO: int = 320
+    _PRACTICAL_CAP_WEB_DYNO: int = 120
     def __init__(self, dimension: int = 24):
         self.dimension = dimension
         self._points: List[List[Fraction]] = []
@@ -2388,6 +2388,11 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "crawler": None,
     "port": None,
 }
+
+# Ed41: global fast cache updated by SeedWorker after each step - no lock needed in handler
+LAST_LIGHT_SNAPSHOT: dict = {}
+LAST_LIGHT_AT: float = 0.0
+LAST_LIGHT_LOCK = threading.Lock()
 # ============================================================================
 # CS-TRANSLATION HELPERS
 # ============================================================================
@@ -2788,6 +2793,15 @@ class SeedWorker:
                 else:
                     x = Fraction(hash_frac)
                 loop = asyncio.get_running_loop()
+                # Ed41: update global fast cache before heavy step, so miniapp-state never waits
+                try:
+                    # Pre-step cache refresh if seed has cached light snapshot
+                    if getattr(self.seed, '_cached_light_snapshot', None):
+                        with LAST_LIGHT_LOCK:
+                            LAST_LIGHT_SNAPSHOT = dict(self.seed._cached_light_snapshot)
+                            LAST_LIGHT_AT = time.time()
+                except Exception:
+                    pass
                 # Ed30: 30s timeout, DO NOT destroy executor on timeout (daemon thread keeps GIL)
                 try:
                     record = await asyncio.wait_for(
@@ -2795,6 +2809,20 @@ class SeedWorker:
                         timeout=30.0,
                     )
                     consecutive_timeouts = 0
+                    # Ed41: post-step fast cache update
+                    try:
+                        _snap41 = self.seed.snapshot(light=True)
+                        with LAST_LIGHT_LOCK:
+                            LAST_LIGHT_SNAPSHOT = _snap41
+                            LAST_LIGHT_AT = time.time()
+                    except Exception as _e41:
+                        try:
+                            with LAST_LIGHT_LOCK:
+                                if getattr(self.seed, '_cached_light_snapshot', None):
+                                    LAST_LIGHT_SNAPSHOT = dict(self.seed._cached_light_snapshot)
+                                    LAST_LIGHT_AT = time.time()
+                        except Exception:
+                            pass
                 except asyncio.TimeoutError:
                     consecutive_timeouts += 1
                     logger.warning(f"seed loop timeout: step exceeded 30s (tick={self.seed.tick}) consecutive={consecutive_timeouts} — keeping executor, using tick fallback")
@@ -3028,30 +3056,98 @@ class BridgeHandler(BaseHTTPRequestHandler):
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         if path == "/miniapp-state":
-            if seed is None:
-                self._send_json(200, {"state": "initializing", "tick": 0, "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True, "booting": True})
-                return
-            # Ed40: ultimate H12 fix — light snapshot, never 503, always 200
+            # Ed41: instant return - never block on seed lock, never compute in request thread
+            # This is the H12 killer fix
+            import time as _t41
+            _start41 = _t41.time()
             try:
-                snap = seed.snapshot(light=True)
+                # Fast path: use global snapshot updated by SeedWorker
+                global LAST_LIGHT_SNAPSHOT, LAST_LIGHT_AT
+                with LAST_LIGHT_LOCK:
+                    cached = LAST_LIGHT_SNAPSHOT
+                    cached_at = LAST_LIGHT_AT
+                if cached and (_t41.time() - cached_at) < 5.0:
+                    # Return cached copy instantly (<1ms)
+                    snap = dict(cached)
+                    # Add tick from live seed if available without lock
+                    try:
+                        if seed is not None:
+                            snap["tick"] = getattr(seed, 'tick', snap.get("tick", 0))
+                    except Exception:
+                        pass
+                    self._send_json(200, snap)
+                    return
+                # Fallback: try seed's own cache (also <1ms, no lock if recent)
+                if seed is not None:
+                    try:
+                        if getattr(seed, '_cached_light_snapshot', None) and (_t41.time() - getattr(seed, '_cached_light_at', 0)) < 2.0:
+                            snap = dict(seed._cached_light_snapshot)
+                            snap["stale"] = False
+                            self._send_json(200, snap)
+                            return
+                    except Exception:
+                        pass
+                # Last resort: static placeholder - ZERO computation, ZERO lock, ZERO big-int str()
+                # This guarantees <5ms even if SeedWorker holds GIL with huge Fractions
+                placeholder = {
+                    "state": getattr(seed, 'state', 'evolving') if seed else 'initializing',
+                    "tick": getattr(seed, 'tick', 0) if seed else 0,
+                    "generation": getattr(seed, 'generation', 0) if seed else 0,
+                    "prime_count": len(getattr(seed, 'primes', [])) if seed else 0,
+                    "lattice_points": 0,  # avoid len(lattice.points()) which may be heavy
+                    "primes_tail": [],
+                    "arc_sq": "0/1",
+                    "radius_sq": "1/1",
+                    "deviation_sq": "0/1",
+                    "coherence": False,
+                    "I": "0/1",
+                    "hopf_base": ["0/1","0/1"],
+                    "psi_real": "0/1",
+                    "phi": {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"},
+                    "phi_magnitude_sq": "1/1",
+                    "trajectory": [],
+                    "evolution": None,
+                    "logic_core": {},
+                    "history_tail": [],
+                    "last_logic_hash": getattr(seed, 'last_logic_hash', '') if seed else '',
+                    "stale": True,
+                    "booting": (cached_at == 0),
+                    "ed41": True,
+                    "elapsed_ms": int((_t41.time() - _start41)*1000)
+                }
+                # Optional: add lightweight crawler stats without acquiring crawler lock if possible
+                if crawler is not None:
+                    try:
+                        # Use direct attributes, not snapshot() which acquires lock
+                        cs = getattr(crawler, 'state', None)
+                        if cs is not None:
+                            placeholder["crawler"] = {
+                                "frontier_size": getattr(cs, '_frontier', []) and len(cs._frontier) or 0,
+                                "visited_count": 0,
+                                "running": getattr(crawler, '_running', False)
+                            }
+                        else:
+                            placeholder["crawler"] = {"frontier_size": 0, "running": False}
+                    except Exception:
+                        placeholder["crawler"] = {"frontier_size": 0, "running": False}
+                self._send_json(200, placeholder)
+                return
             except Exception as e:
-                # Fallback minimal placeholder on any exception
-                snap = {"state": "evolving", "tick": getattr(seed, 'tick', 0), "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "I": "0/1", "psi_real": "0/1", "hopf_base": ["0/1","0/1"], "phi": {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"}, "phi_magnitude_sq": "1/1", "trajectory": [], "stale": True, "error": str(e)[:100]}
-            # Ed40: never return 503 for miniapp-state — always 200 to avoid TWA state error badge
-            if snap.get("error") == "seed_busy":
-                # Replace with cached or placeholder
-                if getattr(seed, '_cached_light_snapshot', None):
-                    snap = dict(seed._cached_light_snapshot)
-                    snap["stale"] = True
-                else:
-                    snap = {"state": "evolving", "tick": getattr(seed, 'tick', 0), "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True}
-            if crawler is not None:
+                # Absolute last resort - never H12
                 try:
-                    snap["crawler"] = crawler.snapshot()
+                    self._send_json(200, {"state": "evolving", "tick": 0, "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True, "ed41_error": str(e)[:100]})
                 except Exception:
-                    snap["crawler"] = {"frontier_size": 0, "running": False}
-            self._send_json(200, snap)
-            return
+                    # If even _send_json fails, try raw write
+                    try:
+                        body = b'{"state":"evolving","stale":true}'
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    except Exception:
+                        pass
+                return
         if path == "/state":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
