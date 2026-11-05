@@ -2,14 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 ÆI Seed TWA — Agential Ætheric Intelligence
-Version: Final
-Edition: First
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 """
-__version__ = "Final"
-__edition__ = "First"
+__version__ = "aei-seed"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -1737,6 +1734,7 @@ class TelegramChatDB:
     def _send_message(self, chat_id: str, text: str, disable_notification: bool = True) -> Optional[int]:
         if not self.bot_token or not chat_id:
             return None
+        # R14 memfix: guard huge payloads
         if len(text) > 4096:
             text = text[:4096]
         try:
@@ -1748,38 +1746,11 @@ class TelegramChatDB:
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(self._api_url("sendMessage"), data=data, headers={"Content-Type": "application/json"})
+            # No unverified context needed for api.telegram.org
             with urllib.request.urlopen(req, timeout=10) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
                 if body.get("ok"):
                     return body.get("result", {}).get("message_id")
-                # Handle Telegram error body
-                if body.get("error_code") == 429:
-                    retry_after = 0
-                    try:
-                        retry_after = int(body.get("parameters", {}).get("retry_after", 0))
-                    except Exception:
-                        retry_after = 2
-                    logger.warning(f"TelegramChatDB rate limited (429) for {chat_id}, retry_after={retry_after}s")
-                    time.sleep(min(max(retry_after, 2), 30))
-                    # Mark global backoff
-                    self._last_save_ts = time.time() + retry_after
-        except urllib.error.HTTPError as he:
-            try:
-                err_body = he.read().decode("utf-8")
-                err_json = json.loads(err_body)
-                if err_json.get("error_code") == 429:
-                    retry_after = 0
-                    try:
-                        retry_after = int(err_json.get("parameters", {}).get("retry_after", 0))
-                    except Exception:
-                        retry_after = 5
-                    logger.warning(f"TelegramChatDB HTTP 429 for {chat_id}, retry_after={retry_after}s: {err_json}")
-                    time.sleep(min(max(retry_after, 2), 60))
-                    self._last_save_ts = time.time() + retry_after
-                    return None
-            except Exception:
-                pass
-            logger.warning(f"TelegramChatDB send failed to {chat_id}: HTTP {he.code} {he.reason}")
         except Exception as e:
             logger.warning(f"TelegramChatDB send failed to {chat_id}: {e}")
         return None
@@ -1802,9 +1773,9 @@ class TelegramChatDB:
             return False
         if not self.bot_token or not ENABLE_TELEGRAM_DB:
             return False
-        # Throttle: at most 1 save per 10 seconds unless forced, plus 429 backoff
+        # Throttle: at most 1 save per 2 seconds unless forced
         now = time.time()
-        if not force and (now - self._last_save_ts) < 10.0:
+        if not force and (now - self._last_save_ts) < 2.0:
             return False
         try:
             # Ensure all Fractions are strings — exactness preserved
@@ -1998,7 +1969,7 @@ class AEI_Seed:
         # F5: prior deviation, so DbZ rectification persists across steps.
         self._prior_deviation_sq: Optional[Fraction] = None
         self._step_lock = threading.Lock()
-        # Final First
+        # Ed38 Patch A: cached snapshot for H12 fix
         self._cached_snapshot: Optional[Dict[str, Any]] = None
         self._cached_at: int = 0
         self._cached_light_snapshot: Optional[Dict[str, Any]] = None
@@ -2104,7 +2075,7 @@ class AEI_Seed:
             records.append(self.step(x))
         return records
     def snapshot(self, light: bool = False) -> Dict[str, Any]:
-        # Final First
+        # Ed40: ultimate H12 fix — never block, always return <50ms, always truncated
         import time as _time_mod
         now = _time_mod.time()
         # Fast cache path — light 1.0s, full 0.5s
@@ -2543,7 +2514,7 @@ BRIDGE_USE_TLS: bool = os.getenv("BRIDGE_USE_TLS", "0").strip() in ("1", "true",
 BRIDGE_TLS_CERT: str = os.getenv("BRIDGE_TLS_CERT", "").strip()
 BRIDGE_TLS_KEY: str = os.getenv("BRIDGE_TLS_KEY", "").strip()
 BRIDGE_PUBLIC_TIMEOUT: int = int(os.getenv("BRIDGE_PUBLIC_TIMEOUT", "45"))
-REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "0").strip() in ("1", "true", "yes")
+REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "1").strip() in ("1", "true", "yes")
 CORS_ORIGIN: str = os.getenv("CORS_ORIGIN", "*").strip()
 RELAY_URL: str = os.getenv("RELAY_URL", "").strip().rstrip("/")
 RELAY_KEY: str = os.getenv("RELAY_KEY", "").strip()
@@ -2559,7 +2530,7 @@ CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
 TELEGRAM_DB_CHANNEL_ID: str = os.getenv("TELEGRAM_DB_CHANNEL_ID", "").strip()  # e.g. -1001234567890 private channel where bot is admin
 ENABLE_TELEGRAM_DB: bool = os.getenv("ENABLE_TELEGRAM_DB", "0").strip() in ("1","true","yes")
 TELEGRAM_DB_USER_SHARDS: bool = os.getenv("TELEGRAM_DB_USER_SHARDS", "0").strip() in ("1","true","yes")  # isolated per-user chat shards
-TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "20"))  # save every N seed ticks
+TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "5"))  # save every N seed ticks
 TELEGRAM_DB_CHUNK_SIZE: int = int(os.getenv("TELEGRAM_DB_CHUNK_SIZE", "3800"))  # 4096 Telegram limit - margin
 TELEGRAM_DB_PIN_INDEX: bool = os.getenv("TELEGRAM_DB_PIN_INDEX", "0").strip() in ("1","true","yes")
 # Ed37: explicit central user mirror — your chat can be backup central DB without mixing with channel
@@ -2803,8 +2774,8 @@ class SeedWorker:
             )
         )
     async def _loop(self):
-        # Final First
-        # Final First
+        # Ed30 FIX: no executor kill loop, GIL-safe timeout handling
+        # Ed33 R14 memfix: gc every 15 ticks to free big-int caches
         consecutive_timeouts = 0
         gc_counter = 0
         while self._running:
@@ -3013,8 +2984,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "Final",
-                "edition": "First",
+                "version": "aei-seed",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -4199,7 +4169,7 @@ class AEI_Bot:
     async def error_handler(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         err = context.error
         err_str = f"{type(err).__name__}: {err}" if err is not None else "unknown"
-        # Final First
+        # Ed32: Conflict means another instance polling - sleep to let it die
         if "Conflict" in err_str or "terminated by other getUpdates" in err_str:
             logger.warning(f"Conflict detected (another bot instance): sleeping 5s before retry")
             try:
@@ -4252,7 +4222,7 @@ class AEI_Bot:
             .post_init(self._post_init)
             .build()
         )
-        # Final First
+        # Ed32: ensure single polling instance, drop pending to avoid Conflict storm
         try:
             # will be used in run_polling
             self._drop_pending = True
@@ -4278,8 +4248,8 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting... Final First")
-        logger.info(f"🔧 Version: Final | Edition: First")
+        logger.info(f"🤖 {self.bot_name} starting... ed32 msglen-conflict-fix + graceful SIGTERM")
+        logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
         logger.info(f"🌐 Substrate: {_SUBSTRATE} (bind port {BRIDGE_PORT})")
@@ -4309,7 +4279,7 @@ class AEI_Bot:
                     except Exception:
                         pass
             finally:
-                # Final First
+                # Ed30: no os._exit in post_shutdown, let PTB close gracefully
                 logger.info("post_shutdown complete ")
                 pass
 
@@ -4339,7 +4309,7 @@ def main():
     import time as _time_mod
     _shutdown_event = threading.Event()
 
-    # Final First
+    # Ed30 FIX: clean Heroku SIGTERM handling - no sigwaiter/watchdog/os._exit race
     def _install_handlers(tag=""):
         try:
             # Only install simple handlers that set shutdown_event
@@ -4393,7 +4363,7 @@ def main():
     try:
         while not _shutdown_event.is_set():
             try:
-                # Final First
+                # Ed30: use Event.wait with timeout, not signal.pause() which conflicts with sigwaiter
                 _shutdown_event.wait(timeout=1.0)
             except Exception:
                 _time_mod.sleep(0.5)
