@@ -1734,7 +1734,6 @@ class TelegramChatDB:
     def _send_message(self, chat_id: str, text: str, disable_notification: bool = True) -> Optional[int]:
         if not self.bot_token or not chat_id:
             return None
-        # R14 memfix: guard huge payloads
         if len(text) > 4096:
             text = text[:4096]
         try:
@@ -1750,33 +1749,45 @@ class TelegramChatDB:
                 body = json.loads(resp.read().decode("utf-8"))
                 if body.get("ok"):
                     return body.get("result", {}).get("message_id")
-                # Handle Telegram error response with retry_after
+                # Telegram returned ok=False (e.g. 429)
                 if not body.get("ok"):
                     desc = body.get("description", "")
-                    if "Too Many Requests" in desc or body.get("error_code")==429:
-                        retry_after = body.get("parameters", {}).get("retry_after", 5)
-                        logger.warning(f"Telegram 429 to {chat_id}: retry_after {retry_after}s - backing off")
-                        try:
-                            time.sleep(min(int(retry_after)+1, 10))
-                        except Exception:
-                            time.sleep(2)
-                        self._last_save_ts = time.time()  # prevent tight loop
+                    params = body.get("parameters", {}) or {}
+                    retry_after = int(params.get("retry_after", 0) or 0)
+                    if body.get("error_code")==429 or "Too Many Requests" in desc or retry_after>0:
+                        # FIX: NEVER sleep 9 hours. Set timestamp far future and return
+                        ban_until = time.time() + retry_after + 5
+                        if retry_after > 1000:
+                            logger.warning(f"Telegram 429 FLOOD BAN to {chat_id}: {retry_after}s (~{retry_after//3600}h) - disabling DB saves until ban lifts")
+                            # set to future to skip saves
+                            self._last_save_ts = ban_until
+                        else:
+                            logger.warning(f"Telegram 429 to {chat_id}: retry_after {retry_after}s - backing off")
+                            self._last_save_ts = time.time() + min(retry_after, 60)
+                        return None
         except urllib.error.HTTPError as he:
-            # 429 handling for HTTPError path
             try:
-                err_body = he.read().decode("utf-8")
-                err_json = json.loads(err_body)
+                err_body = he.read().decode("utf-8", errors="ignore")
+                err_json = json.loads(err_body) if err_body else {}
+                retry_after = int(err_json.get("parameters", {}).get("retry_after", 0) or 0)
                 if he.code == 429:
-                    retry_after = err_json.get("parameters", {}).get("retry_after", 5)
-                    logger.warning(f"TelegramChatDB HTTP 429 to {chat_id}: retry_after {retry_after}s - backing off {retry_after+1}s")
-                    time.sleep(min(int(retry_after)+1, 15))
-                    self._last_save_ts = time.time()
+                    if retry_after > 1000:
+                        logger.warning(f"TelegramChatDB HTTP 429 FLOOD BAN to {chat_id}: retry_after {retry_after}s (~{retry_after//3600}h) - will skip saves for {retry_after}s")
+                        self._last_save_ts = time.time() + retry_after + 10
+                    else:
+                        logger.warning(f"TelegramChatDB HTTP 429 to {chat_id}: retry_after {retry_after}s - backoff 10s")
+                        self._last_save_ts = time.time() + 10
                     return None
             except Exception:
                 pass
             logger.warning(f"TelegramChatDB send failed to {chat_id}: HTTP {he.code} {he}")
         except Exception as e:
-            logger.warning(f"TelegramChatDB send failed to {chat_id}: {e}")
+            # don't spam log for flood
+            if "429" not in str(e) and "Too Many" not in str(e):
+                logger.warning(f"TelegramChatDB send failed to {chat_id}: {e}")
+            else:
+                # still update ts to avoid tight loop
+                self._last_save_ts = time.time() + 5
         return None
 
     def _persist_index(self):
@@ -1797,10 +1808,9 @@ class TelegramChatDB:
             return False
         if not self.bot_token or not ENABLE_TELEGRAM_DB:
             return False
-        # FIX: Throttle increased to 5s and update ts even on failure to avoid 429 tight loop
+        # Throttle: at most 1 save per 2 seconds unless forced
         now = time.time()
-        throttle_sec = 5.0
-        if not force and (now - self._last_save_ts) < throttle_sec:
+        if not force and (now - self._last_save_ts) < 2.0:
             return False
         try:
             # Ensure all Fractions are strings — exactness preserved
@@ -1852,13 +1862,14 @@ class TelegramChatDB:
                 self._last_save_ts = now
                 logger.info(f"TelegramDB saved {key} -> {len(msg_ids)} msgs to {self.channel_id}")
                 return True
+            else:
+                # no msg_ids but targets existed -> likely 429, keep ban ts if already set in future, else set short backoff
+                if self._last_save_ts < time.time():
+                    self._last_save_ts = time.time() + 5
         except Exception as e:
             logger.warning(f"TelegramDB save_snapshot {key} failed: {e}")
-            # FIX: update ts even on failure to avoid hammering Telegram after 429
-            try:
-                self._last_save_ts = time.time()
-            except Exception:
-                pass
+            if self._last_save_ts < time.time():
+                self._last_save_ts = time.time() + 5
         return False
 
     def save_user_shard(self, user_chat_id: int, key: str, value: Dict[str, Any]) -> bool:
@@ -1867,9 +1878,11 @@ class TelegramChatDB:
             return False
         if not self.is_enabled():
             return False
-        # FIX: throttle user shards same as global
+        # FIX v2: throttle and respect flood ban timestamp
         now = time.time()
-        if (now - self._last_save_ts) < 5.0:
+        if now < self._last_save_ts:
+            return False
+        if (now - self._last_save_ts) < 10.0:
             return False
         try:
             # Respect user privacy — only store minimal, no URLs unless allowed
@@ -2564,7 +2577,7 @@ CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
 TELEGRAM_DB_CHANNEL_ID: str = os.getenv("TELEGRAM_DB_CHANNEL_ID", "").strip()  # e.g. -1001234567890 private channel where bot is admin
 ENABLE_TELEGRAM_DB: bool = os.getenv("ENABLE_TELEGRAM_DB", "0").strip() in ("1","true","yes")
 TELEGRAM_DB_USER_SHARDS: bool = os.getenv("TELEGRAM_DB_USER_SHARDS", "0").strip() in ("1","true","yes")  # isolated per-user chat shards
-TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "30"))  # FIX: was 5, now 30 to avoid 429  # save every N seed ticks
+TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "60"))  # FIX v2: was 5 -> 60 to avoid 429 flood ban  # save every N seed ticks
 TELEGRAM_DB_CHUNK_SIZE: int = int(os.getenv("TELEGRAM_DB_CHUNK_SIZE", "3800"))  # 4096 Telegram limit - margin
 TELEGRAM_DB_PIN_INDEX: bool = os.getenv("TELEGRAM_DB_PIN_INDEX", "0").strip() in ("1","true","yes")
 # Ed37: explicit central user mirror — your chat can be backup central DB without mixing with channel
