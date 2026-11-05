@@ -1746,11 +1746,35 @@ class TelegramChatDB:
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(self._api_url("sendMessage"), data=data, headers={"Content-Type": "application/json"})
-            # No unverified context needed for api.telegram.org
             with urllib.request.urlopen(req, timeout=10) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
                 if body.get("ok"):
                     return body.get("result", {}).get("message_id")
+                # Handle Telegram error response with retry_after
+                if not body.get("ok"):
+                    desc = body.get("description", "")
+                    if "Too Many Requests" in desc or body.get("error_code")==429:
+                        retry_after = body.get("parameters", {}).get("retry_after", 5)
+                        logger.warning(f"Telegram 429 to {chat_id}: retry_after {retry_after}s - backing off")
+                        try:
+                            time.sleep(min(int(retry_after)+1, 10))
+                        except Exception:
+                            time.sleep(2)
+                        self._last_save_ts = time.time()  # prevent tight loop
+        except urllib.error.HTTPError as he:
+            # 429 handling for HTTPError path
+            try:
+                err_body = he.read().decode("utf-8")
+                err_json = json.loads(err_body)
+                if he.code == 429:
+                    retry_after = err_json.get("parameters", {}).get("retry_after", 5)
+                    logger.warning(f"TelegramChatDB HTTP 429 to {chat_id}: retry_after {retry_after}s - backing off {retry_after+1}s")
+                    time.sleep(min(int(retry_after)+1, 15))
+                    self._last_save_ts = time.time()
+                    return None
+            except Exception:
+                pass
+            logger.warning(f"TelegramChatDB send failed to {chat_id}: HTTP {he.code} {he}")
         except Exception as e:
             logger.warning(f"TelegramChatDB send failed to {chat_id}: {e}")
         return None
@@ -1773,9 +1797,10 @@ class TelegramChatDB:
             return False
         if not self.bot_token or not ENABLE_TELEGRAM_DB:
             return False
-        # Throttle: at most 1 save per 2 seconds unless forced
+        # FIX: Throttle increased to 5s and update ts even on failure to avoid 429 tight loop
         now = time.time()
-        if not force and (now - self._last_save_ts) < 2.0:
+        throttle_sec = 5.0
+        if not force and (now - self._last_save_ts) < throttle_sec:
             return False
         try:
             # Ensure all Fractions are strings — exactness preserved
@@ -1829,13 +1854,22 @@ class TelegramChatDB:
                 return True
         except Exception as e:
             logger.warning(f"TelegramDB save_snapshot {key} failed: {e}")
+            # FIX: update ts even on failure to avoid hammering Telegram after 429
+            try:
+                self._last_save_ts = time.time()
+            except Exception:
+                pass
         return False
 
     def save_user_shard(self, user_chat_id: int, key: str, value: Dict[str, Any]) -> bool:
         """Isolated per-user set — only if TELEGRAM_DB_USER_SHARDS=1 and bot discretion says shard."""
         if not TELEGRAM_DB_USER_SHARDS or not self.bot_token:
             return False
-        if not self.is_enabled():  # still need global enable
+        if not self.is_enabled():
+            return False
+        # FIX: throttle user shards same as global
+        now = time.time()
+        if (now - self._last_save_ts) < 5.0:
             return False
         try:
             # Respect user privacy — only store minimal, no URLs unless allowed
@@ -2530,7 +2564,7 @@ CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
 TELEGRAM_DB_CHANNEL_ID: str = os.getenv("TELEGRAM_DB_CHANNEL_ID", "").strip()  # e.g. -1001234567890 private channel where bot is admin
 ENABLE_TELEGRAM_DB: bool = os.getenv("ENABLE_TELEGRAM_DB", "0").strip() in ("1","true","yes")
 TELEGRAM_DB_USER_SHARDS: bool = os.getenv("TELEGRAM_DB_USER_SHARDS", "0").strip() in ("1","true","yes")  # isolated per-user chat shards
-TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "5"))  # save every N seed ticks
+TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "30"))  # FIX: was 5, now 30 to avoid 429  # save every N seed ticks
 TELEGRAM_DB_CHUNK_SIZE: int = int(os.getenv("TELEGRAM_DB_CHUNK_SIZE", "3800"))  # 4096 Telegram limit - margin
 TELEGRAM_DB_PIN_INDEX: bool = os.getenv("TELEGRAM_DB_PIN_INDEX", "0").strip() in ("1","true","yes")
 # Ed37: explicit central user mirror — your chat can be backup central DB without mixing with channel
