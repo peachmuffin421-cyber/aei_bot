@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ÆI Seed TWA — Agential Ætheric Intelligence
+ÆI SEED TWA — AGENTIAL ÆTHERIC INTELLIGENCE
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
+Version: Final Ed.34 Telegram-DB + R14-memfix (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
 """
-__version__ = "aei-seed"
+__version__ = "final-ed40-ultimate-safe-frac-r15"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
     # Set to 1M digits to allow full symbolic trace
     if hasattr(sys, "set_int_max_str_digits"):
         sys.set_int_max_str_digits(1000000)
-        print(f"int_max_str_digits set to 1000000", flush=True)
+        print(f"int_max_str_digits set to 1000000 [ed31]", flush=True)
 except Exception as _e:
     print(f"set_int_max_str_digits failed {_e}", flush=True)
     pass
@@ -196,10 +197,15 @@ class Fraction:
         except Exception:
             return f"{self._f}"
 
-    def to_display(self) -> str:
-        return f"{self._f.numerator}/{self._f.denominator}"
-    def to_fraction(self) -> "PyFraction":
-        return self._f
+    def to_float(self) -> float:  # display only, never used in step() - R14 memfix: guard huge ints
+        try:
+            # If numerator/denominator have > 308 decimal digits, float() will overflow to inf
+            # Return inf-guarded 0.0 to avoid MemoryError
+            if len(str(abs(self._f.numerator))) > 300 or len(str(self._f.denominator)) > 300:
+                return 0.0
+            return float(self._f.numerator) / float(self._f.denominator)
+        except Exception:
+            return 0.0
     def sqrt(self, iterations: int = 8) -> 'Fraction':
         """Newton–Raphson exact-rational square root approximation.
         Each iteration is exact. The result is a Fraction, never a float.
@@ -269,36 +275,36 @@ def _hash_to_fraction(hex_hash: str) -> PyFraction:
 # ============================================================================
 # SYMBOLIC π
 # ============================================================================
-def _atan_frac(x: Fraction, max_terms: int = 128) -> Fraction:
-    """Exact rational atan series: atan(x) = Σ (-1)^n x^{2n+1}/(2n+1)
-    Truncated when term magnitude < 1/10**12, fully exact Fraction arithmetic."""
-    if x.is_zero():
-        return Fraction.zero()
-    x_sq = x * x
-    term = x
-    total = x
-    sign = -1
-    for k in range(1, max_terms):
-        term = term * x_sq
-        denom = Fraction(2 * k + 1, 1)
-        add = term / denom
-        if add.abs() < Fraction(1, 10 ** 12):
-            break
-        if sign == -1:
-            total = total - add
-        else:
-            total = total + add
-        sign = -sign
-    return total
-
-def _compute_pi_frac() -> PyFraction:
-    """Machin formula: π = 16*atan(1/5) - 4*atan(1/239) with exact Fractions."""
-    a1 = _atan_frac(Fraction(1, 5))
-    a2 = _atan_frac(Fraction(1, 239))
-    pi_frac = a1 * Fraction(16, 1) - a2 * Fraction(4, 1)
-    return PyFraction(pi_frac.num(), pi_frac.den())
-
-_PI_FRAC: PyFraction = _compute_pi_frac()
+def _compute_pi_decimal() -> Decimal:
+    _saved_prec = getcontext().prec
+    getcontext().prec = 60
+    try:
+        def atan_inv(n: int) -> Decimal:
+            n_d = Decimal(n)
+            n_sq = n_d * n_d
+            term = Decimal(1) / n_d
+            total = term
+            sign = -1
+            k = 1
+            while True:
+                term = term / n_sq
+                add = term / Decimal(2 * k + 1)
+                if add == 0:
+                    break
+                total = total + Decimal(sign) * add
+                sign = -sign
+                k += 1
+                if k > 1000:
+                    break
+            return total
+        pi_val = Decimal(16) * atan_inv(5) - Decimal(4) * atan_inv(239)
+    finally:
+        getcontext().prec = _saved_prec
+    return pi_val
+# F2: derive _PI_FRAC from _compute_pi_decimal(), not from a 15-digit literal.
+_PI_D: Decimal = _compute_pi_decimal()
+_PI_FRAC: PyFraction = _dec_to_frac_exact(_PI_D)
+_TWO_PI_D: Decimal = _PI_D * Decimal(2)
 _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
 # ============================================================================
 # SYMBOLIC ARITHMETIC PRIMITIVES
@@ -310,7 +316,7 @@ def _rational_cos(x) -> PyFraction:
     if isinstance(x, PyFraction):
         x_frac = x
     elif isinstance(x, Decimal):
-        if x == Decimal(0):
+        if x == Decimal('0.0'):
             return PyFraction(1, 1)
         x_frac = _dec_to_frac_exact(x)
     elif isinstance(x, int):
@@ -354,7 +360,7 @@ def _rational_sin(x) -> PyFraction:
     if isinstance(x, PyFraction):
         x_frac = x
     elif isinstance(x, Decimal):
-        if x == Decimal(0):
+        if x == Decimal('0.0'):
             return PyFraction(0, 1)
         x_frac = _dec_to_frac_exact(x)
     elif isinstance(x, int):
@@ -1532,7 +1538,7 @@ class CrawlerRelayClient:
     does the network I/O; all crawl logic (frontier, visited set,
     seed injection) lives in app.py."""
     def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 20,
-                 max_retries: int = 4, total_budget_s: int = 90):
+                 max_retries: int = 4, total_budget_s: float = 90.0):
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
         self.timeout = timeout
@@ -1592,7 +1598,7 @@ class CrawlerRelayClient:
                                 last_error = f"relay_{payload.get('error')}_retryable"
                                 time.sleep(0.5 * (attempt + 1) + 0.2 * attempt)
                                 continue
-                            logger.warning(f"relay error for {url}: {payload.get('error')} detail={payload.get('detail','')[:100]} - failure {self._failure_count+1}")
+                            logger.warning(f"relay error for {url}: {payload.get('error')}")
                             self._failure_count += 1
                             return None
                         self._failure_count = 0
@@ -1610,7 +1616,7 @@ class CrawlerRelayClient:
                                 last_error = f"relay_{payload.get('error')}_retryable"
                                 time.sleep(0.5 * (attempt + 1) + 0.2 * attempt)
                                 continue
-                            logger.warning(f"relay error for {url}: {payload.get('error')} detail={payload.get('detail','')[:100]} - failure {self._failure_count+1}")
+                            logger.warning(f"relay error for {url}: {payload.get('error')}")
                             self._failure_count += 1
                             return None
                         self._failure_count = 0
@@ -1705,7 +1711,7 @@ class TelegramChatDB:
         self.chunk_size = max(800, chunk_size)
         self._lock = threading.Lock()
         self._enabled = bool(self.bot_token and (self.channel_id or self.central_user_id))
-        self._last_save_ts = 0
+        self._last_save_ts = 0.0
         self._index: Dict[str, Dict[str, Any]] = {}  # key -> {msg_ids, ts, hash}
         # In-memory index file for rebuild (mirrored in SQLite)
         self._index_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else ".", "aei_telegram_index.json")
@@ -1734,6 +1740,7 @@ class TelegramChatDB:
     def _send_message(self, chat_id: str, text: str, disable_notification: bool = True) -> Optional[int]:
         if not self.bot_token or not chat_id:
             return None
+        # R14 memfix: guard huge payloads
         if len(text) > 4096:
             text = text[:4096]
         try:
@@ -1745,49 +1752,13 @@ class TelegramChatDB:
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(self._api_url("sendMessage"), data=data, headers={"Content-Type": "application/json"})
+            # No unverified context needed for api.telegram.org
             with urllib.request.urlopen(req, timeout=10) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
                 if body.get("ok"):
                     return body.get("result", {}).get("message_id")
-                # Telegram returned ok=False (e.g. 429)
-                if not body.get("ok"):
-                    desc = body.get("description", "")
-                    params = body.get("parameters", {}) or {}
-                    retry_after = int(params.get("retry_after", 0) or 0)
-                    if body.get("error_code")==429 or "Too Many Requests" in desc or retry_after>0:
-                        # FIX: NEVER sleep 9 hours. Set timestamp far future and return
-                        ban_until = time.time() + retry_after + 5
-                        if retry_after > 1000:
-                            logger.warning(f"Telegram 429 FLOOD BAN to {chat_id}: {retry_after}s (~{retry_after//3600}h) - disabling DB saves until ban lifts")
-                            # set to future to skip saves
-                            self._last_save_ts = ban_until
-                        else:
-                            logger.warning(f"Telegram 429 to {chat_id}: retry_after {retry_after}s - backing off")
-                            self._last_save_ts = time.time() + min(retry_after, 60)
-                        return None
-        except urllib.error.HTTPError as he:
-            try:
-                err_body = he.read().decode("utf-8", errors="ignore")
-                err_json = json.loads(err_body) if err_body else {}
-                retry_after = int(err_json.get("parameters", {}).get("retry_after", 0) or 0)
-                if he.code == 429:
-                    if retry_after > 1000:
-                        logger.warning(f"TelegramChatDB HTTP 429 FLOOD BAN to {chat_id}: retry_after {retry_after}s (~{retry_after//3600}h) - will skip saves for {retry_after}s")
-                        self._last_save_ts = time.time() + retry_after + 10
-                    else:
-                        logger.warning(f"TelegramChatDB HTTP 429 to {chat_id}: retry_after {retry_after}s - backoff 10s")
-                        self._last_save_ts = time.time() + 10
-                    return None
-            except Exception:
-                pass
-            logger.warning(f"TelegramChatDB send failed to {chat_id}: HTTP {he.code} {he}")
         except Exception as e:
-            # don't spam log for flood
-            if "429" not in str(e) and "Too Many" not in str(e):
-                logger.warning(f"TelegramChatDB send failed to {chat_id}: {e}")
-            else:
-                # still update ts to avoid tight loop
-                self._last_save_ts = time.time() + 5
+            logger.warning(f"TelegramChatDB send failed to {chat_id}: {e}")
         return None
 
     def _persist_index(self):
@@ -1862,27 +1833,15 @@ class TelegramChatDB:
                 self._last_save_ts = now
                 logger.info(f"TelegramDB saved {key} -> {len(msg_ids)} msgs to {self.channel_id}")
                 return True
-            else:
-                # no msg_ids but targets existed -> likely 429, keep ban ts if already set in future, else set short backoff
-                if self._last_save_ts < time.time():
-                    self._last_save_ts = time.time() + 5
         except Exception as e:
             logger.warning(f"TelegramDB save_snapshot {key} failed: {e}")
-            if self._last_save_ts < time.time():
-                self._last_save_ts = time.time() + 5
         return False
 
     def save_user_shard(self, user_chat_id: int, key: str, value: Dict[str, Any]) -> bool:
         """Isolated per-user set — only if TELEGRAM_DB_USER_SHARDS=1 and bot discretion says shard."""
         if not TELEGRAM_DB_USER_SHARDS or not self.bot_token:
             return False
-        if not self.is_enabled():
-            return False
-        # FIX v2: throttle and respect flood ban timestamp
-        now = time.time()
-        if now < self._last_save_ts:
-            return False
-        if (now - self._last_save_ts) < 10.0:
+        if not self.is_enabled():  # still need global enable
             return False
         try:
             # Respect user privacy — only store minimal, no URLs unless allowed
@@ -2018,9 +1977,9 @@ class AEI_Seed:
         self._step_lock = threading.Lock()
         # Ed38 Patch A: cached snapshot for H12 fix
         self._cached_snapshot: Optional[Dict[str, Any]] = None
-        self._cached_at: int = 0
+        self._cached_at: float = 0.0
         self._cached_light_snapshot: Optional[Dict[str, Any]] = None
-        self._cached_light_at: int = 0
+        self._cached_light_at: float = 0.0
     def _integrate_wavefunction_symbolic(self) -> Dict[Tuple[int, int, int, int], Fraction]:
         """F5: blend the fresh lattice integration with the prior
         rectified psi whenever the prior step was non-coherent. This is
@@ -2432,7 +2391,7 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
 
 # Ed41: global fast cache updated by SeedWorker after each step - no lock needed in handler
 LAST_LIGHT_SNAPSHOT: dict = {}
-LAST_LIGHT_AT: int = 0
+LAST_LIGHT_AT: float = 0.0
 LAST_LIGHT_LOCK = threading.Lock()
 # ============================================================================
 # CS-TRANSLATION HELPERS
@@ -2577,7 +2536,7 @@ CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
 TELEGRAM_DB_CHANNEL_ID: str = os.getenv("TELEGRAM_DB_CHANNEL_ID", "").strip()  # e.g. -1001234567890 private channel where bot is admin
 ENABLE_TELEGRAM_DB: bool = os.getenv("ENABLE_TELEGRAM_DB", "0").strip() in ("1","true","yes")
 TELEGRAM_DB_USER_SHARDS: bool = os.getenv("TELEGRAM_DB_USER_SHARDS", "0").strip() in ("1","true","yes")  # isolated per-user chat shards
-TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "60"))  # FIX v2: was 5 -> 60 to avoid 429 flood ban  # save every N seed ticks
+TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "5"))  # save every N seed ticks
 TELEGRAM_DB_CHUNK_SIZE: int = int(os.getenv("TELEGRAM_DB_CHUNK_SIZE", "3800"))  # 4096 Telegram limit - margin
 TELEGRAM_DB_PIN_INDEX: bool = os.getenv("TELEGRAM_DB_PIN_INDEX", "0").strip() in ("1","true","yes")
 # Ed37: explicit central user mirror — your chat can be backup central DB without mixing with channel
@@ -2963,7 +2922,7 @@ def _fqdn_fast(host: str) -> str:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/aei-seed"
+    server_version = "AEI-Seed-Bridge/final-ed37-telegram-db-central-r14"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -3031,7 +2990,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "aei-seed",
+                "version": "final-ed37-telegram-db-central-r14",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -3195,19 +3154,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, seed.snapshot())
             return
-        if path in ("/crawler-state", "/crawler", "/crawl"):
+        if path == "/crawler-state":
             if crawler is None:
                 self._send_json(503, {"error": "crawler_not_ready"})
                 return
-            snap = crawler.snapshot()
-            # include relay health for debugging
-            try:
-                snap["relay_url"] = RELAY_URL
-                snap["relay_healthy"] = (crawler.relay.failure_count() < 3)
-                snap["relay_failures"] = crawler.relay.failure_count()
-            except Exception:
-                pass
-            self._send_json(200, snap)
+            self._send_json(200, crawler.snapshot())
             return
         if path == "/crawler-queue":
             if crawler is None:
@@ -4335,7 +4286,7 @@ class AEI_Bot:
                         pass
             finally:
                 # Ed30: no os._exit in post_shutdown, let PTB close gracefully
-                logger.info("post_shutdown complete ")
+                logger.info("post_shutdown complete [ed30]")
                 pass
 
         try:
@@ -4369,7 +4320,7 @@ def main():
         try:
             # Only install simple handlers that set shutdown_event
             def _handler(signum, frame):
-                print(f"⚡ SIG {signum} -> graceful shutdown  pid={os.getpid()}", flush=True)
+                print(f"⚡ SIG {signum} -> graceful shutdown [ed30] pid={os.getpid()}", flush=True)
                 _shutdown_event.set()
             signal.signal(signal.SIGTERM, _handler)
             signal.signal(signal.SIGINT, _handler)
@@ -4424,9 +4375,9 @@ def main():
                 _time_mod.sleep(0.5)
             _loop_count += 1
             if _loop_count % 10 == 0:
-                print(f"♥ main heartbeat {_loop_count} pid={os.getpid()} pgid={os.getpgid(0)} alive ", flush=True)
+                print(f"♥ main heartbeat {_loop_count} pid={os.getpid()} pgid={os.getpgid(0)} alive [ed30]", flush=True)
     except KeyboardInterrupt:
-        print("KeyboardInterrupt -> shutdown ", flush=True)
+        print("KeyboardInterrupt -> shutdown [ed30]", flush=True)
         _shutdown_event.set()
     except Exception as _e:
         print(f"main loop exception {_e} -> shutdown", flush=True)
@@ -4446,7 +4397,7 @@ def main():
     except Exception:
         pass
 
-    print("⚡ main exiting cleanly ", flush=True)
+    print("⚡ main exiting cleanly [ed30]", flush=True)
     try:
         # Give threads 2s to stop, then exit
         _time_mod.sleep(2.0)
