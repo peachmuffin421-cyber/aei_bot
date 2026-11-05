@@ -5,7 +5,7 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.34 Telegram-DB + R14-memfix (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
+Version: Final Ed.40 ultimate H12fix Telegram-DB + R15-safe-frac (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12, H12-light-cache, Gamma-symbolic).
 """
 __version__ = "final-ed40-ultimate-safe-frac-r15"
 import sys
@@ -14,7 +14,7 @@ try:
     # Set to 1M digits to allow full symbolic trace
     if hasattr(sys, "set_int_max_str_digits"):
         sys.set_int_max_str_digits(1000000)
-        print(f"int_max_str_digits set to 1000000 [ed31]", flush=True)
+        print(f"int_max_str_digits set to 1000000 ", flush=True)
 except Exception as _e:
     print(f"set_int_max_str_digits failed {_e}", flush=True)
     pass
@@ -179,7 +179,7 @@ class Fraction:
     def to_decimal(self) -> Decimal:
         return Decimal(self._f.numerator) / Decimal(self._f.denominator)
     def __str__(self):
-        # Ed31: safe str that avoids 4300-digit limit blowup in logs
+        # safe str that avoids 4300-digit limit blowup in logs
         try:
             n = self._f.numerator
             d = self._f.denominator
@@ -306,6 +306,9 @@ _PI_D: Decimal = _compute_pi_decimal()
 _PI_FRAC: PyFraction = _dec_to_frac_exact(_PI_D)
 _TWO_PI_D: Decimal = _PI_D * Decimal(2)
 _TWO_PI_FRAC: PyFraction = _PI_FRAC * PyFraction(2, 1)
+# F2b: derive _EULER_GAMMA_FRAC from Decimal high-precision string, lifted via _dec_to_frac_exact, consistent with _PI_FRAC methodology
+_EULER_GAMMA_D: Decimal = Decimal("0.57721566490153286060651209008240243104215933593992")
+_EULER_GAMMA_FRAC: PyFraction = _dec_to_frac_exact(_EULER_GAMMA_D)
 # ============================================================================
 # SYMBOLIC ARITHMETIC PRIMITIVES
 # ============================================================================
@@ -348,7 +351,7 @@ def _rational_cos(x) -> PyFraction:
                 break
         except Exception:
             pass
-        # Ed38: also break if term becomes too small to affect result (epsilon guard)
+        # also break if term becomes too small to affect result (epsilon guard)
         try:
             if term == PyFraction(0, 1):
                 break
@@ -387,9 +390,10 @@ def _rational_sin(x) -> PyFraction:
         if term == PyFraction(0, 1):
             break
     return result
-_EXP_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
-_LOG_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
-_LI_EPSILON: PyFraction = PyFraction(1, 10 ** 12)
+_EPSILON_BASE: PyFraction = PyFraction(1, 10 ** 12)
+_EXP_EPSILON: PyFraction = _EPSILON_BASE
+_LOG_EPSILON: PyFraction = _EPSILON_BASE
+_LI_EPSILON: PyFraction = _EPSILON_BASE
 def _symbolic_log(x: Fraction, max_terms: int = 32) -> Fraction:
     """Exact-rational natural log via atanh series with dynamic
     truncation. The series terminates when the term magnitude drops
@@ -455,8 +459,7 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 12) -> Fraction:
     series converges for all x > 1 and is the standard numerical
     approximation used by Mathematica / mpmath. We implement it with
     exact PyFractions, computing log(x) once via _symbolic_log.
-    γ is represented as a high-precision rational: the 15-digit decimal
-    0.577215664901532 is lifted to Fraction(577215664901532, 10^15).
+    γ is represented as exact rational via Decimal high-precision string lifted through _dec_to_frac_exact(), consistent with _PI_FRAC derivation.
     The series truncates when the term drops below _LI_EPSILON.
     """
     if x <= Fraction.one():
@@ -464,7 +467,7 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 12) -> Fraction:
     log_x = _symbolic_log(x)
     if log_x <= Fraction.zero():
         return Fraction.zero()
-    gamma = Fraction(577215664901532, 10 ** 15)
+    gamma = Fraction(_EULER_GAMMA_FRAC)
     if log_x <= Fraction.one():
         log_log_x = Fraction.zero()
     else:
@@ -1075,7 +1078,7 @@ class SelfEvolutionCore:
                 save_global = True
                 save_user = True
 
-        # Ed36 decoupled: use TELEGRAM_DB_SHARD_POOL, fallback to ALLOWED_USER_IDS for backward compat
+        # use TELEGRAM_DB_SHARD_POOL, fallback to ALLOWED_USER_IDS for backward compat
         shard_targets: List[int] = []
         try:
             # Decoupled pool: TELEGRAM_DB_SHARD_POOL independent of gate
@@ -1137,7 +1140,7 @@ class SelfEvolutionCore:
         logic_str = str(sorted(
             (k, str(v)) for k, v in self.logic_core.items()
         ))
-        # Ed35: learned DB discretion
+        # learned DB discretion
         db_discretion = self._decide_db_shards(I, psi, q_eval, deviation_sq)
         record = {
             "generation": self.generation,
@@ -1327,7 +1330,7 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
         evicted_seq = _TOAST_BUFFER[0].get("seq", 0) if was_full else 0
         _TOAST_SEQ += 1
         seq = _TOAST_SEQ
-        # Ed39: truncate huge fractions in toasts to prevent frontend overflow
+        # truncate huge fractions in toasts to prevent frontend overflow
         safe_payload = {}
         for k, v in payload.items():
             try:
@@ -1473,7 +1476,7 @@ class CrawlerSeedState:
             "depth": depth,
             "link_count": link_count,
         })
-        # Ed34 Telegram-DB: crawler ingestion path persisted at discretion
+        # crawler ingestion path persisted at discretion
         try:
             if TELEGRAM_DB and TELEGRAM_DB.is_enabled():
                 # Avoid storing full URLs in user shards — only global channel
@@ -1723,7 +1726,7 @@ class TelegramChatDB:
             self._index = {}
 
     def is_enabled(self) -> bool:
-        # Ed37: enabled if bot token + ENABLE flag + (channel OR central_user OR user shards)
+        # enabled if bot token + ENABLE flag + (channel OR central_user OR user shards)
         if not self.bot_token or not ENABLE_TELEGRAM_DB:
             return False
         has_channel = bool(self.channel_id)
@@ -1808,7 +1811,7 @@ class TelegramChatDB:
             # Chunk if needed — Telegram limit 4096
             chunks = [blob[i:i+self.chunk_size] for i in range(0, len(blob), self.chunk_size)]
             msg_ids = []
-            # Ed37: send to channel and/or central_user_id (your chat as backup channel ID)
+            # send to channel and/or central_user_id (your chat as backup channel ID)
             targets = []
             if self.channel_id:
                 targets.append(("channel", self.channel_id))
@@ -1975,7 +1978,7 @@ class AEI_Seed:
         # F5: prior deviation, so DbZ rectification persists across steps.
         self._prior_deviation_sq: Optional[Fraction] = None
         self._step_lock = threading.Lock()
-        # Ed38 Patch A: cached snapshot for H12 fix
+        # Cached light snapshot for H12 coherence path
         self._cached_snapshot: Optional[Dict[str, Any]] = None
         self._cached_at: float = 0.0
         self._cached_light_snapshot: Optional[Dict[str, Any]] = None
@@ -2081,7 +2084,7 @@ class AEI_Seed:
             records.append(self.step(x))
         return records
     def snapshot(self, light: bool = False) -> Dict[str, Any]:
-        # Ed40: ultimate H12 fix — never block, always return <50ms, always truncated
+        # ultimate H12 fix — never block, always return <50ms, always truncated
         import time as _time_mod
         now = _time_mod.time()
         # Fast cache path — light 1.0s, full 0.5s
@@ -2120,7 +2123,7 @@ class AEI_Seed:
                 return self._cached_snapshot
 
         def _frac_short(f: Any, max_len: int = 64) -> str:
-            # Ed40-ultimate: NEVER call str() on huge Fractions — check bit_length first
+            # NEVER call str() on huge Fractions — check bit_length first
             try:
                 # Fast path for Fraction-like
                 if hasattr(f, 'numerator') and hasattr(f, 'denominator'):
@@ -2175,7 +2178,7 @@ class AEI_Seed:
 
 
         lock = self._step_lock
-        acquired = lock.acquire(timeout=0.05)  # Ed40: 50ms max, was 100ms
+        acquired = lock.acquire(timeout=0.05)  # 50ms max, was 100ms
         if not acquired:
             # Never return seed_busy error that causes H12 — return stale cache or minimal placeholder
             if light and self._cached_light_snapshot is not None:
@@ -2262,7 +2265,7 @@ class AEI_Seed:
                         "d": _frac_short(self.phi.d if hasattr(self, 'phi') else "0/1", 32),
                     } if hasattr(self, 'phi') else {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"},
                     "phi_magnitude_sq": _frac_short(self.phi.magnitude_squared() if hasattr(self, 'phi') else "1/1", 32),
-                    "trajectory": [],  # Ed40: omit heavy trajectory in light mode to stay <50ms
+                    "trajectory": [],  # omit heavy trajectory in light mode to stay <50ms
                     "evolution": {"generation": self.last_evolution.get("generation") if self.last_evolution else 0, "logic_hash": self.last_logic_hash} if self.last_evolution else None,
                     "logic_core": {},
                     "history_tail": self.history[-4:],
@@ -2389,7 +2392,7 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "port": None,
 }
 
-# Ed41: global fast cache updated by SeedWorker after each step - no lock needed in handler
+# global fast cache updated by SeedWorker after each step - no lock needed in handler
 LAST_LIGHT_SNAPSHOT: dict = {}
 LAST_LIGHT_AT: float = 0.0
 LAST_LIGHT_LOCK = threading.Lock()
@@ -2532,14 +2535,14 @@ CRAWLER_BLOCKLIST: list = [s.strip() for s in os.getenv("CRAWLER_BLOCKLIST", "me
 MAX_CRAWL_DEPTH: int = int(os.getenv("MAX_CRAWL_DEPTH", "3"))
 CRAWL_SEED_URLS: str = os.getenv("CRAWL_SEED_URLS", "").strip()
 CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
-# Ed34 Telegram-DB: use Telegram as distributed/isolated database at bot discretion
+# use Telegram as distributed/isolated database at bot discretion
 TELEGRAM_DB_CHANNEL_ID: str = os.getenv("TELEGRAM_DB_CHANNEL_ID", "").strip()  # e.g. -1001234567890 private channel where bot is admin
 ENABLE_TELEGRAM_DB: bool = os.getenv("ENABLE_TELEGRAM_DB", "0").strip() in ("1","true","yes")
 TELEGRAM_DB_USER_SHARDS: bool = os.getenv("TELEGRAM_DB_USER_SHARDS", "0").strip() in ("1","true","yes")  # isolated per-user chat shards
 TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "5"))  # save every N seed ticks
 TELEGRAM_DB_CHUNK_SIZE: int = int(os.getenv("TELEGRAM_DB_CHUNK_SIZE", "3800"))  # 4096 Telegram limit - margin
 TELEGRAM_DB_PIN_INDEX: bool = os.getenv("TELEGRAM_DB_PIN_INDEX", "0").strip() in ("1","true","yes")
-# Ed37: explicit central user mirror — your chat can be backup central DB without mixing with channel
+# explicit central user mirror — your chat can be backup central DB without mixing with channel
 TELEGRAM_DB_CENTRAL_USER_ID: str = os.getenv("TELEGRAM_DB_CENTRAL_USER_ID", "").strip()  # e.g. 123456789 your own user_id
 ALLOWED_USER_IDS: set = set()
 _raw_allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
@@ -2549,7 +2552,7 @@ if _raw_allowed:
         if tok.isdigit():
             ALLOWED_USER_IDS.add(int(tok))
 
-# Ed36 decoupled: shard pool independent of gate
+# shard pool independent of gate
 TELEGRAM_DB_SHARD_POOL: set = set()
 _raw_shard_pool = os.getenv("TELEGRAM_DB_SHARD_POOL", "").strip()
 if _raw_shard_pool:
@@ -2716,7 +2719,7 @@ class CrawlerWorker:
                     self._last_fetch_at = datetime.now()
                     self._crawl_count += 1
                 else:
-                    # Ed30: don't infinite-re-enqueue on relay failure, respect failure_count
+                    # don't infinite-re-enqueue on relay failure, respect failure_count
                     if self.relay.failure_count() >= 3:
                         logger.info(f"crawl skipped: {url} (no payload) — circuit breaker active, not re-enqueueing")
                     elif "meta.wikimedia.org" in url.lower() or "wikimedia.org" in url.lower():
@@ -2728,7 +2731,7 @@ class CrawlerWorker:
                             self.state.enqueue(url, depth=1, priority=-1)
                         except Exception:
                             pass
-                # Ed30: backoff when relay unhealthy
+                # backoff when relay unhealthy
                 if self.relay.failure_count() >= 3:
                     await asyncio.sleep(10.0)
                 else:
@@ -2780,8 +2783,8 @@ class SeedWorker:
             )
         )
     async def _loop(self):
-        # Ed30 FIX: no executor kill loop, GIL-safe timeout handling
-        # Ed33 R14 memfix: gc every 15 ticks to free big-int caches
+        # no executor kill loop, GIL-safe timeout handling
+        # gc every 15 ticks to free big-int caches
         consecutive_timeouts = 0
         gc_counter = 0
         while self._running:
@@ -2793,7 +2796,7 @@ class SeedWorker:
                 else:
                     x = Fraction(hash_frac)
                 loop = asyncio.get_running_loop()
-                # Ed41: update global fast cache before heavy step, so miniapp-state never waits
+                # update global fast cache before heavy step, so miniapp-state never waits
                 try:
                     # Pre-step cache refresh if seed has cached light snapshot
                     if getattr(self.seed, '_cached_light_snapshot', None):
@@ -2802,14 +2805,14 @@ class SeedWorker:
                             LAST_LIGHT_AT = time.time()
                 except Exception:
                     pass
-                # Ed30: 30s timeout, DO NOT destroy executor on timeout (daemon thread keeps GIL)
+                # 30s timeout, DO NOT destroy executor on timeout (daemon thread keeps GIL)
                 try:
                     record = await asyncio.wait_for(
                         loop.run_in_executor(self._executor, self.seed.step, x),
                         timeout=30.0,
                     )
                     consecutive_timeouts = 0
-                    # Ed41: post-step fast cache update
+                    # post-step fast cache update
                     try:
                         _snap41 = self.seed.snapshot(light=True)
                         with LAST_LIGHT_LOCK:
@@ -2849,7 +2852,7 @@ class SeedWorker:
                     "I": record["I"],
                     "state": record["state"],
                 })
-                # Ed35 Telegram-DB: LEARNED discretion from SelfEvolutionCore
+                # LEARNED discretion from SelfEvolutionCore
                 try:
                     if TELEGRAM_DB and TELEGRAM_DB.is_enabled():
                         evo = record.get("evolution", {}) or {}
@@ -3056,7 +3059,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         if path == "/miniapp-state":
-            # Ed41: instant return - never block on seed lock, never compute in request thread
+            # instant return - never block on seed lock, never compute in request thread
             # This is the H12 killer fix
             import time as _t41
             _start41 = _t41.time()
@@ -3727,7 +3730,7 @@ class AEI_Bot:
             rows.append([InlineKeyboardButton("⏳ Mini App (URL pending…)", callback_data="webapp_pending")])
         return InlineKeyboardMarkup(rows)
     async def _safe_reply(self, update: "Update", text: str, reply_markup=None) -> bool:
-        # Ed32: truncate to avoid Message_too_long with huge Fractions
+        # truncate to avoid Message_too_long with huge Fractions
         MAX_TG = 3500
         if len(text) > MAX_TG:
             text = text[:MAX_TG-100] + f"\n... [truncated {len(text)-MAX_TG} chars]\n"
@@ -4175,7 +4178,7 @@ class AEI_Bot:
     async def error_handler(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         err = context.error
         err_str = f"{type(err).__name__}: {err}" if err is not None else "unknown"
-        # Ed32: Conflict means another instance polling - sleep to let it die
+        # Conflict means another instance polling - sleep to let it die
         if "Conflict" in err_str or "terminated by other getUpdates" in err_str:
             logger.warning(f"Conflict detected (another bot instance): sleeping 5s before retry")
             try:
@@ -4228,7 +4231,7 @@ class AEI_Bot:
             .post_init(self._post_init)
             .build()
         )
-        # Ed32: ensure single polling instance, drop pending to avoid Conflict storm
+        # ensure single polling instance, drop pending to avoid Conflict storm
         try:
             # will be used in run_polling
             self._drop_pending = True
@@ -4285,7 +4288,7 @@ class AEI_Bot:
                     except Exception:
                         pass
             finally:
-                # Ed30: no os._exit in post_shutdown, let PTB close gracefully
+                # no graceful exit in post_shutdown, let PTB close gracefully
                 logger.info("post_shutdown complete [ed30]")
                 pass
 
@@ -4315,7 +4318,7 @@ def main():
     import time as _time_mod
     _shutdown_event = threading.Event()
 
-    # Ed30 FIX: clean Heroku SIGTERM handling - no sigwaiter/watchdog/os._exit race
+    # clean Heroku SIGTERM handling - no sigwaiter/watchdog/graceful exit race
     def _install_handlers(tag=""):
         try:
             # Only install simple handlers that set shutdown_event
@@ -4335,7 +4338,7 @@ def main():
         except Exception as _e:
             print(f"signal install failed {tag}: {_e}", flush=True)
 
-    # Ed32: force WEB_CONCURRENCY=1 to avoid double polling
+    # force WEB_CONCURRENCY=1 to avoid double polling
     try:
         os.environ["WEB_CONCURRENCY"] = "1"
     except Exception:
@@ -4369,7 +4372,7 @@ def main():
     try:
         while not _shutdown_event.is_set():
             try:
-                # Ed30: use Event.wait with timeout, not signal.pause() which conflicts with sigwaiter
+                # use Event.wait with timeout, not signal.pause() which conflicts with sigwaiter
                 _shutdown_event.wait(timeout=1.0)
             except Exception:
                 _time_mod.sleep(0.5)

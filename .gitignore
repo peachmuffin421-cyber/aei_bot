@@ -1,6 +1,6 @@
 # ============================================================================
 # ÆI SEED BACKEND — .gitignore
-# Repo: aei-seed-backend (Heroku web dyno)
+# Repo: aei-seed-backend (Heroku worker dyno)
 # ============================================================================
 #
 # The backend repo contains app.py, the Heroku deployment manifests, and
