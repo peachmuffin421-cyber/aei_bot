@@ -2,14 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 ÆI Seed TWA — Agential Ætheric Intelligence
-Version: Final
-Edition: First
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
 """
-__version__ = "Final"
-__edition__ = "First"
+__version__ = "aei-seed"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -4252,8 +4249,7 @@ class AEI_Bot:
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
         logger.info(f"🤖 {self.bot_name} starting... ed32 msglen-conflict-fix + graceful SIGTERM")
-        logger.info(f"🔧 __version__ = "Final"
-__edition__ = "First"
+        logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
         logger.info(f"🌐 Substrate: {_SUBSTRATE} (bind port {BRIDGE_PORT})")
