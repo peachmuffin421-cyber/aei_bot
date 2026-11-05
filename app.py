@@ -1592,7 +1592,7 @@ class CrawlerRelayClient:
                                 last_error = f"relay_{payload.get('error')}_retryable"
                                 time.sleep(0.5 * (attempt + 1) + 0.2 * attempt)
                                 continue
-                            logger.warning(f"relay error for {url}: {payload.get('error')}")
+                            logger.warning(f"relay error for {url}: {payload.get('error')} detail={payload.get('detail','')[:100]} - failure {self._failure_count+1}")
                             self._failure_count += 1
                             return None
                         self._failure_count = 0
@@ -1610,7 +1610,7 @@ class CrawlerRelayClient:
                                 last_error = f"relay_{payload.get('error')}_retryable"
                                 time.sleep(0.5 * (attempt + 1) + 0.2 * attempt)
                                 continue
-                            logger.warning(f"relay error for {url}: {payload.get('error')}")
+                            logger.warning(f"relay error for {url}: {payload.get('error')} detail={payload.get('detail','')[:100]} - failure {self._failure_count+1}")
                             self._failure_count += 1
                             return None
                         self._failure_count = 0
@@ -3195,11 +3195,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, seed.snapshot())
             return
-        if path == "/crawler-state":
+        if path in ("/crawler-state", "/crawler", "/crawl"):
             if crawler is None:
                 self._send_json(503, {"error": "crawler_not_ready"})
                 return
-            self._send_json(200, crawler.snapshot())
+            snap = crawler.snapshot()
+            # include relay health for debugging
+            try:
+                snap["relay_url"] = RELAY_URL
+                snap["relay_healthy"] = (crawler.relay.failure_count() < 3)
+                snap["relay_failures"] = crawler.relay.failure_count()
+            except Exception:
+                pass
+            self._send_json(200, snap)
             return
         if path == "/crawler-queue":
             if crawler is None:
