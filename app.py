@@ -5,16 +5,17 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.40 ultimate H12fix Telegram-DB + R15-safe-frac (R12 no-subprocess web-dyno perf) (Audit-Patched: F1-F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12, Exp-28-threshold, Float-sentinel-fix).
+Version: Final
+Edition: First
 """
-__version__ = "final-ed40-ultimate-safe-frac-r15"
+__version__ = "Final"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
     # Set to 1M digits to allow full symbolic trace
     if hasattr(sys, "set_int_max_str_digits"):
         sys.set_int_max_str_digits(1000000)
-        print(f"int_max_str_digits set to 1000000 [ed31]", flush=True)
+        print(f"int_max_str_digits set to 1000000", flush=True)
 except Exception as _e:
     print(f"set_int_max_str_digits failed {_e}", flush=True)
     pass
@@ -24,7 +25,8 @@ import concurrent.futures.thread
 import hashlib
 import hmac
 import json
-import math
+import math as _math_mod
+isqrt = _math_mod.isqrt
 import os
 import gc
 import queue
@@ -179,7 +181,6 @@ class Fraction:
     def to_decimal(self) -> Decimal:
         return Decimal(self._f.numerator) / Decimal(self._f.denominator)
     def __str__(self):
-        # Ed31: safe str that avoids 4300-digit limit blowup in logs
         try:
             n = self._f.numerator
             d = self._f.denominator
@@ -197,7 +198,7 @@ class Fraction:
         except Exception:
             return f"{self._f}"
 
-    def to_float(self) -> float:  # display only, never used in step() - R14 memfix: guard huge ints
+    def to_float(self) -> float:
         try:
             # If numerator/denominator have > 308 decimal digits, float() will overflow to inf
             # Return inf-guarded 0.0 to avoid MemoryError
@@ -215,8 +216,8 @@ class Fraction:
             raise ValueError("sqrt of negative fraction")
         if self._f.numerator == 0:
             return Fraction.zero()
-        ns = int(math.isqrt(self._f.numerator))
-        ds = int(math.isqrt(self._f.denominator))
+        ns = int(isqrt(self._f.numerator))
+        ds = int(isqrt(self._f.denominator))
         if ns * ns == self._f.numerator and ds * ds == self._f.denominator:
             return Fraction(ns, ds)
         two = PyFraction(2, 1)
@@ -342,13 +343,11 @@ def _rational_cos(x) -> PyFraction:
         sign = -sign
         if term == PyFraction(0, 1):
             break
-        # R14 memfix + Ed38: break if digits blow up (prevents H12)
         try:
             if len(str(abs(result.numerator))) > 800 or len(str(abs(result.denominator))) > 800:
                 break
         except Exception:
             pass
-        # Ed38: also break if term becomes too small to affect result (epsilon guard)
         try:
             if term == PyFraction(0, 1):
                 break
@@ -425,7 +424,6 @@ def _symbolic_exp(x: Fraction, max_terms: int = 32) -> Fraction:
                 max_terms = min(max_terms, 40)
     except Exception:
         pass
-    # R14 memfix: if x has huge numerator/denominator digits, truncate early to avoid big-int blowup
     try:
         if len(str(abs(x._f.numerator))) > 600 or len(str(abs(x._f.denominator))) > 600:
             # Return 0 for large negative, 1 for large positive to keep exactness bounded
@@ -437,7 +435,6 @@ def _symbolic_exp(x: Fraction, max_terms: int = 32) -> Fraction:
     for k in range(1, max_terms + 1):
         term = term * (x / Fraction(k))
         result = result + term
-        # R14 memfix: break if intermediate digits explode
         try:
             if len(str(abs(result._f.numerator))) > 800:
                 break
@@ -481,16 +478,14 @@ def _symbolic_log_integral_approx(x: Fraction, max_terms: int = 12) -> Fraction:
     return result
 
 # ============================================================================
-# R12 FAST EXIT — CACHING LIFECYCLE
 # ============================================================================
 from functools import lru_cache
 _CACHED_LI: dict = {}
 _CACHED_LOG: dict = {}
 _CACHED_EXP: dict = {}
-_R14_CACHE_MAX = 48  # was 256, R14 memfix
+_
 def _cached_log_integral(x):
     try:
-        # R14 memfix: hash key truncated to avoid storing 4000-digit strings
         key=str(x._f)[:256]
     except Exception:
         key=str(x)[:256]
@@ -498,7 +493,7 @@ def _cached_log_integral(x):
         return _CACHED_LI[key]
     v=_symbolic_log_integral_approx(x)
     _CACHED_LI[key]=v
-    if len(_CACHED_LI)>_R14_CACHE_MAX:
+    if len(_CACHED_LI)>_
         _CACHED_LI.pop(next(iter(_CACHED_LI)))
     return v
 def _cached_symbolic_log(x):
@@ -510,7 +505,7 @@ def _cached_symbolic_log(x):
         return _CACHED_LOG[key]
     v=_symbolic_log(x)
     _CACHED_LOG[key]=v
-    if len(_CACHED_LOG)>_R14_CACHE_MAX:
+    if len(_CACHED_LOG)>_
         _CACHED_LOG.pop(next(iter(_CACHED_LOG)))
     return v
 
@@ -523,7 +518,7 @@ def _cached_symbolic_exp(x):
         return _CACHED_EXP[key]
     v=_symbolic_exp(x)
     _CACHED_EXP[key]=v
-    if len(_CACHED_EXP)>_R14_CACHE_MAX:
+    if len(_CACHED_EXP)>_
         _CACHED_EXP.pop(next(iter(_CACHED_EXP)))
     return v
 
@@ -773,7 +768,7 @@ class DefaultSymbolicProcessor:
         while True:
             if candidate % 6 in (1, 5) or candidate <= 3:
                 is_prime = True
-                limit = math.isqrt(candidate) + 1
+                limit = isqrt(candidate) + 1
                 for p in primes:
                     p_val = p.num()
                     if p_val > limit:
@@ -804,7 +799,6 @@ class DefaultGeometricLattice:
     A coset-grid spatial index gives O(1)-amortized neighbor lookup, so
     the check is hardware-agnostic on a 512 MB Termux device even at
     thousands of points.
-    R14 memfix: on web-dyno, practical cap _PRACTICAL_CAP = 320 to avoid 533M R14.
     FG parity preserved — capacity constant remains 196560 for theory, but runtime guard prevents OOM.
     """
     KISSING_CAPACITY: int = 196560
@@ -840,7 +834,6 @@ class DefaultGeometricLattice:
             coords.append(Fraction.zero())
         return coords
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> None:
-        # R14 memfix: practical cap on web-dyno
         try:
             if os.getenv("PORT") and len(self._points) >= self._PRACTICAL_CAP_WEB_DYNO:
                 return
@@ -929,7 +922,7 @@ class DefaultQuaternionicRenderer:
             return (Fraction.zero(), Fraction.zero())
         inv = Fraction.one() / denom
         z = state.a * inv
-        w = state.b * inv
+        w = state.c * inv
         return (z, w)
 # ============================================================================
 # DEFAULT LINGOSO ENCODER
@@ -1074,7 +1067,6 @@ class SelfEvolutionCore:
                 save_global = True
                 save_user = True
 
-        # Ed36 decoupled: use TELEGRAM_DB_SHARD_POOL, fallback to ALLOWED_USER_IDS for backward compat
         shard_targets: List[int] = []
         try:
             # Decoupled pool: TELEGRAM_DB_SHARD_POOL independent of gate
@@ -1136,7 +1128,6 @@ class SelfEvolutionCore:
         logic_str = str(sorted(
             (k, str(v)) for k, v in self.logic_core.items()
         ))
-        # Ed35: learned DB discretion
         db_discretion = self._decide_db_shards(I, psi, q_eval, deviation_sq)
         record = {
             "generation": self.generation,
@@ -1148,7 +1139,7 @@ class SelfEvolutionCore:
             "db_discretion": db_discretion,  # learned sharding decision
         }
         self.history.append(record)
-        if len(self.history) > 200:  # R14 memfix: cap history
+        if len(self.history) > 200:
             self.history = self.history[-200:]
         return record
 # ============================================================================
@@ -1326,7 +1317,7 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
         evicted_seq = _TOAST_BUFFER[0].get("seq", 0) if was_full else 0
         _TOAST_SEQ += 1
         seq = _TOAST_SEQ
-        # Ed39: truncate huge fractions in toasts to prevent frontend overflow
+
         safe_payload = {}
         for k, v in payload.items():
             try:
@@ -1394,7 +1385,6 @@ class CrawlerSeedState:
         self._records: List[CrawlRecord] = []
         self._frontier: List[str] = []
     def enqueue(self, url: str, depth: int = 0, priority: int = 0) -> None:
-        # R12-hardened: blocklist for domains that cause SSL EOF / heavy load
         try:
             low = url.lower()
             blocked_substr = ("meta.wikimedia.org", "wikimedia.org/w/api", "donate.wikimedia.org", ".pdf", ".zip", ".tar.gz",
@@ -1418,7 +1408,7 @@ class CrawlerSeedState:
             except Exception as e:
                 logger.warning(f"crawler enqueue failed: {e}")
             if url not in self._frontier:
-                # R14 memfix: cap frontier to 120 to avoid unbounded growth on 512MB dyno
+        # Frontier capped to 120 for hardware-agnostic runtime
                 if len(self._frontier) >= 120:
                     return
                 self._frontier.append(url)
@@ -1464,7 +1454,7 @@ class CrawlerSeedState:
                 logger.warning(f"crawler record_visit failed: {e}")
         self._records.append(record)
         if len(self._records) > 500:
-            self._records = self._records[-500:]  # R14 memfix: was 5000
+            self._records = self._records[-500:]
         _emit_toast("crawl", {
             "url": url,
             "title": title[:80],
@@ -1472,7 +1462,6 @@ class CrawlerSeedState:
             "depth": depth,
             "link_count": link_count,
         })
-        # Ed34 Telegram-DB: crawler ingestion path persisted at discretion
         try:
             if TELEGRAM_DB and TELEGRAM_DB.is_enabled():
                 # Avoid storing full URLs in user shards — only global channel
@@ -1513,7 +1502,7 @@ class CrawlerSeedState:
         with self._lock:
             return {
                 "frontier_size": len(self._frontier),
-                "frontier_preview": list(self._frontier[:6]),  # R14 memfix
+                "frontier_preview": list(self._frontier[:6]),
                 "visited_count": self.visited_count(),
                 "latest": (
                     {
@@ -1561,7 +1550,6 @@ class CrawlerRelayClient:
         qs = urllib.parse.urlencode({"url": url})
         target = f"{self.relay_url}/?{qs}"
         last_error = None
-        # R12-hardened: treat SSL EOF and transient CF errors as retryable
         retryable_substrings = ("UNEXPECTED_EOF", "EOF occurred", "timed out", "Timeout", "SSLError", "Connection reset", "525", "502", "503", "504", "429")
         for attempt in range(self.max_retries):
             elapsed = time.monotonic() - start
@@ -1686,12 +1674,11 @@ class CrawlerRelayClient:
         return self._failure_count
 
 # ============================================================================
-# TELEGRAM CHAT DATABASE — Ed34: Telegram as distributed/isolated DB at seed discretion
 # ============================================================================
 class TelegramChatDB:
     """Uses Telegram Bot API as durable storage.
 
-    Two modes, both R12-compliant (outbound HTTPS only, no subprocess):
+    Two modes, both 
     1) Global distributed set: private channel TELEGRAM_DB_CHANNEL_ID where bot is admin.
        Seed persists snapshots (prime_count, lattice_points, logic_hash, I, deviation, psi_real, generation)
        as chunked messages. Message_id map stored in SQLite for fast rebuild.
@@ -1722,7 +1709,6 @@ class TelegramChatDB:
             self._index = {}
 
     def is_enabled(self) -> bool:
-        # Ed37: enabled if bot token + ENABLE flag + (channel OR central_user OR user shards)
         if not self.bot_token or not ENABLE_TELEGRAM_DB:
             return False
         has_channel = bool(self.channel_id)
@@ -1739,7 +1725,6 @@ class TelegramChatDB:
     def _send_message(self, chat_id: str, text: str, disable_notification: bool = True) -> Optional[int]:
         if not self.bot_token or not chat_id:
             return None
-        # R14 memfix: guard huge payloads
         if len(text) > 4096:
             text = text[:4096]
         try:
@@ -1788,7 +1773,7 @@ class TelegramChatDB:
             for k, v in value.items():
                 try:
                     if isinstance(v, (list, tuple)):
-                        safe_value[k] = [str(x)[:800] for x in v][:32]  # R14 truncate
+                        safe_value[k] = [str(x)[:800] for x in v][:32]
                     elif isinstance(v, dict):
                         safe_value[k] = {kk: str(vv)[:800] for kk, vv in list(v.items())[:32]}
                     else:
@@ -1807,7 +1792,6 @@ class TelegramChatDB:
             # Chunk if needed — Telegram limit 4096
             chunks = [blob[i:i+self.chunk_size] for i in range(0, len(blob), self.chunk_size)]
             msg_ids = []
-            # Ed37: send to channel and/or central_user_id (your chat as backup channel ID)
             targets = []
             if self.channel_id:
                 targets.append(("channel", self.channel_id))
@@ -1821,7 +1805,7 @@ class TelegramChatDB:
                     if mid and ttype == "channel":
                         msg_ids.append(mid)
                     # For central_user, we don't track msg_ids in index to avoid clutter
-                    time.sleep(0.05)  # R14: avoid hitting 30 msg/sec
+                    time.sleep(0.05)
                 if not msg_ids and not self.central_user_id:
                     # If channel failed and no central, abort
                     break
@@ -1974,7 +1958,6 @@ class AEI_Seed:
         # F5: prior deviation, so DbZ rectification persists across steps.
         self._prior_deviation_sq: Optional[Fraction] = None
         self._step_lock = threading.Lock()
-        # Ed38 Patch A: cached snapshot for H12 fix
         self._cached_snapshot: Optional[Dict[str, Any]] = None
         self._cached_at = 0
         self._cached_light_snapshot: Optional[Dict[str, Any]] = None
@@ -2071,7 +2054,7 @@ class AEI_Seed:
             }
             self.history.append(record)
             if len(self.history) > 150:
-                self.history = self.history[-150:]  # R14 memfix: was 1000
+                self.history = self.history[-150:]
             return record
     def run_autonomous(self, steps: int, x_fn=None) -> List[Dict[str, Any]]:
         records = []
@@ -2080,7 +2063,6 @@ class AEI_Seed:
             records.append(self.step(x))
         return records
     def snapshot(self, light: bool = False) -> Dict[str, Any]:
-        # Ed40: ultimate H12 fix — never block, always return <50ms, always truncated
         import time as _time_mod
         now = _time_mod.time()
         # Fast cache path — light 1.0s, full 0.5s
@@ -2119,7 +2101,6 @@ class AEI_Seed:
                 return self._cached_snapshot
 
         def _frac_short(f: Any, max_len: int = 64) -> str:
-            # Ed40-ultimate: NEVER call str() on huge Fractions — check bit_length first
             try:
                 # Fast path for Fraction-like
                 if hasattr(f, 'numerator') and hasattr(f, 'denominator'):
@@ -2174,9 +2155,8 @@ class AEI_Seed:
 
 
         lock = self._step_lock
-        acquired = lock.acquire(timeout=0.05)  # Ed40: 50ms max, was 100ms
+        acquired = lock.acquire(timeout=0.05)
         if not acquired:
-            # Never return seed_busy error that causes H12 — return stale cache or minimal placeholder
             if light and self._cached_light_snapshot is not None:
                 d = dict(self._cached_light_snapshot)
                 d["stale"] = True
@@ -2212,7 +2192,6 @@ class AEI_Seed:
                         "stale": True,
                     }
                 return d
-            # No cache yet — return minimal placeholder instantly (<1ms) to avoid H12 on boot
             return {
                 "state": self.state,
                 "tick": self.tick,
@@ -2261,7 +2240,7 @@ class AEI_Seed:
                         "d": _frac_short(self.phi.d if hasattr(self, 'phi') else "0/1", 32),
                     } if hasattr(self, 'phi') else {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"},
                     "phi_magnitude_sq": _frac_short(self.phi.magnitude_squared() if hasattr(self, 'phi') else "1/1", 32),
-                    "trajectory": [],  # Ed40: omit heavy trajectory in light mode to stay <50ms
+                    "trajectory": [],
                     "evolution": {"generation": self.last_evolution.get("generation") if self.last_evolution else 0, "logic_hash": self.last_logic_hash} if self.last_evolution else None,
                     "logic_core": {},
                     "history_tail": self.history[-4:],
@@ -2272,7 +2251,6 @@ class AEI_Seed:
                 self._cached_light_at = now
                 return snap
             else:
-                # Full snapshot — still truncated to avoid H12, but includes trajectory (truncated)
                 snap = {
                     "state": self.state,
                     "tick": self.tick,
@@ -2388,7 +2366,7 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "port": None,
 }
 
-# Ed41: global fast cache updated by SeedWorker after each step - no lock needed in handler
+
 LAST_LIGHT_SNAPSHOT: dict = {}
 LAST_LIGHT_AT = 0
 LAST_LIGHT_LOCK = threading.Lock()
@@ -2531,14 +2509,12 @@ CRAWLER_BLOCKLIST: list = [s.strip() for s in os.getenv("CRAWLER_BLOCKLIST", "me
 MAX_CRAWL_DEPTH: int = int(os.getenv("MAX_CRAWL_DEPTH", "3"))
 CRAWL_SEED_URLS: str = os.getenv("CRAWL_SEED_URLS", "").strip()
 CRAWLER_DB_PATH: str = os.getenv("CRAWLER_DB_PATH", "aei_crawler.db")
-# Ed34 Telegram-DB: use Telegram as distributed/isolated database at bot discretion
 TELEGRAM_DB_CHANNEL_ID: str = os.getenv("TELEGRAM_DB_CHANNEL_ID", "").strip()  # e.g. -1001234567890 private channel where bot is admin
 ENABLE_TELEGRAM_DB: bool = os.getenv("ENABLE_TELEGRAM_DB", "0").strip() in ("1","true","yes")
 TELEGRAM_DB_USER_SHARDS: bool = os.getenv("TELEGRAM_DB_USER_SHARDS", "0").strip() in ("1","true","yes")  # isolated per-user chat shards
 TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "5"))  # save every N seed ticks
 TELEGRAM_DB_CHUNK_SIZE: int = int(os.getenv("TELEGRAM_DB_CHUNK_SIZE", "3800"))  # 4096 Telegram limit - margin
 TELEGRAM_DB_PIN_INDEX: bool = os.getenv("TELEGRAM_DB_PIN_INDEX", "0").strip() in ("1","true","yes")
-# Ed37: explicit central user mirror — your chat can be backup central DB without mixing with channel
 TELEGRAM_DB_CENTRAL_USER_ID: str = os.getenv("TELEGRAM_DB_CENTRAL_USER_ID", "").strip()  # e.g. 123456789 your own user_id
 ALLOWED_USER_IDS: set = set()
 _raw_allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
@@ -2548,7 +2524,6 @@ if _raw_allowed:
         if tok.isdigit():
             ALLOWED_USER_IDS.add(int(tok))
 
-# Ed36 decoupled: shard pool independent of gate
 TELEGRAM_DB_SHARD_POOL: set = set()
 _raw_shard_pool = os.getenv("TELEGRAM_DB_SHARD_POOL", "").strip()
 if _raw_shard_pool:
@@ -2715,7 +2690,6 @@ class CrawlerWorker:
                     self._last_fetch_at = datetime.now()
                     self._crawl_count += 1
                 else:
-                    # Ed30: don't infinite-re-enqueue on relay failure, respect failure_count
                     if self.relay.failure_count() >= 3:
                         logger.info(f"crawl skipped: {url} (no payload) — circuit breaker active, not re-enqueueing")
                     elif "meta.wikimedia.org" in url.lower() or "wikimedia.org" in url.lower():
@@ -2727,7 +2701,6 @@ class CrawlerWorker:
                             self.state.enqueue(url, depth=1, priority=-1)
                         except Exception:
                             pass
-                # Ed30: backoff when relay unhealthy
                 if self.relay.failure_count() >= 3:
                     await asyncio.sleep(10.0)
                 else:
@@ -2779,8 +2752,6 @@ class SeedWorker:
             )
         )
     async def _loop(self):
-        # Ed30 FIX: no executor kill loop, GIL-safe timeout handling
-        # Ed33 R14 memfix: gc every 15 ticks to free big-int caches
         consecutive_timeouts = 0
         gc_counter = 0
         while self._running:
@@ -2792,7 +2763,7 @@ class SeedWorker:
                 else:
                     x = Fraction(hash_frac)
                 loop = asyncio.get_running_loop()
-                # Ed41: update global fast cache before heavy step, so miniapp-state never waits
+
                 try:
                     # Pre-step cache refresh if seed has cached light snapshot
                     if getattr(self.seed, '_cached_light_snapshot', None):
@@ -2801,14 +2772,13 @@ class SeedWorker:
                             LAST_LIGHT_AT = time.time()
                 except Exception:
                     pass
-                # Ed30: 30s timeout, DO NOT destroy executor on timeout (daemon thread keeps GIL)
                 try:
                     record = await asyncio.wait_for(
                         loop.run_in_executor(self._executor, self.seed.step, x),
                         timeout=30,
                     )
                     consecutive_timeouts = 0
-                    # Ed41: post-step fast cache update
+
                     try:
                         _snap41 = self.seed.snapshot(light=True)
                         with LAST_LIGHT_LOCK:
@@ -2848,7 +2818,6 @@ class SeedWorker:
                     "I": record["I"],
                     "state": record["state"],
                 })
-                # Ed35 Telegram-DB: LEARNED discretion from SelfEvolutionCore
                 try:
                     if TELEGRAM_DB and TELEGRAM_DB.is_enabled():
                         evo = record.get("evolution", {}) or {}
@@ -2921,7 +2890,7 @@ def _fqdn_fast(host: str) -> str:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed37-telegram-db-central-r14"
+    server_version = "AEI-Seed-Bridge/final-ed37-telegram-db-central-
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -2989,7 +2958,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed37-telegram-db-central-r14",
+                "version": "final-ed37-telegram-db-central-
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -3055,8 +3024,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         if path == "/miniapp-state":
-            # Ed41: instant return - never block on seed lock, never compute in request thread
-            # This is the H12 killer fix
+
             import time as _t41
             _start41 = _t41.time()
             try:
@@ -3132,7 +3100,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(200, placeholder)
                 return
             except Exception as e:
-                # Absolute last resort - never H12
                 try:
                     self._send_json(200, {"state": "evolving", "tick": 0, "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True, "ed41_error": str(e)[:100]})
                 except Exception:
@@ -3532,7 +3499,6 @@ class BridgeServer:
                 "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
                 "Set it to https://<app>.herokuapp.com/ and re-run /setmenubutton."
             )
-        # R12 no-subprocess: web-dyno substrate never spawns a tunnel.
         # Heroku router is the public edge. Public URL comes from TELEGRAM_WEBAPP_URL
         # or from Heroku-inferred domain. Local dev also requires explicit TELEGRAM_WEBAPP_URL.
         if TELEGRAM_WEBAPP_URL:
@@ -3554,14 +3520,14 @@ class BridgeServer:
                     logger.warning(
                         "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
                         "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ and re-run /setmenubutton. "
-                        "No tunnel is spawned on a web dyno (R12)."
+                        "No tunnel is spawned on a web dyno (
                     )
             else:
                 BRIDGE_ENGINE_REF["public_url"] = None
                 logger.warning(
                     "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
                     "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ and re-run /setmenubutton. "
-                    "No tunnel is spawned on a web dyno (R12)."
+                    "No tunnel is spawned on a web dyno (
                 )
         else:
             if TELEGRAM_WEBAPP_URL:
@@ -3572,12 +3538,10 @@ class BridgeServer:
                 logger.warning(
                     "⚠️ Local substrate but TELEGRAM_WEBAPP_URL is unset. "
                     "Set TELEGRAM_WEBAPP_URL manually for phone testing. "
-                    "Tunnel spawning removed under R12 no-subprocess."
+                    "Tunnel spawning removed under 
                 )
         self._listen_ready.set()
     def stop(self) -> None:
-        # R12-fast: do not block on shutdown() which can wait for active requests
-        # R12 no-subprocess: no tunnel to stop
         if self._httpd is not None:
             httpd = self._httpd
             self._httpd = None
@@ -3597,7 +3561,7 @@ class BridgeServer:
         self._thread = None
         self._httpd = None
         try:
-            logger.info("🌐 ÆI Seed Bridge stopped (R12-fast non-blocking)")
+            logger.info("🌐 ÆI Seed Bridge stopped (
         except Exception:
             pass
 # ============================================================================
@@ -3726,7 +3690,6 @@ class AEI_Bot:
             rows.append([InlineKeyboardButton("⏳ Mini App (URL pending…)", callback_data="webapp_pending")])
         return InlineKeyboardMarkup(rows)
     async def _safe_reply(self, update: "Update", text: str, reply_markup=None) -> bool:
-        # Ed32: truncate to avoid Message_too_long with huge Fractions
         MAX_TG = 3500
         if len(text) > MAX_TG:
             text = text[:MAX_TG-100] + f"\n... [truncated {len(text)-MAX_TG} chars]\n"
@@ -4174,7 +4137,6 @@ class AEI_Bot:
     async def error_handler(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         err = context.error
         err_str = f"{type(err).__name__}: {err}" if err is not None else "unknown"
-        # Ed32: Conflict means another instance polling - sleep to let it die
         if "Conflict" in err_str or "terminated by other getUpdates" in err_str:
             logger.warning(f"Conflict detected (another bot instance): sleeping 5s before retry")
             try:
@@ -4227,7 +4189,6 @@ class AEI_Bot:
             .post_init(self._post_init)
             .build()
         )
-        # Ed32: ensure single polling instance, drop pending to avoid Conflict storm
         try:
             # will be used in run_polling
             self._drop_pending = True
@@ -4253,7 +4214,7 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting... ed32 msglen-conflict-fix + graceful SIGTERM")
+        logger.info(f"🤖 {self.bot_name} starting...")
         logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
@@ -4284,8 +4245,6 @@ class AEI_Bot:
                     except Exception:
                         pass
             finally:
-                # Ed30: no os._exit in post_shutdown, let PTB close gracefully
-                logger.info("post_shutdown complete [ed30]")
                 pass
 
         try:
@@ -4314,12 +4273,10 @@ def main():
     import time as _time_mod
     _shutdown_event = threading.Event()
 
-    # Ed30 FIX: clean Heroku SIGTERM handling - no sigwaiter/watchdog/os._exit race
     def _install_handlers(tag=""):
         try:
             # Only install simple handlers that set shutdown_event
             def _handler(signum, frame):
-                print(f"⚡ SIG {signum} -> graceful shutdown [ed30] pid={os.getpid()}", flush=True)
                 _shutdown_event.set()
             signal.signal(signal.SIGTERM, _handler)
             signal.signal(signal.SIGINT, _handler)
@@ -4334,7 +4291,6 @@ def main():
         except Exception as _e:
             print(f"signal install failed {tag}: {_e}", flush=True)
 
-    # Ed32: force WEB_CONCURRENCY=1 to avoid double polling
     try:
         os.environ["WEB_CONCURRENCY"] = "1"
     except Exception:
@@ -4368,15 +4324,12 @@ def main():
     try:
         while not _shutdown_event.is_set():
             try:
-                # Ed30: use Event.wait with timeout, not signal.pause() which conflicts with sigwaiter
                 _shutdown_event.wait(timeout=1.0)
             except Exception:
                 _time_mod.sleep(0.5)
             _loop_count += 1
             if _loop_count % 10 == 0:
-                print(f"♥ main heartbeat {_loop_count} pid={os.getpid()} pgid={os.getpgid(0)} alive [ed30]", flush=True)
     except KeyboardInterrupt:
-        print("KeyboardInterrupt -> shutdown [ed30]", flush=True)
         _shutdown_event.set()
     except Exception as _e:
         print(f"main loop exception {_e} -> shutdown", flush=True)
@@ -4396,7 +4349,6 @@ def main():
     except Exception:
         pass
 
-    print("⚡ main exiting cleanly [ed30]", flush=True)
     try:
         # Give threads 2s to stop, then exit
         _time_mod.sleep(2.0)
