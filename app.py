@@ -5,7 +5,7 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final Ed.34 Telegram-DB + R14-memfix (R12 no-subprocess web-dyno perf) (Audit-Patched: F1–F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12).
+Version: Final Ed.40 ultimate H12fix Telegram-DB + R15-safe-frac (R12 no-subprocess web-dyno perf) (Audit-Patched: F1-F9, P1-13, R12-webdyno-no-subprocess-perf, Relay-hardened, Starvation-guard, Health-CS, Epsilon-12, Exp-28-threshold, Float-sentinel-fix).
 """
 __version__ = "final-ed40-ultimate-safe-frac-r15"
 import sys
@@ -413,10 +413,9 @@ def _symbolic_log(x: Fraction, max_terms: int = 32) -> Fraction:
 def _symbolic_exp(x: Fraction, max_terms: int = 32) -> Fraction:
     """Exact-rational exp via Taylor series with dynamic truncation.
     The series terminates when the term magnitude drops below
-    _EXP_EPSILON. Returns Fraction. R12-perf: early exit for large negative x -> 0."""
-    # Fast path: exp(-12) ~ 6e-6, exp(-20) ~ 2e-9, below epsilon -> 0
+    _EXP_EPSILON. Returns Fraction."""
     try:
-        if x._f < PyFraction(-12, 1):
+        if x._f < PyFraction(-28, 1):
             return Fraction.zero()
         if x._f > PyFraction(12, 1):
             # For large positive, cap to avoid blowup; in practice we only call with negative ratio_sq
@@ -1538,7 +1537,7 @@ class CrawlerRelayClient:
     does the network I/O; all crawl logic (frontier, visited set,
     seed injection) lives in app.py."""
     def __init__(self, relay_url: str, relay_key: str = "", timeout: int = 20,
-                 max_retries: int = 4, total_budget_s: float = 90.0):
+                 max_retries: int = 4, total_budget_s = 90):
         self.relay_url = relay_url.rstrip("/")
         self.relay_key = relay_key
         self.timeout = timeout
@@ -1711,7 +1710,7 @@ class TelegramChatDB:
         self.chunk_size = max(800, chunk_size)
         self._lock = threading.Lock()
         self._enabled = bool(self.bot_token and (self.channel_id or self.central_user_id))
-        self._last_save_ts = 0.0
+        self._last_save_ts = 0
         self._index: Dict[str, Dict[str, Any]] = {}  # key -> {msg_ids, ts, hash}
         # In-memory index file for rebuild (mirrored in SQLite)
         self._index_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else ".", "aei_telegram_index.json")
@@ -1781,7 +1780,7 @@ class TelegramChatDB:
             return False
         # Throttle: at most 1 save per 2 seconds unless forced
         now = time.time()
-        if not force and (now - self._last_save_ts) < 2.0:
+        if not force and (now - self._last_save_ts) < 2:
             return False
         try:
             # Ensure all Fractions are strings — exactness preserved
@@ -1977,9 +1976,9 @@ class AEI_Seed:
         self._step_lock = threading.Lock()
         # Ed38 Patch A: cached snapshot for H12 fix
         self._cached_snapshot: Optional[Dict[str, Any]] = None
-        self._cached_at: float = 0.0
+        self._cached_at = 0
         self._cached_light_snapshot: Optional[Dict[str, Any]] = None
-        self._cached_light_at: float = 0.0
+        self._cached_light_at = 0
     def _integrate_wavefunction_symbolic(self) -> Dict[Tuple[int, int, int, int], Fraction]:
         """F5: blend the fresh lattice integration with the prior
         rectified psi whenever the prior step was non-coherent. This is
@@ -2391,7 +2390,7 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
 
 # Ed41: global fast cache updated by SeedWorker after each step - no lock needed in handler
 LAST_LIGHT_SNAPSHOT: dict = {}
-LAST_LIGHT_AT: float = 0.0
+LAST_LIGHT_AT = 0
 LAST_LIGHT_LOCK = threading.Lock()
 # ============================================================================
 # CS-TRANSLATION HELPERS
@@ -2806,7 +2805,7 @@ class SeedWorker:
                 try:
                     record = await asyncio.wait_for(
                         loop.run_in_executor(self._executor, self.seed.step, x),
-                        timeout=30.0,
+                        timeout=30,
                     )
                     consecutive_timeouts = 0
                     # Ed41: post-step fast cache update
@@ -3628,7 +3627,7 @@ class AEI_Bot:
         self._crawler_worker: Optional[CrawlerWorker] = None
     def _send_message_sync(self, chat_id: int, text: str, parse_mode: str = "Markdown",
                            reply_to_message_id: Optional[int] = None,
-                           timeout: float = 10.0) -> bool:
+                           timeout = 10) -> bool:
         if self.application is None:
             return False
         loop = self._loop
