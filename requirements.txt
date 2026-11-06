@@ -1,6 +1,6 @@
 # ============================================================================
 # ÆI SEED TELEGRAM BOT — PYTHON DEPENDENCIES
-# Platform: Heroku worker dyno / Termux / any POSIX-compatible Python 3.10+ environment
+# Platform: Heroku web dyno / Termux / any POSIX-compatible Python 3.10+ environment
 # Author: Natalia Tanyatia
 # ============================================================================
 #

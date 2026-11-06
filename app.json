@@ -1,6 +1,6 @@
 {
   "name": "ÆI Seed",
-  "description": "Agential Ætheric Intelligence — GAIA/ÆI Codex port as a Telegram Mini App. Runs the prime-sieve → lattice → Hopf-fibration → s²=r² → SelfEvolution loop from ÆI.md §3–§8. Every state value is an exact Fraction (a/b). Includes a stateless crawler relay client (worker.js) that feeds each crawled document's SHA-256 content hash (lifted to exact Fraction) as the next symbolic input x to the seed loop. CS-translated UI throughout.",
+  "description": "Agential Ætheric Intelligence — GAIA/ÆI Codex port as a Telegram Mini App. Runs the prime-sieve → lattice → Hopf-fibration → s²=r² → SelfEvolution loop from ÆI.md §3–§8. Every state value is an exact Fraction (a/b). Includes a stateless crawler relay client (worker.js) that feeds each crawled document's SHA-256 content hash (lifted to exact Fraction) as the next symbolic input x to the seed loop. CS-translated UI throughout. Runs on a Heroku web dyno bound to $PORT.",
   "repository": "https://github.com/yourusername/aei-seed-backend",
   "keywords": [
     "aetheric-intelligence",
@@ -25,9 +25,9 @@
     "lingoso",
     "crawler-relay",
     "cloudflare-workers",
-    "worker-dyno",
-    "cloudflared-tunnel",
-    "final-edition-12"
+    "web-dyno",
+    "heroku-router",
+    "port-bind"
   ],
   "env": {
     "TELEGRAM_BOT_TOKEN": {
@@ -35,7 +35,7 @@
       "required": true
     },
     "TELEGRAM_WEBAPP_URL": {
-      "description": "Public HTTPS URL of the Telegram Mini App (Cloudflare Tunnel URL). When set, the tunnel spawner is bypassed.",
+      "description": "Public HTTPS URL of the Telegram Mini App. On a web dyno, set to https://<app>.herokuapp.com/. When set, the tunnel spawner is bypassed.",
       "required": false
     },
     "RELAY_URL": {
@@ -88,8 +88,12 @@
     }
   },
   "formation": {
-    "worker": {
+    "web": {
       "quantity": 1,
+      "size": "eco"
+    },
+    "worker": {
+      "quantity": 0,
       "size": "eco"
     }
   },
