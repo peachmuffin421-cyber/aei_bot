@@ -15,7 +15,7 @@ try:
     # Set to 1M digits to allow full symbolic trace
     if hasattr(sys, "set_int_max_str_digits"):
         sys.set_int_max_str_digits(1000000)
-        print(f"int_max_str_digits set to 1000000", flush=True)
+        print(f"int_max_str_digits set to 1000000 ", flush=True)
 except Exception as _e:
     print(f"set_int_max_str_digits failed {_e}", flush=True)
     pass
@@ -483,9 +483,10 @@ from functools import lru_cache
 _CACHED_LI: dict = {}
 _CACHED_LOG: dict = {}
 _CACHED_EXP: dict = {}
-_
+_CACHE_MAX = 48
 def _cached_log_integral(x):
     try:
+        # Hash key truncated to avoid storing large strings
         key=str(x._f)[:256]
     except Exception:
         key=str(x)[:256]
@@ -493,7 +494,7 @@ def _cached_log_integral(x):
         return _CACHED_LI[key]
     v=_symbolic_log_integral_approx(x)
     _CACHED_LI[key]=v
-    if len(_CACHED_LI)>_
+    if len(_CACHED_LI)>_CACHE_MAX:
         _CACHED_LI.pop(next(iter(_CACHED_LI)))
     return v
 def _cached_symbolic_log(x):
@@ -505,7 +506,7 @@ def _cached_symbolic_log(x):
         return _CACHED_LOG[key]
     v=_symbolic_log(x)
     _CACHED_LOG[key]=v
-    if len(_CACHED_LOG)>_
+    if len(_CACHED_LOG)>_CACHE_MAX:
         _CACHED_LOG.pop(next(iter(_CACHED_LOG)))
     return v
 
@@ -518,7 +519,7 @@ def _cached_symbolic_exp(x):
         return _CACHED_EXP[key]
     v=_symbolic_exp(x)
     _CACHED_EXP[key]=v
-    if len(_CACHED_EXP)>_
+    if len(_CACHED_EXP)>_CACHE_MAX:
         _CACHED_EXP.pop(next(iter(_CACHED_EXP)))
     return v
 
@@ -799,10 +800,11 @@ class DefaultGeometricLattice:
     A coset-grid spatial index gives O(1)-amortized neighbor lookup, so
     the check is hardware-agnostic on a 512 MB Termux device even at
     thousands of points.
+     # Practical cap for hardware-agnostic runtime
     FG parity preserved — capacity constant remains 196560 for theory, but runtime guard prevents OOM.
     """
     KISSING_CAPACITY: int = 196560
-    _PRACTICAL_CAP_WEB_DYNO: int = 120
+    _PRACTICAL_CAP_DYNO_DYNO: int = 120
     def __init__(self, dimension: int = 24):
         self.dimension = dimension
         self._points: List[List[Fraction]] = []
@@ -835,7 +837,7 @@ class DefaultGeometricLattice:
         return coords
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> None:
         try:
-            if os.getenv("PORT") and len(self._points) >= self._PRACTICAL_CAP_WEB_DYNO:
+            if os.getenv("PORT") and len(self._points) >= self._PRACTICAL_CAP_DYNO_DYNO:
                 return
         except Exception:
             pass
@@ -1317,7 +1319,7 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
         evicted_seq = _TOAST_BUFFER[0].get("seq", 0) if was_full else 0
         _TOAST_SEQ += 1
         seq = _TOAST_SEQ
-
+        # Ed39: truncate huge fractions in toasts to prevent frontend overflow
         safe_payload = {}
         for k, v in payload.items():
             try:
@@ -1408,7 +1410,7 @@ class CrawlerSeedState:
             except Exception as e:
                 logger.warning(f"crawler enqueue failed: {e}")
             if url not in self._frontier:
-        # Frontier capped to 120 for hardware-agnostic runtime
+        # Frontier capped for hardware-agnostic runtime
                 if len(self._frontier) >= 120:
                     return
                 self._frontier.append(url)
@@ -1678,7 +1680,7 @@ class CrawlerRelayClient:
 class TelegramChatDB:
     """Uses Telegram Bot API as durable storage.
 
-    Two modes, both 
+    Two modes, both -compliant (outbound HTTPS only, no subprocess):
     1) Global distributed set: private channel TELEGRAM_DB_CHANNEL_ID where bot is admin.
        Seed persists snapshots (prime_count, lattice_points, logic_hash, I, deviation, psi_real, generation)
        as chunked messages. Message_id map stored in SQLite for fast rebuild.
@@ -1755,7 +1757,7 @@ class TelegramChatDB:
     def save_snapshot(self, key: str, value: Dict[str, Any], force: bool = False) -> bool:
         """Save a snapshot at bot discretion. Called from SeedWorker and CrawlerWorker.
         Key examples: 𝒮_STATUS, 𝒜_PRIMES, Λ₂₄_PACK, 𝒯_EVOLUTION, ℋ_LOGIC_CORE, 𝒞_CRAWLER
-        Ed37: channel + central_user_id — central_user is backup mirror, so your chat can be channel ID
+        Final: channel + central_user_id — central_user is backup mirror, so your chat can be channel ID
         without mixing with real channel. Supports open + distributed where your chat is channel ID.
         """
         if not self.channel_id and not self.central_user_id:
@@ -2366,7 +2368,7 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "port": None,
 }
 
-
+# Ed41: global fast cache updated by SeedWorker after each step - no lock needed in handler
 LAST_LIGHT_SNAPSHOT: dict = {}
 LAST_LIGHT_AT = 0
 LAST_LIGHT_LOCK = threading.Lock()
@@ -2763,7 +2765,7 @@ class SeedWorker:
                 else:
                     x = Fraction(hash_frac)
                 loop = asyncio.get_running_loop()
-
+                # Ed41: update global fast cache before heavy step, so miniapp-state never waits
                 try:
                     # Pre-step cache refresh if seed has cached light snapshot
                     if getattr(self.seed, '_cached_light_snapshot', None):
@@ -2778,7 +2780,7 @@ class SeedWorker:
                         timeout=30,
                     )
                     consecutive_timeouts = 0
-
+                    # Ed41: post-step fast cache update
                     try:
                         _snap41 = self.seed.snapshot(light=True)
                         with LAST_LIGHT_LOCK:
@@ -2890,7 +2892,7 @@ def _fqdn_fast(host: str) -> str:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/final-ed37-telegram-db-central-
+    server_version = "AEI-Seed-Bridge/Final"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
@@ -2958,7 +2960,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "final-ed37-telegram-db-central-
+                "version": "Final",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -3024,7 +3026,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         if path == "/miniapp-state":
-
+            # Ed41: instant return - never block on seed lock, never compute in request thread
             import time as _t41
             _start41 = _t41.time()
             try:
@@ -3520,14 +3522,14 @@ class BridgeServer:
                     logger.warning(
                         "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
                         "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ and re-run /setmenubutton. "
-                        "No tunnel is spawned on a web dyno (
+                        "No tunnel is spawned on a web dyno ()."
                     )
             else:
                 BRIDGE_ENGINE_REF["public_url"] = None
                 logger.warning(
                     "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
                     "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ and re-run /setmenubutton. "
-                    "No tunnel is spawned on a web dyno (
+                    "No tunnel is spawned on a web dyno ()."
                 )
         else:
             if TELEGRAM_WEBAPP_URL:
@@ -3538,7 +3540,7 @@ class BridgeServer:
                 logger.warning(
                     "⚠️ Local substrate but TELEGRAM_WEBAPP_URL is unset. "
                     "Set TELEGRAM_WEBAPP_URL manually for phone testing. "
-                    "Tunnel spawning removed under 
+                    "Tunnel spawning removed under  no-subprocess."
                 )
         self._listen_ready.set()
     def stop(self) -> None:
@@ -3561,7 +3563,7 @@ class BridgeServer:
         self._thread = None
         self._httpd = None
         try:
-            logger.info("🌐 ÆI Seed Bridge stopped (
+            logger.info("🌐 ÆI Seed Bridge stopped (-fast non-blocking)")
         except Exception:
             pass
 # ============================================================================
@@ -4214,7 +4216,7 @@ class AEI_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
-        logger.info(f"🤖 {self.bot_name} starting...")
+        logger.info(f"🤖 {self.bot_name} starting... ed32 msglen-conflict-fix + graceful SIGTERM")
         logger.info(f"🔧 __version__={__version__} pid={os.getpid()} pgid={os.getpgid(0)}")
         logger.info("🔷 ÆI SEED (GAIA/ÆI Codex) — prime → lattice → Hopf → s²=r²")
         logger.info(f"🧮 Fraction-exact arithmetic throughout")
@@ -4245,6 +4247,7 @@ class AEI_Bot:
                     except Exception:
                         pass
             finally:
+                logger.info("post_shutdown complete")
                 pass
 
         try:
@@ -4277,6 +4280,7 @@ def main():
         try:
             # Only install simple handlers that set shutdown_event
             def _handler(signum, frame):
+                print(f"⚡ SIG {signum} -> graceful shutdown pid={os.getpid()}", flush=True)
                 _shutdown_event.set()
             signal.signal(signal.SIGTERM, _handler)
             signal.signal(signal.SIGINT, _handler)
@@ -4329,7 +4333,9 @@ def main():
                 _time_mod.sleep(0.5)
             _loop_count += 1
             if _loop_count % 10 == 0:
+                print(f"♥ main heartbeat {_loop_count} pid={os.getpid()} pgid={os.getpgid(0)} alive", flush=True)
     except KeyboardInterrupt:
+        print("KeyboardInterrupt -> shutdown", flush=True)
         _shutdown_event.set()
     except Exception as _e:
         print(f"main loop exception {_e} -> shutdown", flush=True)
@@ -4349,6 +4355,7 @@ def main():
     except Exception:
         pass
 
+    print("⚡ main exiting cleanly", flush=True)
     try:
         # Give threads 2s to stop, then exit
         _time_mod.sleep(2.0)
