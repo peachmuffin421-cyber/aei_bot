@@ -200,13 +200,13 @@ class Fraction:
 
     def to_float(self) -> float:
         try:
-            # If numerator/denominator have > 308 decimal digits, float() will overflow to inf
-            # Return inf-guarded 0.0 to avoid MemoryError
             if len(str(abs(self._f.numerator))) > 300 or len(str(self._f.denominator)) > 300:
-                return 0.0
+                raise OverflowError("Fraction exceeds 300 digits; exact value must be rendered via str() not float()")
             return float(self._f.numerator) / float(self._f.denominator)
+        except OverflowError:
+            raise
         except Exception:
-            return 0.0
+            raise OverflowError("to_float conversion failed; use exact str() representation")
     def sqrt(self, iterations: int = 8) -> 'Fraction':
         """Newton–Raphson exact-rational square root approximation.
         Each iteration is exact. The result is a Fraction, never a float.
