@@ -790,18 +790,45 @@ class DefaultSymbolicProcessor:
 # ============================================================================
 # DEFAULT GEOMETRIC LATTICE
 # ============================================================================
+def _phi_from_center(center: List[Fraction]) -> Tuple[Fraction, Fraction]:
+    """Build exact unit phi (a, c) from a new lattice center, so Hopf moves each feed.
+    Uses rational parametrisation of the unit circle:
+    t = Y/X, a = (1-t^2)/(1+t^2), c = 2t/(1+t^2), so a^2 + c^2 == 1 exactly.
+    X is center[0], Y is sum of all other coords, so any coord change moves Hopf.
+    Caller builds SymbolicQuaternion(a, Fraction.zero(), c, Fraction.zero()).
+    """
+    X = center[0]
+    Y = Fraction.zero()
+    for v in center[1:]:
+        Y = Y + v
+    if X == Fraction.zero() and Y == Fraction.zero():
+        return Fraction.one(), Fraction.zero()
+    if X == Fraction.zero():
+        return Fraction.zero(), Fraction.one() if Y > Fraction.zero() else Fraction(-1, 1)
+    t = Y / X
+    denom = Fraction.one() + t * t
+    a = (Fraction.one() - t * t) / denom
+    c = (Fraction(2, 1) * t) / denom
+    return a, c
+
+
 class DefaultGeometricLattice:
     """Symbolic lattice. Points are Lists of Fraction.
     F7: add_sphere enforces maximal contact. A candidate sphere is
     admitted only if (a) it does not overlap any existing sphere, and
     (b) it is at exact distance 2r (tangent) from at least one existing
     sphere, when the lattice is not yet at the kissing-number capacity.
-    The capacity is the Leech lattice's kissing number, 196560.
-    A coset-grid spatial index gives O(1)-amortized neighbor lookup, so
-    the check is hardware-agnostic on a 512 MB Termux device even at
-    thousands of points.
-     # Practical cap for hardware-agnostic runtime
-    FG parity preserved — capacity constant remains 196560 for theory, but runtime guard prevents OOM.
+    The capacity is the Leech lattice kissing number, 196560.
+    OUTWARD (2026-11-10): lattice generation is outward, tangent-first,
+    not division inward on a fixed unit circle. Old code set
+    theta = 2*pi*p/1e9, r = 1 fixed, so every prime landed within 1e-8
+    of (1,0,0..) and was rejected for overlap and for not being tangent.
+    New code constructs c_new = q + d where q is an existing point,
+    |d|^2 == 4 exactly, dot(d,q) > 0. Then |c_new - q| == 2 by
+    construction, so add_sphere must admit it if it does not overlap
+    any other point. Offsets are exact integer vectors, no trig, no float.
+    Practical cap for hardware-agnostic runtime
+    FG parity preserved, capacity constant remains 196560 for theory, but runtime guard prevents OOM.
     """
     KISSING_CAPACITY: int = 196560
     _PRACTICAL_CAP_DYNO_DYNO: int = 120
@@ -811,7 +838,7 @@ class DefaultGeometricLattice:
         self._radii: List[Fraction] = []
         self._grid: Dict[Tuple[int, ...], List[int]] = {}
     def _coset_key(self, center: List[Fraction], cell_size: Fraction) -> Tuple[int, ...]:
-        """Quantize a center to its coset cell key. cell_size is 2·radius."""
+        """Quantize a center to its coset cell key. cell_size is 2*radius. Kept for compatibility, not used for admission decisions after outward patch."""
         key = []
         for c in center:
             if cell_size.is_zero():
@@ -820,57 +847,106 @@ class DefaultGeometricLattice:
                 q = c / cell_size
                 key.append(int(q.num() // q.den()) if q.den() != 0 else 0)
         return tuple(key)
-    def stereographic_project_exact(self, prime: Fraction) -> List[Fraction]:
+    def _candidate_offsets(self, prime_val: int):
+        """Deterministic integer vectors d with |d|^2 == 4, seeded by prime. Type A: (+-2,0..). Type B: (+-1,+-1,+-1,+-1,0..)."""
+        seed = (int(prime_val) * 2654435761 + 0x9E3779B9) & 0x7FFFFFFF
+        for trial in range(240):
+            seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+            s = seed
+            if trial % 3 == 0:
+                coord = s % self.dimension
+                sign = 1 if ((s >> 8) & 1) else -1
+                d = [Fraction.zero()] * self.dimension
+                d[coord] = Fraction(2 * sign, 1)
+                yield d
+            else:
+                coords = []
+                cur = s
+                while len(coords) < 4:
+                    cur = (cur * 1103515245 + 12345) & 0x7FFFFFFF
+                    c = cur % self.dimension
+                    if c not in coords:
+                        coords.append(c)
+                cur2 = s
+                d = [Fraction.zero()] * self.dimension
+                for idx, c in enumerate(coords):
+                    cur2 = (cur2 * 1103515245 + 12345) & 0x7FFFFFFF
+                    sign = 1 if ((cur2 >> (idx * 3)) & 1) else -1
+                    d[c] = Fraction(sign, 1)
+                yield d
+            seed = (seed * 134775813 + 1) & 0x7FFFFFFF
+    def outward_project_exact(self, prime: Fraction) -> List[Fraction]:
+        """Outward, tangent-first center. Returns None if no outward non-overlapping tangent exists (rare, lattice then holds)."""
         p_val = prime.num()
-        angle_num = p_val % 6283185307
-        angle_frac = Fraction(angle_num, 10 ** 9)
-        theta = _TWO_PI_FRAC * angle_frac
-        cos_t = _rational_cos(theta)
-        sin_t = _rational_sin(theta)
-        x = cos_t
-        y = sin_t
-        z = Fraction.zero()
-        w = Fraction.zero()
-        coords = [x, y, z, w]
-        while len(coords) < self.dimension:
-            coords.append(Fraction.zero())
-        return coords
-    def add_sphere(self, center: List[Fraction], radius: Fraction) -> None:
+        if not self._points:
+            coords = [Fraction.zero()] * self.dimension
+            coords[0] = Fraction(2, 1)
+            return coords
+        def _norm_sq(p):
+            s = Fraction.zero()
+            for x in p:
+                s = s + x * x
+            return s
+        parents = sorted(self._points, key=_norm_sq, reverse=True)[:5]
+        for parent in parents:
+            for d in self._candidate_offsets(p_val):
+                dot = Fraction.zero()
+                for di, pi in zip(d, parent):
+                    dot = dot + di * pi
+                if dot <= Fraction.zero():
+                    continue
+                c = [pi + di for pi, di in zip(parent, d)]
+                ok = True
+                for p in self._points:
+                    ds = Fraction.zero()
+                    for ci, pj in zip(c, p):
+                        diff = ci - pj
+                        ds = ds + diff * diff
+                    if ds < Fraction(4, 1):
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                return c
+        return None
+    def stereographic_project_exact(self, prime: Fraction) -> List[Fraction]:
+        """Kept name for drop-in compatibility. Now outward, not division inward. Returns None if no candidate found."""
+        return self.outward_project_exact(prime)
+    def add_sphere(self, center: List[Fraction], radius: Fraction) -> bool:
+        if center is None:
+            return False
         try:
             if os.getenv("PORT") and len(self._points) >= self._PRACTICAL_CAP_DYNO_DYNO:
-                return
+                return False
         except Exception:
             pass
         if len(self._points) >= self.KISSING_CAPACITY:
-            return
+            return False
         for p in self._points:
             if p == center:
-                return
-        cell_size = radius * Fraction(2, 1)
-        key = self._coset_key(center, cell_size)
-        neighbour_indices = set()
-        for offset in self._neighbor_offsets():
-            nkey = tuple(k + o for k, o in zip(key, offset))
-            if nkey in self._grid:
-                neighbour_indices.update(self._grid[nkey])
+                return False
         tangent_count = 0
-        for idx in neighbour_indices:
-            p = self._points[idx]
-            r = self._radii[idx]
+        for p, r in zip(self._points, self._radii):
             dist_sq = Fraction.zero()
             for c_i, p_i in zip(center, p):
                 d = c_i - p_i
                 dist_sq = dist_sq + d * d
             contact_sq = (radius + r) * (radius + r)
             if dist_sq < contact_sq:
-                return
+                return False
             if dist_sq == contact_sq:
                 tangent_count += 1
         if self._points and tangent_count == 0:
-            return
+            return False
         self._points.append(center)
         self._radii.append(radius)
-        self._grid.setdefault(key, []).append(len(self._points) - 1)
+        try:
+            cell_size = radius * Fraction(2, 1)
+            key = self._coset_key(center, cell_size)
+            self._grid.setdefault(key, []).append(len(self._points) - 1)
+        except Exception:
+            pass
+        return True
     @staticmethod
     def _neighbor_offsets():
         for dx in (-1, 0, 1):
@@ -1997,7 +2073,12 @@ class AEI_Seed:
             if self.processor.validate_indivisibility(p_n, self.primes):
                 self.primes.append(p_n)
             center = self.lattice.stereographic_project_exact(p_n)
-            self.lattice.add_sphere(center, Fraction.one())
+            admitted = self.lattice.add_sphere(center, Fraction.one())
+            if admitted and center is not None:
+                # Outward: phi follows newest point, so Hopf moves each feed.
+                # _phi_from_center is defined just above DefaultGeometricLattice.
+                _a, _c = _phi_from_center(center)
+                self.phi = SymbolicQuaternion(_a, Fraction.zero(), _c, Fraction.zero())
             coeffs = self._integrate_wavefunction_symbolic()
             self.psi = SymbolicWavefunction(coeffs)
             self.consciousness = ConsciousnessOperator(self.psi, self.phi)
