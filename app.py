@@ -5,10 +5,10 @@
 Heroku web dyno (bind $PORT) + Local Bridge + Telegram Bot + Crawler Relay Client
 Faithful Unabridged Port of ÆI.md §3–§8 (GAIA Seed Loop)
 Platform: Heroku web dyno (inbound $PORT) + Telegram Bot + Bridge (served on $PORT) + Cloudflare Worker (worker.js).
-Version: Final
-Edition: First
+Version: Final, First edition
+Scope: AEI TWA only. Seed loop, crawler, bridge, and Telegram bot. Not the fused backend. Does not implement AEA market endpoints (ohlcv, signals, diagnostics, orders, order close). Visualization and seed state only. No orders, no financial advice.
 """
-__version__ = "Final"
+__version__ = "Final, First edition"
 import sys
 try:
     # Python 3.11+ security limit - AEI uses exact Fractions with >4300 digit numerators
@@ -1117,7 +1117,7 @@ class SelfEvolutionCore:
         return current
     def _decide_db_shards(self, I: Fraction, psi: SymbolicWavefunction,
                           q_eval: SymbolicQuaternion, deviation_sq: Fraction) -> Dict[str, Any]:
-        """Ed35 learned discretion: SelfEvolutionCore decides Telegram DB sharding.
+        """Final, First edition: SelfEvolutionCore decides Telegram DB sharding. SelfEvolutionCore decides Telegram DB sharding.
         No random — deterministic hash of generation + Re[ψ] + I + deviation.
         Returns dict with db_key, shard_mode, shard_targets, save_global, save_user.
         FG-exact: all decisions use Fraction comparisons, hash is deterministic.
@@ -1422,7 +1422,7 @@ def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
         evicted_seq = _TOAST_BUFFER[0].get("seq", 0) if was_full else 0
         _TOAST_SEQ += 1
         seq = _TOAST_SEQ
-        # Ed39: truncate huge fractions in toasts to prevent frontend overflow
+        # Final, First edition: truncate huge fractions in toasts to prevent frontend overflow
         safe_payload = {}
         for k, v in payload.items():
             try:
@@ -1723,7 +1723,7 @@ class CrawlerRelayClient:
                     time.sleep(0.5 * (attempt + 1) + 0.5)
                     continue
                 if e.code == 401:
-                    logger.warning(f"relay 401 unauthorized — RELAY_KEY mismatch for {self.relay_url}")
+                    logger.warning("relay 401 unauthorized — RELAY_KEY mismatch")
                     break
                 break
             except urllib.error.URLError as e:
@@ -1860,7 +1860,7 @@ class TelegramChatDB:
     def save_snapshot(self, key: str, value: Dict[str, Any], force: bool = False) -> bool:
         """Save a snapshot at bot discretion. Called from SeedWorker and CrawlerWorker.
         Key examples: 𝒮_STATUS, 𝒜_PRIMES, Λ₂₄_PACK, 𝒯_EVOLUTION, ℋ_LOGIC_CORE, 𝒞_CRAWLER
-        Final: channel + central_user_id — central_user is backup mirror, so your chat can be channel ID
+        Final, First edition: channel + central_user_id — central_user is backup mirror, so your chat can be channel ID
         without mixing with real channel. Supports open + distributed where your chat is channel ID.
         """
         if not self.channel_id and not self.central_user_id:
@@ -1957,18 +1957,14 @@ class TelegramChatDB:
                 pool = _get_shard_pool()
             except Exception:
                 pool = set()
+            # Final, First edition: snapshot returns counts and bools only. No channel id, no central user id, no shard pool list, no gate ids, no index keys.
             return {
                 "enabled": self.is_enabled(),
-                "channel_id": self.channel_id or None,
-                "central_user_id": self.central_user_id or None,
                 "channel_optional": True,
                 "central_is_channel_id": bool(self.central_user_id and not self.channel_id),
                 "user_shards": TELEGRAM_DB_USER_SHARDS,
-                "shard_pool": sorted(list(pool))[:10],
                 "shard_pool_size": len(pool),
                 "gate_active": bool(ALLOWED_USER_IDS),
-                "gate_ids": sorted(list(ALLOWED_USER_IDS))[:10] if ALLOWED_USER_IDS else [],
-                "index_keys": list(self._index.keys()),
                 "index_size": len(self._index),
                 "last_save": self._last_save_ts,
             }
@@ -2476,7 +2472,7 @@ BRIDGE_ENGINE_REF: Dict[str, Any] = {
     "port": None,
 }
 
-# Ed41: global fast cache updated by SeedWorker after each step - no lock needed in handler
+# Final, First edition: global fast cache updated by SeedWorker after each step - no lock needed in handler
 LAST_LIGHT_SNAPSHOT: dict = {}
 LAST_LIGHT_AT = 0
 LAST_LIGHT_LOCK = threading.Lock()
@@ -2707,12 +2703,7 @@ def _extract_auth_headers(handler: "BridgeHandler") -> Tuple[Optional[int], Opti
         auth_hdr = handler.headers.get("Authorization", "").strip()
         if auth_hdr.lower().startswith("tma "):
             raw_init = auth_hdr[4:].strip()
-    if not raw_init:
-        try:
-            qs = dict(parse_qsl(urlparse(handler.path).query))
-            raw_init = (qs.get("auth_init_data") or "").strip()
-        except Exception:
-            raw_init = ""
+    # Final, First edition: auth via header only, never via query string. Query strings are logged by servers and proxies.
     if not raw_init:
         return (None, None, False)
     verified = verify_telegram_init_data(raw_init, TELEGRAM_BOT_TOKEN_ENV)
@@ -2839,7 +2830,7 @@ class CrawlerWorker:
             "running": self._running,
             "crawl_count": self._crawl_count,
             "last_fetch_at": self._last_fetch_at.isoformat() if self._last_fetch_at else None,
-            "relay_url": RELAY_URL,
+            # Final, First edition: no relay URL in snapshot. Relay health is a bool only.
             "relay_healthy": (self.relay.failure_count() < 3),
         })
         return snap
@@ -2873,7 +2864,7 @@ class SeedWorker:
                 else:
                     x = Fraction(hash_frac)
                 loop = asyncio.get_running_loop()
-                # Ed41: update global fast cache before heavy step, so miniapp-state never waits
+                # Final, First edition: update global fast cache before heavy step, so miniapp-state never waits
                 try:
                     # Pre-step cache refresh if seed has cached light snapshot
                     if getattr(self.seed, '_cached_light_snapshot', None):
@@ -2888,13 +2879,13 @@ class SeedWorker:
                         timeout=30,
                     )
                     consecutive_timeouts = 0
-                    # Ed41: post-step fast cache update
+                    # Final, First edition: post-step fast cache update
                     try:
-                        _snap41 = self.seed.snapshot(light=True)
+                        _snap_fast = self.seed.snapshot(light=True)
                         with LAST_LIGHT_LOCK:
-                            LAST_LIGHT_SNAPSHOT = _snap41
+                            LAST_LIGHT_SNAPSHOT = _snap_fast
                             LAST_LIGHT_AT = time.time()
-                    except Exception as _e41:
+                    except Exception as _e_fast:
                         try:
                             with LAST_LIGHT_LOCK:
                                 if getattr(self.seed, '_cached_light_snapshot', None):
@@ -3000,23 +2991,19 @@ def _fqdn_fast(host: str) -> str:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Seed-Bridge/Final"
+    server_version = "AEI-Seed-Bridge/Final-First-edition"
     timeout = 10
     protocol_version = "HTTP/1.1"
     def log_message(self, fmt, *args):
         return
     def _set_cors(self) -> None:
+        # Final, First edition: never reflect Origin when CORS_ORIGIN is *. Reflected origins with credentials let any site call the bridge.
         origin = CORS_ORIGIN
-        request_origin = self.headers.get("Origin", "").strip()
         if origin == "*":
-            if request_origin and request_origin != "null":
-                self.send_header("Access-Control-Allow-Origin", request_origin)
-                self.send_header("Vary", "Origin")
-            else:
-                self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Origin", "*")
         else:
             self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
+        self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers",
                          "Content-Type, Accept, Authorization, X-Telegram-Init-Data, "
@@ -3041,8 +3028,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
     def _read_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", "0") or 0)
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except Exception:
+            return b""
         if length <= 0:
+            return b""
+        # Final, First edition: cap request body to 1 MB to bound memory.
+        if length > 1000000:
             return b""
         return self.rfile.read(length)
     def _read_json(self) -> Dict[str, Any]:
@@ -3062,13 +3055,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         query = dict(parse_qsl(urlparse(self.path).query))
         if path == "/health":
+            # Final, First edition: public liveness only. No relay URL, no Telegram DB snapshot, no user ids, no shard pool.
             seed = BRIDGE_ENGINE_REF.get("seed")
             crawler = BRIDGE_ENGINE_REF.get("crawler")
             raw_state = seed.state if seed else "uninitialized"
             self._send_json(200, {
                 "ok": True,
                 "service": "aei-seed-bridge",
-                "version": "Final",
+                "version": "Final, First edition",
                 "substrate": _SUBSTRATE,
                 "seed_initialized": seed is not None,
                 "crawler_running": (crawler._running if crawler else False),
@@ -3079,38 +3073,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "lattice_points": (len(seed.lattice.points()) if seed else 0),
                 "crawler_frontier": (crawler.state.frontier_size() if crawler else 0),
                 "crawler_visited": (crawler.state.visited_count() if crawler else 0),
-                "relay_url": RELAY_URL,
                 "relay_healthy": (crawler.relay.failure_count() < 3 if crawler else False),
                 "require_auth": REQUIRE_AUTH,
-                "telegram_db": (TELEGRAM_DB.snapshot() if TELEGRAM_DB else {"enabled": False}),
+                "telegram_db_enabled": bool(TELEGRAM_DB.is_enabled() if TELEGRAM_DB else False),
             })
             return
-        if path == "/config":
-            self._send_json(200, {
-                "public_url": BRIDGE_ENGINE_REF.get("public_url"),
-                "substrate": _SUBSTRATE,
-                "tls": BRIDGE_USE_TLS,
-                "port": BRIDGE_PORT,
-                "host": BRIDGE_HOST,
-                "require_auth": REQUIRE_AUTH,
-                "cors_origin": CORS_ORIGIN,
-                "relay_url": RELAY_URL,
-                "relay_gated": _cs(bool(RELAY_KEY)),
-                "seed_tick_interval": SEED_TICK_INTERVAL,
-                "crawl_interval": CRAWL_INTERVAL,
-                "max_crawl_depth": MAX_CRAWL_DEPTH,
-                "telegram_db_channel": TELEGRAM_DB_CHANNEL_ID or None,
-                "telegram_db_central_user_id": TELEGRAM_DB_CENTRAL_USER_ID or None,
-                "telegram_db_enabled": ENABLE_TELEGRAM_DB,
-                "telegram_db_user_shards": TELEGRAM_DB_USER_SHARDS,
-                "telegram_db_save_interval": TELEGRAM_DB_SAVE_INTERVAL,
-                "telegram_db_shard_pool": sorted(list(_get_shard_pool()))[:20],
-                "allowed_user_ids_gate": sorted(list(ALLOWED_USER_IDS))[:20] if ALLOWED_USER_IDS else [],
-                "gate_active": bool(ALLOWED_USER_IDS),
-                "channel_optional": True,
-                "open_and_distributed_with_my_chat_as_channel": bool(TELEGRAM_DB_CENTRAL_USER_ID and not TELEGRAM_DB_CHANNEL_ID),
-            })
-            return
+
         if path == "/" or path == "/index.html":
             try:
                 base = os.path.dirname(os.path.abspath(__file__))
@@ -3121,7 +3089,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_html(200, "<!DOCTYPE html><html><body style='font-family:monospace;"
                                     "background:#050510;color:#aaccff;padding:40px;'>"
-                                    "<h2>⚡ ÆI Seed Bridge Online (Ed.13)</h2>"
+                                    "<h2>AEI Seed Bridge Online (Final, First edition)</h2>"
                                     "<p>index.html not found in <code>"
                                     + base + "</code>.</p></body></html>")
             except Exception as e:
@@ -3133,17 +3101,33 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
+        if path == "/config":
+            # Final, First edition: /config requires auth. Returns non-sensitive config only. No relay URL, no relay key flag, no public URL, no host, no port, no CORS origin, no channel id, no central user id, no shard pool, no allowed ids.
+            self._send_json(200, {
+                "version": "Final, First edition",
+                "service": "aei-seed-bridge",
+                "substrate": _SUBSTRATE,
+                "tls": BRIDGE_USE_TLS,
+                "require_auth": REQUIRE_AUTH,
+                "seed_tick_interval": SEED_TICK_INTERVAL,
+                "crawl_interval": CRAWL_INTERVAL,
+                "max_crawl_depth": MAX_CRAWL_DEPTH,
+                "telegram_db_enabled": ENABLE_TELEGRAM_DB,
+                "gate_active": bool(ALLOWED_USER_IDS),
+                "channel_optional": True,
+            })
+            return
         if path == "/miniapp-state":
-            # Ed41: instant return - never block on seed lock, never compute in request thread
-            import time as _t41
-            _start41 = _t41.time()
+            # Final, First edition: instant return - never block on seed lock, never compute in request thread
+            import time as _t_fast
+            _start_fast = _t_fast.time()
             try:
                 # Fast path: use global snapshot updated by SeedWorker
                 global LAST_LIGHT_SNAPSHOT, LAST_LIGHT_AT
                 with LAST_LIGHT_LOCK:
                     cached = LAST_LIGHT_SNAPSHOT
                     cached_at = LAST_LIGHT_AT
-                if cached and (_t41.time() - cached_at) < 5.0:
+                if cached and (_t_fast.time() - cached_at) < 5.0:
                     # Return cached copy instantly (<1ms)
                     snap = dict(cached)
                     # Add tick from live seed if available without lock
@@ -3157,7 +3141,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 # Fallback: try seed's own cache (also <1ms, no lock if recent)
                 if seed is not None:
                     try:
-                        if getattr(seed, '_cached_light_snapshot', None) and (_t41.time() - getattr(seed, '_cached_light_at', 0)) < 2.0:
+                        if getattr(seed, '_cached_light_snapshot', None) and (_t_fast.time() - getattr(seed, '_cached_light_at', 0)) < 2.0:
                             snap = dict(seed._cached_light_snapshot)
                             snap["stale"] = False
                             self._send_json(200, snap)
@@ -3189,8 +3173,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "last_logic_hash": getattr(seed, 'last_logic_hash', '') if seed else '',
                     "stale": True,
                     "booting": (cached_at == 0),
-                    "ed41": True,
-                    "elapsed_ms": int((_t41.time() - _start41)*1000)
+                    "fast_cache": True,
+                    "elapsed_ms": int((_t_fast.time() - _start_fast)*1000)
                 }
                 # Optional: add lightweight crawler stats without acquiring crawler lock if possible
                 if crawler is not None:
@@ -3211,7 +3195,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             except Exception as e:
                 try:
-                    self._send_json(200, {"state": "evolving", "tick": 0, "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True, "ed41_error": str(e)[:100]})
+                    self._send_json(200, {"state": "evolving", "tick": 0, "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True, "fast_cache_error": str(e)[:100]})
                 except Exception:
                     # If even _send_json fails, try raw write
                     try:
@@ -3511,12 +3495,7 @@ def _require_auth(handler: "BridgeHandler") -> bool:
         auth_hdr = handler.headers.get("Authorization", "").strip()
         if auth_hdr.lower().startswith("tma "):
             raw_init = auth_hdr[4:].strip()
-    if not raw_init:
-        try:
-            qs = dict(parse_qsl(urlparse(handler.path).query))
-            raw_init = (qs.get("auth_init_data") or "").strip()
-        except Exception:
-            raw_init = ""
+    # Final, First edition: auth via header only, never via query string. Query strings are logged by servers and proxies.
     if not raw_init:
         return False
     verified = verify_telegram_init_data(raw_init, TELEGRAM_BOT_TOKEN_ENV)
@@ -3599,56 +3578,35 @@ class BridgeServer:
         logger.info(
             f"🌐 ÆI Seed Bridge listening on {scheme}://{self.host}:{self.port}"
         )
-        # F1: on a web dyno, TELEGRAM_WEBAPP_URL should be set to the
-        # dyno's public Heroku URL (https://<app>.herokuapp.com/). No
-        # tunnel spawn is needed. On a local dev box without an explicit
-        # URL, we spawn a tunnel so the Mini App can be reached from a
-        # phone. This asymmetry is the correct one for the substrate.
-        if _ENV_PORT and not TELEGRAM_WEBAPP_URL:
-            logger.warning(
-                "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
-                "Set it to https://<app>.herokuapp.com/ and re-run /setmenubutton."
-            )
-        # Heroku router is the public edge. Public URL comes from TELEGRAM_WEBAPP_URL
-        # or from Heroku-inferred domain. Local dev also requires explicit TELEGRAM_WEBAPP_URL.
+        # Final, First edition: public URL comes only from TELEGRAM_WEBAPP_URL or from HEROKU_APP_DEFAULT_DOMAIN_NAME when it already holds a full domain. No guessed suffix, no hardcoded backend domain in this file.
         if TELEGRAM_WEBAPP_URL:
             BRIDGE_ENGINE_REF["public_url"] = TELEGRAM_WEBAPP_URL
-            logger.info(f"🌐 Public URL from TELEGRAM_WEBAPP_URL: {TELEGRAM_WEBAPP_URL}")
+            logger.info("Public URL from TELEGRAM_WEBAPP_URL")
         elif _ENV_PORT:
-            heroku_url = os.getenv("HEROKU_APP_DEFAULT_DOMAIN_NAME", "").strip() or os.getenv("HEROKU_APP_NAME", "").strip()
-            if heroku_url:
-                if not heroku_url.startswith("http"):
-                    guessed = f"https://{heroku_url}.herokuapp.com/" if "." not in heroku_url and "herokuapp.com" not in heroku_url else f"https://{heroku_url}/" if not heroku_url.startswith("https://") else heroku_url
-                    if "herokuapp.com" not in guessed and "." not in heroku_url:
-                        guessed = f"https://{heroku_url}.herokuapp.com/"
-                    elif not guessed.startswith("https://"):
-                        guessed = f"https://{heroku_url}/"
-                    BRIDGE_ENGINE_REF["public_url"] = guessed
-                    logger.info(f"🌐 Inferred public URL from env: {guessed}")
-                else:
-                    BRIDGE_ENGINE_REF["public_url"] = None
-                    logger.warning(
-                        "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
-                        "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ and re-run /setmenubutton. "
-                        "No tunnel is spawned on a web dyno ()."
-                    )
+            _domain = (os.getenv("HEROKU_APP_DEFAULT_DOMAIN_NAME", "") or "").strip()
+            if _domain and "." in _domain and not _domain.startswith("http"):
+                BRIDGE_ENGINE_REF["public_url"] = "https://" + _domain + "/"
+                logger.info("Public URL from HEROKU_APP_DEFAULT_DOMAIN_NAME")
+            elif _domain.startswith("https://"):
+                BRIDGE_ENGINE_REF["public_url"] = _domain
+                logger.info("Public URL from HEROKU_APP_DEFAULT_DOMAIN_NAME")
             else:
                 BRIDGE_ENGINE_REF["public_url"] = None
                 logger.warning(
-                    "⚠️ Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
-                    "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ and re-run /setmenubutton. "
-                    "No tunnel is spawned on a web dyno ()."
+                    "Web-dyno substrate but TELEGRAM_WEBAPP_URL is unset. "
+                    "Set TELEGRAM_WEBAPP_URL=https://<your-app-domain>/ and re-run /setmenubutton. "
+                    "No tunnel is spawned on a web dyno."
                 )
         else:
             if TELEGRAM_WEBAPP_URL:
                 BRIDGE_ENGINE_REF["public_url"] = TELEGRAM_WEBAPP_URL
-                logger.info(f"🌐 Local public URL from TELEGRAM_WEBAPP_URL: {TELEGRAM_WEBAPP_URL}")
+                logger.info("Local public URL from TELEGRAM_WEBAPP_URL")
             else:
                 BRIDGE_ENGINE_REF["public_url"] = None
                 logger.warning(
-                    "⚠️ Local substrate but TELEGRAM_WEBAPP_URL is unset. "
+                    "Local substrate but TELEGRAM_WEBAPP_URL is unset. "
                     "Set TELEGRAM_WEBAPP_URL manually for phone testing. "
-                    "Tunnel spawning removed under  no-subprocess."
+                    "Tunnel spawning removed under no-subprocess."
                 )
         self._listen_ready.set()
     def stop(self) -> None:
@@ -4033,7 +3991,7 @@ class AEI_Bot:
             f"*Visited:* {snap.get('visited_count', 0)}\n"
             f"*Crawl count:* {snap.get('crawl_count', 0)}\n"
             f"*Last fetch:* {snap.get('last_fetch_at') or '—'}\n"
-            f"*Relay URL:* `{snap.get('relay_url') or '—'}`\n"
+            f"*Relay healthy:* {snap.get('relay_healthy', False)}\n"
             "*Frontier preview:*\n"
         )
         for u in preview[:6]:
@@ -4153,7 +4111,7 @@ class AEI_Bot:
         if not url:
             await self._safe_reply(update,
                 "⏳ *Mini App URL not yet available*\n"
-                "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ on Heroku "
+                "Set TELEGRAM_WEBAPP_URL=https://<your-app-domain>/ on Heroku "
                 "and re-run /setmenubutton in BotFather.")
             return
         keyboard = InlineKeyboardMarkup([[
@@ -4238,7 +4196,7 @@ class AEI_Bot:
             try:
                 await query.edit_message_text(
                     "⏳ Mini App URL is not yet published. "
-                    "Set TELEGRAM_WEBAPP_URL=https://<app>.herokuapp.com/ on Heroku "
+                    "Set TELEGRAM_WEBAPP_URL=https://<your-app-domain>/ on Heroku "
                     "and re-run /setmenubutton in BotFather.",
                     parse_mode="Markdown")
             except Exception:
@@ -4264,7 +4222,7 @@ class AEI_Bot:
         global TELEGRAM_DB
         TELEGRAM_DB = TelegramChatDB(TELEGRAM_BOT_TOKEN_ENV, TELEGRAM_DB_CHANNEL_ID, TELEGRAM_DB_CENTRAL_USER_ID, chunk_size=TELEGRAM_DB_CHUNK_SIZE)
         if TELEGRAM_DB.is_enabled():
-            logger.info(f"🗄️ TelegramChatDB enabled -> channel {TELEGRAM_DB_CHANNEL_ID or 'none'} central {TELEGRAM_DB_CENTRAL_USER_ID or 'none'} user_shards={TELEGRAM_DB_USER_SHARDS} pool={sorted(list(_get_shard_pool()))[:5]}")
+            logger.info(f"TelegramChatDB enabled: user_shards={TELEGRAM_DB_USER_SHARDS} shard_pool_size={len(_get_shard_pool())}")
         else:
             if ENABLE_TELEGRAM_DB:
                 logger.warning(f"🗄️ TelegramChatDB ENABLED but missing TOKEN or (CHANNEL_ID or CENTRAL_USER_ID or SHARD_POOL) — disabled")
@@ -4332,7 +4290,7 @@ class AEI_Bot:
         logger.info(f"🕸️ Crawler: {crawler.state.frontier_size()} URLs in frontier, "
                     f"depth limit {MAX_CRAWL_DEPTH}, interval {CRAWL_INTERVAL}s")
         logger.info(f"🔄 Seed loop interval: {SEED_TICK_INTERVAL}s")
-        logger.info(f"📡 Relay URL: {RELAY_URL or '(unset)'}")
+        logger.info(f"Relay configured: {bool(RELAY_URL)}")
         logger.info(f"🌐 Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
         async def _post_shutdown(application) -> None:
@@ -4475,5 +4433,5 @@ if __name__ == "__main__":
     main()
 
 # ============================================================================
-# Q.E.D. — LOGOS = Φ = Truth = Path = Origin
+# Final, First edition - AEI Seed TWA
 # ============================================================================
