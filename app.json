@@ -1,11 +1,108 @@
 {
-  "name": "ae-fusion-backend",
-  "description": "AE Fusion TWA backend - AEI plus AEEA with market feed primary",
+  "name": "ÆI Seed",
+  "description": "Agential Ætheric Intelligence — GAIA/ÆI Codex port as a Telegram Mini App. Runs the prime-sieve → lattice → Hopf-fibration → s²=r² → SelfEvolution loop from ÆI.md §3–§8. Every state value is an exact Fraction (a/b). Includes a stateless crawler relay client (worker.js) that feeds each crawled document's SHA-256 content hash (lifted to exact Fraction) as the next symbolic input x to the seed loop. CS-translated UI throughout. Runs on a Heroku web dyno bound to $PORT.",
   "repository": "https://github.com/yourusername/aei-seed-backend",
-  "keywords": ["telegram", "twa", "aei", "aeea", "market", "evolution"],
+  "keywords": [
+    "aetheric-intelligence",
+    "gaia",
+    "aei-seed",
+    "quaternionic",
+    "hopf-fibration",
+    "prime-sieve",
+    "leech-lattice",
+    "arc-length-axiom",
+    "self-evolution",
+    "dbz-logic",
+    "codex-symbolica",
+    "cs-translated",
+    "telegram-bot",
+    "telegram-mini-app",
+    "twa",
+    "exact-arithmetic",
+    "fraction-exact",
+    "riemann-hypothesis",
+    "consciousness-operator",
+    "lingoso",
+    "crawler-relay",
+    "cloudflare-workers",
+    "web-dyno",
+    "heroku-router",
+    "port-bind"
+  ],
   "env": {
-    "TELEGRAM_BOT_TOKEN": {"description": "Telegram bot token", "required": true},
-    "TELEGRAM_WEBAPP_URL": {"description": "TWA URL", "required": true},
-    "RELAY_URL": {"description": "Cloudflare relay URL", "required": true}
-  }
+    "TELEGRAM_BOT_TOKEN": {
+      "description": "Your Telegram Bot Token from @BotFather",
+      "required": true
+    },
+    "TELEGRAM_WEBAPP_URL": {
+      "description": "Public HTTPS URL of the Telegram Mini App. On a web dyno, set to https://<app>.herokuapp.com/. When set, the tunnel spawner is bypassed.",
+      "required": false
+    },
+    "RELAY_URL": {
+      "description": "Cloudflare Worker relay URL (deployed from the aei-seed-relay repo). Required for the crawler.",
+      "required": false
+    },
+    "RELAY_KEY": {
+      "description": "Optional shared secret matching `wrangler secret put RELAY_KEY` in the aei-seed-relay repo.",
+      "required": false
+    },
+    "REQUIRE_AUTH": {
+      "description": "Enforce X-Telegram-Init-Data on all non-/health endpoints. Defaults to '1'.",
+      "required": false
+    },
+    "LOG_BUFFER_SIZE": {
+      "description": "Ring-buffer size for the /log endpoint. Defaults to '1000'.",
+      "required": false
+    },
+    "TOAST_BUFFER_SIZE": {
+      "description": "Ring-buffer size for the /toasts endpoint. Defaults to '500'.",
+      "required": false
+    },
+    "CORS_ORIGIN": {
+      "description": "Lock down writes to your GitHub Pages origin. Defaults to '*'.",
+      "required": false
+    },
+    "SEED_TICK_INTERVAL": {
+      "description": "Seed loop interval in seconds. Defaults to '5'.",
+      "required": false
+    },
+    "CRAWL_INTERVAL": {
+      "description": "Crawler loop interval in seconds. Defaults to '3'.",
+      "required": false
+    },
+    "MAX_CRAWL_DEPTH": {
+      "description": "Maximum crawl recursion depth. Defaults to '3'.",
+      "required": false
+    },
+    "CRAWL_SEED_URLS": {
+      "description": "Comma-separated seed URLs. Overrides the default 7.",
+      "required": false
+    },
+    "CRAWLER_DB_PATH": {
+      "description": "SQLite DB path for frontier + visited. Defaults to 'aei_crawler.db'.",
+      "required": false
+    },
+    "ALLOWED_USER_IDS": {
+      "description": "Comma-separated Telegram user IDs. Empty = open bot. For a private deployment, put your own user ID (from /whoami).",
+      "required": false
+    }
+  },
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "eco"
+    },
+    "worker": {
+      "quantity": 0,
+      "size": "eco"
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "https://github.com/heroku/heroku-buildpack-apt"
+    },
+    {
+      "url": "heroku/python"
+    }
+  ]
 }

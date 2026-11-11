@@ -1,1 +1,161 @@
-<!doctype html><html><head><meta charset="utf-8"><title>AE Fusion Backend</title></head><body><h1>AE Fusion Backend is running</h1><p>Open the TWA via Telegram. This page is fallback only.</p></body></html>
+ÆI Seed TWA - Fix for stuck on "connecting..."
+================================================
+Date: 2026-11-05
+Issue: Badge shows "connecting..." forever (screenshot shows cropped toolbar: "IB" = S_FIB, "T_s" = T_step)
+
+ROOT CAUSE (from your files):
+-----------------------------
+Frontend: file3915794703406875633.html line 1983
+  setConnBadge('wait', 'connecting...');
+  fetchAll() should change to 'loading...' -> 'connected'
+If fetchAll() never returns data, badge never updates.
+
+Backend default (base64 decoded):
+  aHR0cHM6Ly9hZWktMzdhMjllMDczMDcwLmhlcm9rdWFwcC5jb20v
+  = https://aei-37a29e073070.herokuapp.com/
+
+3 reasons it stays stuck:
+1. Heroku dyno dead/sleeping - free dynos removed 2022, cold start >20s > apiFetch timeout (20000ms in apiFetch)
+2. REQUIRE_AUTH=1 but opened outside Telegram -> /miniapp-state returns 401 unauthorized
+   (app.py _require_auth checks X-Telegram-Init-Data or ?auth_init_data=)
+3. Stale backend URL in localStorage['aei_backend_url'] from old ?backend= override
+
+QUICK FIXES (try in order):
+---------------------------
+1) Test backend directly (no auth needed):
+   Open: https://aei-37a29e073070.herokuapp.com/health
+   Expected: {"ok":true, "seed_initialized":true, "seed_tick":>0}
+   If 503/H12/timeout: heroku logs --tail -a aei-37a29e073070 -- dyno crashed
+
+2) Clear stored backend:
+   In browser console (inside TWA WebView devtools):
+     localStorage.removeItem('aei_backend_url');
+     location.href = location.pathname + '?backend=https://aei-37a29e073070.herokuapp.com/';
+   The code auto-strips ?backend= after saving and uses history.replaceState.
+
+3) If testing outside Telegram:
+   heroku config:set REQUIRE_AUTH=0 -a aei-37a29e073070
+   heroku restart -a aei-37a29e073070
+   Inside Telegram: verify TELEGRAM_BOT_TOKEN matches token that issued initData
+   (docs: "Connection badge stuck on retrying... -> auth failing")
+
+4) Force wake + check miniapp-state:
+   fetch('https://aei-37a29e073070.herokuapp.com/miniapp-state?auth_init_data=TEST')
+   Should be 401 if REQUIRE_AUTH=1, 200 with placeholder if REQUIRE_AUTH=0
+
+5) Use Cloudflare Worker proxy to hide herokuapp.com and avoid CORS preflight:
+   Your docs mention: optional full stealth via Worker proxy /aei/* -> Heroku
+   Set ?backend=https://your-worker.workers.dev/
+
+PATCH - Never stuck on connecting (apply to file3915794703406875633.html):
+------------------------------------------------------------------------
+Replace boot() at line ~1976:
+
+async function boot() {
+    switchView('grid');
+    if (!HAS_BACKEND) {
+        setConnBadge('err','no backend');
+        showError('Backend URL not configured. Append ?backend=URL to Mini App URL, or set window.__AEI_BACKEND_URL__ before load.', 12000);
+        return;
+    }
+    setConnBadge('wait', 'connecting...');
+    pushLog('info', 'Backend: ' + BACKEND_URL);
+    startPolling();
+
+    // fail-safe: if no data in 3s, show real error instead of staying on connecting...
+    let bootTimer = setTimeout(() => {
+        if (state.tick === 0) setConnBadge('wait', 'retrying... (cold start?)');
+    }, 3000);
+
+    try {
+        await fetchAll();
+        clearTimeout(bootTimer);
+    } catch(e) {
+        clearTimeout(bootTimer);
+        setConnBadge('err', 'boot failed: ' + (e && e.message ? e.message : e));
+        pushLog('warn', 'boot(): ' + e);
+    }
+    if (tmaActive) {
+        postHandshake().then(r => { if (r && r.ok) pushLog('info', 'Handshake OK: @' + (r.username || r.user_id)); }).catch(()=>{});
+    }
+    setTimeout(() => {
+        if (state.seed_state !== 'uninitialized' && !state.lingoso) encodeSyllable('AUM');
+    }, 3000);
+}
+
+Replace fetchMiniAppState error handling at line ~1505:
+
+async function fetchMiniAppState() {
+    if (!HAS_BACKEND) { setConnBadge('ok','connected'); return; }
+    const r = await apiJson('/miniapp-state');
+    if (!r) {
+        setConnBadge('wait', 'no data');
+        showError('No data from /miniapp-state - backend unreachable', 4000);
+        return;
+    }
+    if (r.__error) {
+        if (r.__status === 503 && r.__body && r.__body.error === 'seed_busy') {
+            setConnBadge('wait', 'seed busy...');
+            if (state.tick > 0) return;
+        }
+        if (r.__status === 401) {
+            setConnBadge('err', 'unauthorized');
+            showError('401 unauthorized: Open inside Telegram or set REQUIRE_AUTH=0 for local dev. Token mismatch?', 6000);
+            return;
+        }
+        if (r.__timeout) {
+            setConnBadge('wait', 'timeout - waking dyno...');
+            showError('Timeout (20s): Heroku dyno sleeping. Open /health in new tab to wake it.', 5000);
+            if (state.tick > 0) {
+                setConnBadge('wait', 'retrying...');
+                setTimeout(() => fetchMiniAppState(), 800);
+            }
+            return;
+        }
+        if (state.tick > 0) {
+            setConnBadge('wait', 'retrying...');
+            setTimeout(() => fetchMiniAppState(), 800);
+            return;
+        }
+        setConnBadge('err', 'state error: ' + (r.error || 'unknown'));
+        showError('state error: ' + (r.error || 'unknown'), 4000);
+        return;
+    }
+    // ... rest unchanged, set connected
+    if (r.stale) setConnBadge('wait', 'stale ' + (r.tick || ''));
+    else setConnBadge('ok', 'connected');
+    // update panels...
+}
+
+Also add diagnostics to apiJson at line 834 to log status:
+
+async function apiJson(path, opts) {
+    try {
+        const res = await apiFetch(path, opts);
+        const text = await res.text();
+        let data = null;
+        if (text) { try { data = JSON.parse(text); } catch(e) { data = {__parse_error:text.slice(0,200)}; } }
+        if (!res.ok) return {__error:true, __status:res.status, __body:data, error:(data && (data.error||data.detail))||('HTTP '+res.status)};
+        return data || {};
+    } catch(e) {
+        return {__error:true, __network:(e && e.name!=='AbortError'), __timeout:(e && e.name==='AbortError'), __body:null, error:(e && e.name==='AbortError')?'timeout':(e && e.message)||String(e)};
+    }
+}
+
+BACKEND FIXES (app.py):
+-----------------------
+- Ensure ThreadingHTTPServer binds $PORT: app.py already does ThreadingHTTPServer(0.0.0.0, $PORT)
+- Ensure procfile: web: python app.py
+- Check SEED_TICK_INTERVAL not too large (default 2s), CRAWL_INTERVAL
+- Check RELAY_URL: set RELAY_URL and RELAY_KEY env vars, test: curl -H "X-Relay-Key: $KEY" "$RELAY_URL/?url=https://en.wikipedia.org/wiki/Riemann_hypothesis"
+- Telegram DB: if using ephemeral disk, enable ENABLE_TELEGRAM_DB=1 + TELEGRAM_DB_CHANNEL_ID or TELEGRAM_DB_CENTRAL_USER_ID to avoid losing seed on dyno restart
+
+Redeploy steps if Heroku app dead:
+  git push heroku main
+  heroku config:set TELEGRAM_BOT_TOKEN=... REQUIRE_AUTH=1 RELAY_URL=... RELAY_KEY=... -a aei-37a29e073070
+  heroku ps:scale web=1 -a aei-37a29e073070
+  heroku logs --tail -a aei-37a29e073070 | grep -i "AEI seed"
+
+After redeploy, update frontend DEFAULT_BACKENDS in index.html or set BotFather Web App URL to https://peachmuffin421-cyber.github.io/aeindex/?backend=https://aei-37a29e073070.herokuapp.com/
+
+Q.E.D. - LOGOS = Phi

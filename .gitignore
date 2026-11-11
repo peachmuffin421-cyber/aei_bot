@@ -1,7 +1,183 @@
-__pycache__/
-*.pyc
-*.db
-*.sqlite3
+# ============================================================================
+# ÆI SEED BACKEND — .gitignore
+# Repo: aei-seed-backend (Heroku web dyno)
+# ============================================================================
+#
+# The backend repo contains app.py, the Heroku deployment manifests, and
+# the environment template. It MUST NOT contain:
+#   - the bot token (TELEGRAM_BOT_TOKEN)
+#   - the relay shared secret (RELAY_KEY)
+#   - TLS private keys or certificate chains
+#   - the local .env file (only .env.example is committed)
+#   - Python bytecode caches, virtualenvs, test caches
+#   - Heroku-local state directories
+#   - the SQLite crawler DB (runtime state)
+#
+# The Cloudflare Worker source is NOT in this repo. It lives exclusively
+# in aei-seed-relay. Do not add a .wrangler/ section here.
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# SECRETS — HIGHEST PRIORITY
+# ----------------------------------------------------------------------------
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+secrets.json
+credentials.json
+*.secret
+*.secrets
+
+# ----------------------------------------------------------------------------
+# SQLITE CRAWLER STATE (runtime, not source)
+# ----------------------------------------------------------------------------
+aei_crawler.db
+aei_crawler.db-journal
+aei_crawler.db-wal
+aei_crawler.db-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ----------------------------------------------------------------------------
+# PYTHON
+# ----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+htmlcov/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+cython_debug/
+Pipfile.lock
+poetry.lock
+
+# ----------------------------------------------------------------------------
+# VIRTUALENVS
+# ----------------------------------------------------------------------------
+venv/
+ENV/
+env/
 .venv/
+.ENV/
+env.bak/
+venv.bak/
+
+# ----------------------------------------------------------------------------
+# EDITOR / IDE CRUFT
+# ----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+*.code-workspace
+
+# ----------------------------------------------------------------------------
+# OS METADATA
+# ----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ----------------------------------------------------------------------------
+# HEROKU
+# ----------------------------------------------------------------------------
+Procfile.local
+Procfile.windows
+.heroku/
+heroku.yml
+.cloudflared/
+*.cloudflared.json
+
+# ----------------------------------------------------------------------------
+# LOGS / TEMP
+# ----------------------------------------------------------------------------
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.tmp
+*.temp
+tmp/
+temp/
+*.pid
+*.seed
+*.pid.lock
+
+# ----------------------------------------------------------------------------
+# ARCHIVES
+# ----------------------------------------------------------------------------
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# ----------------------------------------------------------------------------
+# TLS / CERTIFICATE MATERIAL
+# ----------------------------------------------------------------------------
+certs/
+*.csr
+*.srl
+*.chain

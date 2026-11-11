@@ -1,2 +1,109 @@
+# ============================================================================
+# ÆI SEED TELEGRAM BOT — PYTHON DEPENDENCIES
+# Platform: Heroku web dyno / Termux / any POSIX-compatible Python 3.10+ environment
+# Author: Natalia Tanyatia
+# ============================================================================
+#
+# Installation:
+#   pip install -r requirements.txt
+#
+# Heroku:
+#   Committed to repo root; auto-installed on build slug.
+#
+# Termux:
+#   pip install -r requirements.txt
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# CORE TELEGRAM BOT FRAMEWORK
+# ----------------------------------------------------------------------------
 python-telegram-bot==21.6
-httpx==0.27.0
+# Provides: Application, CommandHandler, CallbackQueryHandler, WebAppInfo,
+#           MenuButtonWebApp, InlineKeyboardButton, InlineKeyboardMarkup.
+# Requires Python >= 3.9. Uses asyncio + httpx internally.
+
+# ----------------------------------------------------------------------------
+# HTTP CLIENT (used implicitly by python-telegram-bot)
+# ----------------------------------------------------------------------------
+httpx>=0.27,<0.28
+# Async HTTP client for Telegram Bot API communications.
+# Pinned to match python-telegram-bot 21.x compatibility matrix.
+
+# ----------------------------------------------------------------------------
+# EXACT SYMBOLIC ARITHMETIC
+# ----------------------------------------------------------------------------
+# The ÆI seed ships with a self-contained Fraction wrapper built on
+# Python's stdlib `fractions.Fraction` and `decimal.Decimal`. No external
+# symbolic-math library is required for the core ÆI pipeline.
+#
+# The seed's `_symbolic_log`, `_symbolic_exp`, and
+# `_symbolic_log_integral_approx` are exact-rational Taylor / Ramanujan
+# series with dynamic truncation. They do not depend on `mpmath` or
+# `sympy`.
+#
+# Optional extension — uncomment ONLY if you add protocols that the
+# stdlib cannot express:
+#
+# sympy>=1.12
+
+# ----------------------------------------------------------------------------
+# TLS
+# ----------------------------------------------------------------------------
+# Handled by Python's stdlib `ssl` module. No pip package required when
+# BRIDGE_USE_TLS=1 is paired with an externally-provisioned PEM cert/key
+# (e.g., via certbot or the platform's managed certificate store).
+
+# ----------------------------------------------------------------------------
+# RELAY CLIENT
+# ----------------------------------------------------------------------------
+# CrawlerRelayClient uses stdlib `urllib.request`. No pip package required
+# for the Cloudflare Worker Relay integration.
+
+# ----------------------------------------------------------------------------
+# CRAWLER STATE
+# ----------------------------------------------------------------------------
+# Python's stdlib `sqlite3` provides the SQLite DB for frontier + visited.
+# No additional package needed.
+
+# ----------------------------------------------------------------------------
+# LOGGING
+# ----------------------------------------------------------------------------
+# Python's stdlib `logging` module handles all log output. No additional
+# package needed. On Heroku, logs are captured from stdout/stderr.
+
+# ----------------------------------------------------------------------------
+# RING BUFFERS
+# ----------------------------------------------------------------------------
+# Python's stdlib `collections.deque` provides the bounded FIFO used by
+# both the /log and /toasts ring buffers. No additional package needed.
+
+# ----------------------------------------------------------------------------
+# BACKGROUND THREADS + ASYNC
+# ----------------------------------------------------------------------------
+# Python's stdlib `threading` module provides the daemon thread used for
+# the bridge server. Python's stdlib `asyncio` module provides the
+# CrawlerWorker and SeedWorker loops. No additional package needed.
+
+# ----------------------------------------------------------------------------
+# MARKDOWN ESCAPING
+# ----------------------------------------------------------------------------
+# The `_md_escape()` helper escapes legacy-Markdown control characters in
+# an interpolated value. Uses only the built-in `str` methods. No
+# additional package needed.
+
+# ----------------------------------------------------------------------------
+# RUNTIME COMPATIBILITY
+# ----------------------------------------------------------------------------
+# Minimum: Python 3.10
+# Recommended: Python 3.11 or 3.12
+# Tested: Python 3.11.9 on Heroku-22; Python 3.12.3 on Termux ARM64.
+#
+# All arithmetic in the seed uses exact `fractions.Fraction` and
+# `decimal.Decimal` from the standard library — zero floating-point entropy
+# in the state machine, in accordance with the Arc-Length Axiom (s = r).
+# The IntelligenceMetric's `_symbolic_exp` and `_symbolic_log_integral_approx`
+# are exact-rational series; the `_rational_cos` and `_rational_sin` used
+# by the lattice projection are exact-rational Taylor series. No `math.exp`
+# or `math.log` enters the seed loop; the only `math.*` calls are the
+# integer `math.isqrt` used in `Fraction.sqrt()` (which is exact).
+# ============================================================================
