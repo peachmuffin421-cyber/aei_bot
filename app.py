@@ -819,14 +819,26 @@ class DefaultGeometricLattice:
     (b) it is at exact distance 2r (tangent) from at least one existing
     sphere, when the lattice is not yet at the kissing-number capacity.
     The capacity is the Leech lattice kissing number, 196560.
-    OUTWARD (2026-11-10): lattice generation is outward, tangent-first,
-    not division inward on a fixed unit circle. Old code set
+    OUTWARD (2026-11-10, amended 2026-11-10 for harmonic correction):
+    lattice generation is outward, tangent-first, not division inward on
+    a fixed unit circle, in either its uniform or its harmonic form.
+    REJECTION 1: uniform division is rejected even as division. If division
+    were used at all it would have to be harmonic, (A,B;C,D) = -1,
+    theta_n = 2*pi { sum_{k<=n} 1/p_k }, reciprocal in p, following
+    F(s) = sum 1/p_n^s and sum_{p<=x} 1/p ~ log log x. Old code set
     theta = 2*pi*p/1e9, r = 1 fixed, so every prime landed within 1e-8
     of (1,0,0..) and was rejected for overlap and for not being tangent.
+    REJECTION 2: angle-division as such is rejected, even harmonic.
+    Opus, Codex Corpus S7.8: the whole devil is revealed not in angles,
+    but in the path itself. GAIA Codex No.2: arc length has primacy over
+    angle or coordinate, s = r. A fixed unit circle admits at most 2
+    centers at mutual distance >= 2 (chord proof). Harmonic fixes
+    clustering, not confinement.
     New code constructs c_new = q + d where q is an existing point,
     |d|^2 == 4 exactly, dot(d,q) > 0. Then |c_new - q| == 2 by
     construction, so add_sphere must admit it if it does not overlap
     any other point. Offsets are exact integer vectors, no trig, no float.
+    Harmonic ratio survives in step length: 6:24 = 1:4, |d|^2 == 4.
     Practical cap for hardware-agnostic runtime
     FG parity preserved, capacity constant remains 196560 for theory, but runtime guard prevents OOM.
     """
@@ -909,8 +921,23 @@ class DefaultGeometricLattice:
                     continue
                 return c
         return None
+    @staticmethod
+    def rejected_angle_division(prime: Fraction, harmonic_cumulative: Fraction = Fraction(0, 1)):
+        """Audit only, never used for admission. Returns uniform and harmonic angle candidates in fractional turns. Uniform turn = p / 1e9. Harmonic single turn = 1 - 1/p. Harmonic cumulative turn = caller-passed sum 1/p_k mod 1."""
+        p_val = prime.num()
+        return {
+            "uniform_turn": Fraction(p_val, 1000000000),
+            "harmonic_turn_single": Fraction(1, 1) - Fraction(1, p_val),
+            "harmonic_turn_cumulative": harmonic_cumulative,
+        }
+
+    @staticmethod
+    def max_centers_on_fixed_unit_circle() -> int:
+        """Return 2. Proof: on fixed circle radius 1, chord = 2 sin(Delta/2). Chord >= 2 requires Delta = pi, so at most 2 centers at mutual distance >= 2. No inward division, uniform or harmonic, can grow under add_sphere."""
+        return 2
+
     def stereographic_project_exact(self, prime: Fraction) -> List[Fraction]:
-        """Kept name for drop-in compatibility. Now outward, not division inward. Returns None if no candidate found."""
+        """Kept name for drop-in compatibility. Now outward, not division inward, uniform or harmonic. Angle-division is rejected in both forms; see rejected_angle_division. Returns None if no candidate found."""
         return self.outward_project_exact(prime)
     def add_sphere(self, center: List[Fraction], radius: Fraction) -> bool:
         if center is None:
