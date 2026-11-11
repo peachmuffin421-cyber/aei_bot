@@ -1464,7 +1464,9 @@ class CrawlerSeedState:
     an exact Fraction, and its link count becomes a lattice contact
     constraint."""
     def __init__(self, db_path: str = ":memory:"):
-        self._lock = threading.Lock()
+        # H12 fix: RLock, not Lock. snapshot() calls visited_count() while holding the lock.
+        # With a plain Lock that is a self-deadlock: second acquire blocks forever, /crawler-state hangs 30s, Heroku returns H12 503.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("""
         CREATE TABLE IF NOT EXISTS crawl_queue (
@@ -1605,10 +1607,15 @@ class CrawlerSeedState:
         return rec.hash_frac
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
+            try:
+                _row = self._conn.execute("SELECT COUNT(*) FROM visited_urls").fetchone()
+                _visited = _row[0] if _row else 0
+            except Exception:
+                _visited = len(self._records)
             return {
                 "frontier_size": len(self._frontier),
                 "frontier_preview": list(self._frontier[:6]),
-                "visited_count": self.visited_count(),
+                "visited_count": _visited,
                 "latest": (
                     {
                         "url": self._records[-1].url,
