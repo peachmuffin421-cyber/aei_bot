@@ -1,21 +1,7 @@
 # ============================================================================
-# ÆI SEED BACKEND — .gitignore
-# Repo: aei-seed-backend (Heroku web dyno)
-# ============================================================================
-#
-# The backend repo contains app.py, the Heroku deployment manifests, and
-# the environment template. It MUST NOT contain:
-#   - the bot token (TELEGRAM_BOT_TOKEN)
-#   - the relay shared secret (RELAY_KEY)
-#   - TLS private keys or certificate chains
-#   - the local .env file (only .env.example is committed)
-#   - Python bytecode caches, virtualenvs, test caches
-#   - Heroku-local state directories
-#   - the SQLite crawler DB (runtime state)
-#
-# The Cloudflare Worker source is NOT in this repo. It lives exclusively
-# in aei-seed-relay. Do not add a .wrangler/ section here.
-#
+# Æ TWA — FUSED BACKEND — .gitignore
+# Version: Final, First edition
+# Repo: aei-backend (Heroku worker dyno)
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -39,10 +25,11 @@ credentials.json
 # ----------------------------------------------------------------------------
 # SQLITE CRAWLER STATE (runtime, not source)
 # ----------------------------------------------------------------------------
-aei_crawler.db
-aei_crawler.db-journal
-aei_crawler.db-wal
-aei_crawler.db-shm
+ae_crawler.db
+ae_crawler.db-journal
+ae_crawler.db-wal
+ae_crawler.db-shm
+ae_fused_telegram_index.json
 *.db
 *.db-journal
 *.db-wal
@@ -145,7 +132,6 @@ Procfile.windows
 .heroku/
 heroku.yml
 .cloudflared/
-*.cloudflared.json
 
 # ----------------------------------------------------------------------------
 # LOGS / TEMP

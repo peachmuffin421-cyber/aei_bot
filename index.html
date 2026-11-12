@@ -1,161 +1,261 @@
-ÆI Seed TWA - Fix for stuck on "connecting..."
-================================================
-Date: 2026-11-05
-Issue: Badge shows "connecting..." forever (screenshot shows cropped toolbar: "IB" = S_FIB, "T_s" = T_step)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Æ TWA Bridge · Backend Fallback</title>
+<style>
+:root {
+    --bg: #050510;
+    --panel: #0a0a18;
+    --border: #335577;
+    --border-bright: #4488aa;
+    --text: #aaccff;
+    --text-dim: #6688aa;
+    --text-bright: #44ffcc;
+    --green: #00ff88;
+    --red: #ff4466;
+    --gold: #ffaa44;
+    --cyan: #44ddff;
+    --purple: #aa66ff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Courier New', monospace;
+    min-height: 100vh;
+    line-height: 1.6;
+}
+.container {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+}
+h1 {
+    color: var(--text-bright);
+    font-size: 1.4rem;
+    letter-spacing: 2px;
+    margin-bottom: 4px;
+}
+.subtitle {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    letter-spacing: 1px;
+    margin-bottom: 28px;
+}
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+}
+.panel-title {
+    color: var(--cyan);
+    font-size: 0.7rem;
+    font-weight: bold;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+}
+.row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 3px 0;
+    border-bottom: 1px solid rgba(51,85,119,0.15);
+    font-size: 0.65rem;
+}
+.row:last-child { border-bottom: none; }
+.row .lbl { color: var(--text-dim); flex: 0 0 170px; }
+.row .val { color: var(--text-bright); text-align: right; word-break: break-all; }
+.row .val.ok { color: var(--green); }
+.row .val.err { color: var(--red); }
+.row .val.warn { color: var(--gold); }
+.row .val.proj { color: var(--purple); }
+.endpoint-list { list-style: none; font-size: 0.6rem; }
+.endpoint-list li {
+    padding: 3px 0;
+    border-bottom: 1px solid rgba(51,85,119,0.15);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+.endpoint-list li:last-child { border-bottom: none; }
+.endpoint-list .method { color: var(--gold); flex: 0 0 60px; }
+.endpoint-list .path { color: var(--text-bright); flex: 0 0 240px; }
+.endpoint-list .desc { color: var(--text-dim); text-align: right; }
+.status-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.7rem;
+    margin-bottom: 12px;
+}
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.status-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-dot.err { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.status-dot.wait { background: var(--gold); box-shadow: 0 0 6px var(--gold); }
+.note {
+    color: var(--text-dim);
+    font-size: 0.55rem;
+    line-height: 1.7;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(51,85,119,0.2);
+}
+.note b { color: var(--gold); }
+code {
+    background: rgba(20,30,50,0.9);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.6rem;
+    color: var(--cyan);
+}
+.footer {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.55rem;
+    letter-spacing: 2px;
+    margin-top: 40px;
+}
+</style>
+</head>
+<body>
+<div class="container">
 
-ROOT CAUSE (from your files):
------------------------------
-Frontend: file3915794703406875633.html line 1983
-  setConnBadge('wait', 'connecting...');
-  fetchAll() should change to 'loading...' -> 'connected'
-If fetchAll() never returns data, badge never updates.
+<h1>⚡ Æ TWA BRIDGE</h1>
+<div class="subtitle">HEROKU WORKER DYNO · FUSION ÆI + ÆEA · FINAL, FIRST EDITION</div>
 
-Backend default (base64 decoded):
-  aHR0cHM6Ly9hZWktMzdhMjllMDczMDcwLmhlcm9rdWFwcC5jb20v
-  = https://aei-37a29e073070.herokuapp.com/
+<div class="status-line">
+    <div class="status-dot wait" id="dot"></div>
+    <span id="statusText">Probing bridge…</span>
+</div>
 
-3 reasons it stays stuck:
-1. Heroku dyno dead/sleeping - free dynos removed 2022, cold start >20s > apiFetch timeout (20000ms in apiFetch)
-2. REQUIRE_AUTH=1 but opened outside Telegram -> /miniapp-state returns 401 unauthorized
-   (app.py _require_auth checks X-Telegram-Init-Data or ?auth_init_data=)
-3. Stale backend URL in localStorage['aei_backend_url'] from old ?backend= override
+<div class="panel">
+    <div class="panel-title">Bridge Endpoint</div>
+    <div class="row"><span class="lbl">Origin</span><span class="val" id="origin">—</span></div>
+    <div class="row"><span class="lbl">Version</span><span class="val" id="version">—</span></div>
+    <div class="row"><span class="lbl">Seed Initialized</span><span class="val" id="seedInit">—</span></div>
+    <div class="row"><span class="lbl">Engine Initialized</span><span class="val" id="engInit">—</span></div>
+    <div class="row"><span class="lbl">Seed State</span><span class="val proj" id="seedState">—</span></div>
+    <div class="row"><span class="lbl">Seed Tick</span><span class="val" id="seedTick">—</span></div>
+    <div class="row"><span class="lbl">Seed Generation</span><span class="val" id="seedGen">—</span></div>
+    <div class="row"><span class="lbl">Prime Count</span><span class="val" id="primeCount">—</span></div>
+    <div class="row"><span class="lbl">Lattice Points</span><span class="val" id="latticePoints">—</span></div>
+    <div class="row"><span class="lbl">Crawler Running</span><span class="val" id="crawlerRunning">—</span></div>
+    <div class="row"><span class="lbl">Crawler Frontier</span><span class="val" id="crawlerFrontier">—</span></div>
+    <div class="row"><span class="lbl">Crawler Visited</span><span class="val" id="crawlerVisited">—</span></div>
+    <div class="row"><span class="lbl">ÆEA Symbol</span><span class="val proj" id="aeeaSymbol">—</span></div>
+    <div class="row"><span class="lbl">ÆEA Price</span><span class="val" id="aeeaPrice">—</span></div>
+</div>
 
-QUICK FIXES (try in order):
----------------------------
-1) Test backend directly (no auth needed):
-   Open: https://aei-37a29e073070.herokuapp.com/health
-   Expected: {"ok":true, "seed_initialized":true, "seed_tick":>0}
-   If 503/H12/timeout: heroku logs --tail -a aei-37a29e073070 -- dyno crashed
+<div class="panel">
+    <div class="panel-title">Available Endpoints</div>
+    <ul class="endpoint-list">
+        <li><span class="method">GET</span><span class="path">/health</span><span class="desc">liveness (no auth)</span></li>
+        <li><span class="method">GET</span><span class="path">/config</span><span class="desc">configuration (auth)</span></li>
+        <li><span class="method">GET</span><span class="path">/miniapp-state</span><span class="desc">authoritative seed state</span></li>
+        <li><span class="method">GET</span><span class="path">/state</span><span class="desc">full seed snapshot</span></li>
+        <li><span class="method">GET</span><span class="path">/crawler-state</span><span class="desc">crawler frontier + visited</span></li>
+        <li><span class="method">GET</span><span class="path">/crawler-queue</span><span class="desc">crawler queue preview</span></li>
+        <li><span class="method">GET</span><span class="path">/symbolic-state</span><span class="desc">primes + ψ + logic</span></li>
+        <li><span class="method">GET</span><span class="path">/lattice-state</span><span class="desc">Λ₂₄ preview</span></li>
+        <li><span class="method">GET</span><span class="path">/fibration-state</span><span class="desc">Hopf base + φ + trajectories</span></li>
+        <li><span class="method">GET</span><span class="path">/observer-integral</span><span class="desc">𝒪[Ψ] 4D Riemann sum</span></li>
+        <li><span class="method">GET</span><span class="path">/evolution-state</span><span class="desc">SelfEvolution history</span></li>
+        <li><span class="method">GET</span><span class="path">/toasts</span><span class="desc">incremental notifications</span></li>
+        <li><span class="method">GET</span><span class="path">/anchors</span><span class="desc">quaternionic anchors</span></li>
+        <li><span class="method">GET</span><span class="path">/log</span><span class="desc">server log buffer</span></li>
+        <li><span class="method">GET</span><span class="path">/seeds</span><span class="desc">frontier preview</span></li>
+        <li><span class="method">GET</span><span class="path">/ohlcv</span><span class="desc">market bars (auth)</span></li>
+        <li><span class="method">GET</span><span class="path">/signals</span><span class="desc">signal state (auth)</span></li>
+        <li><span class="method">GET</span><span class="path">/diagnostics</span><span class="desc">engine snapshot + settings</span></li>
+        <li><span class="method">GET</span><span class="path">/orders</span><span class="desc">open orders</span></li>
+        <li><span class="method">GET</span><span class="path">/settings</span><span class="desc">backend settings</span></li>
+        <li><span class="method">POST</span><span class="path">/handshake</span><span class="desc">Telegram initData exchange</span></li>
+        <li><span class="method">POST</span><span class="path">/step</span><span class="desc">advance seed by one step</span></li>
+        <li><span class="method">POST</span><span class="path">/reset</span><span class="desc">reset seed state</span></li>
+        <li><span class="method">POST</span><span class="path">/crawler-enqueue</span><span class="desc">enqueue a URL</span></li>
+        <li><span class="method">POST</span><span class="path">/encode-syllable</span><span class="desc">encode A/U/M/AUM</span></li>
+        <li><span class="method">POST</span><span class="path">/anchor</span><span class="desc">commit quaternionic anchor</span></li>
+        <li><span class="method">POST</span><span class="path">/orders</span><span class="desc">place order</span></li>
+        <li><span class="method">POST</span><span class="path">/order/close</span><span class="desc">close one or all</span></li>
+        <li><span class="method">POST</span><span class="path">/settings</span><span class="desc">apply backend settings</span></li>
+        <li><span class="method">POST</span><span class="path">/symbol</span><span class="desc">change symbol</span></li>
+        <li><span class="method">DELETE</span><span class="path">/anchor/&lt;idx&gt;</span><span class="desc">delete anchor</span></li>
+    </ul>
+    <div class="note">
+        All non-<code>/health</code> and non-<code>/</code> endpoints require <code>X-Telegram-Init-Data</code> when <code>REQUIRE_AUTH=1</code>.
+    </div>
+</div>
 
-2) Clear stored backend:
-   In browser console (inside TWA WebView devtools):
-     localStorage.removeItem('aei_backend_url');
-     location.href = location.pathname + '?backend=https://aei-37a29e073070.herokuapp.com/';
-   The code auto-strips ?backend= after saving and uses history.replaceState.
+<div class="panel">
+    <div class="panel-title">Sibling Repositories</div>
+    <div class="row"><span class="lbl">Frontend</span><span class="val"><code>aeindex</code> — GitHub Pages (fused TWA)</span></div>
+    <div class="row"><span class="lbl">Backend</span><span class="val"><code>aei-backend</code> — this repo (Heroku)</span></div>
+    <div class="row"><span class="lbl">Relay</span><span class="val"><code>aei-relay</code> — Cloudflare Workers (dual-route)</span></div>
+    <div class="note">
+        The TWA lives in the <b>frontend</b> repo. This backend page is a diagnostic surface only — it is <b>not</b> the TWA.
+    </div>
+</div>
 
-3) If testing outside Telegram:
-   heroku config:set REQUIRE_AUTH=0 -a aei-37a29e073070
-   heroku restart -a aei-37a29e073070
-   Inside Telegram: verify TELEGRAM_BOT_TOKEN matches token that issued initData
-   (docs: "Connection badge stuck on retrying... -> auth failing")
+<div class="footer">
+    Æ TWA · Fusion ÆI + ÆEA · Final, First edition · LOGOS = Φ = Truth = Path = Origin
+</div>
 
-4) Force wake + check miniapp-state:
-   fetch('https://aei-37a29e073070.herokuapp.com/miniapp-state?auth_init_data=TEST')
-   Should be 401 if REQUIRE_AUTH=1, 200 with placeholder if REQUIRE_AUTH=0
+</div>
 
-5) Use Cloudflare Worker proxy to hide herokuapp.com and avoid CORS preflight:
-   Your docs mention: optional full stealth via Worker proxy /aei/* -> Heroku
-   Set ?backend=https://your-worker.workers.dev/
+<script>
+(function() {
+'use strict';
+const BASE = window.location.origin;
 
-PATCH - Never stuck on connecting (apply to file3915794703406875633.html):
-------------------------------------------------------------------------
-Replace boot() at line ~1976:
+function setText(id, text, cls) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    if (cls !== undefined) el.className = 'val' + (cls ? ' ' + cls : '');
+}
 
-async function boot() {
-    switchView('grid');
-    if (!HAS_BACKEND) {
-        setConnBadge('err','no backend');
-        showError('Backend URL not configured. Append ?backend=URL to Mini App URL, or set window.__AEI_BACKEND_URL__ before load.', 12000);
-        return;
-    }
-    setConnBadge('wait', 'connecting...');
-    pushLog('info', 'Backend: ' + BACKEND_URL);
-    startPolling();
-
-    // fail-safe: if no data in 3s, show real error instead of staying on connecting...
-    let bootTimer = setTimeout(() => {
-        if (state.tick === 0) setConnBadge('wait', 'retrying... (cold start?)');
-    }, 3000);
-
+async function probe() {
+    const dot = document.getElementById('dot');
+    const statusText = document.getElementById('statusText');
+    setText('origin', BASE);
     try {
-        await fetchAll();
-        clearTimeout(bootTimer);
-    } catch(e) {
-        clearTimeout(bootTimer);
-        setConnBadge('err', 'boot failed: ' + (e && e.message ? e.message : e));
-        pushLog('warn', 'boot(): ' + e);
-    }
-    if (tmaActive) {
-        postHandshake().then(r => { if (r && r.ok) pushLog('info', 'Handshake OK: @' + (r.username || r.user_id)); }).catch(()=>{});
-    }
-    setTimeout(() => {
-        if (state.seed_state !== 'uninitialized' && !state.lingoso) encodeSyllable('AUM');
-    }, 3000);
-}
-
-Replace fetchMiniAppState error handling at line ~1505:
-
-async function fetchMiniAppState() {
-    if (!HAS_BACKEND) { setConnBadge('ok','connected'); return; }
-    const r = await apiJson('/miniapp-state');
-    if (!r) {
-        setConnBadge('wait', 'no data');
-        showError('No data from /miniapp-state - backend unreachable', 4000);
-        return;
-    }
-    if (r.__error) {
-        if (r.__status === 503 && r.__body && r.__body.error === 'seed_busy') {
-            setConnBadge('wait', 'seed busy...');
-            if (state.tick > 0) return;
-        }
-        if (r.__status === 401) {
-            setConnBadge('err', 'unauthorized');
-            showError('401 unauthorized: Open inside Telegram or set REQUIRE_AUTH=0 for local dev. Token mismatch?', 6000);
+        const res = await fetch(BASE + '/health', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) {
+            dot.className = 'status-dot err';
+            statusText.textContent = 'Bridge returned HTTP ' + res.status;
             return;
         }
-        if (r.__timeout) {
-            setConnBadge('wait', 'timeout - waking dyno...');
-            showError('Timeout (20s): Heroku dyno sleeping. Open /health in new tab to wake it.', 5000);
-            if (state.tick > 0) {
-                setConnBadge('wait', 'retrying...');
-                setTimeout(() => fetchMiniAppState(), 800);
-            }
-            return;
-        }
-        if (state.tick > 0) {
-            setConnBadge('wait', 'retrying...');
-            setTimeout(() => fetchMiniAppState(), 800);
-            return;
-        }
-        setConnBadge('err', 'state error: ' + (r.error || 'unknown'));
-        showError('state error: ' + (r.error || 'unknown'), 4000);
-        return;
-    }
-    // ... rest unchanged, set connected
-    if (r.stale) setConnBadge('wait', 'stale ' + (r.tick || ''));
-    else setConnBadge('ok', 'connected');
-    // update panels...
-}
-
-Also add diagnostics to apiJson at line 834 to log status:
-
-async function apiJson(path, opts) {
-    try {
-        const res = await apiFetch(path, opts);
-        const text = await res.text();
-        let data = null;
-        if (text) { try { data = JSON.parse(text); } catch(e) { data = {__parse_error:text.slice(0,200)}; } }
-        if (!res.ok) return {__error:true, __status:res.status, __body:data, error:(data && (data.error||data.detail))||('HTTP '+res.status)};
-        return data || {};
-    } catch(e) {
-        return {__error:true, __network:(e && e.name!=='AbortError'), __timeout:(e && e.name==='AbortError'), __body:null, error:(e && e.name==='AbortError')?'timeout':(e && e.message)||String(e)};
+        const data = await res.json();
+        dot.className = 'status-dot ok';
+        statusText.textContent = 'Bridge online';
+        setText('version', data.version || '—');
+        setText('seedInit', String(data.seed_initialized), data.seed_initialized ? 'ok' : 'warn');
+        setText('engInit', String(data.engine_initialized), data.engine_initialized ? 'ok' : 'warn');
+        setText('seedState', data.seed_state || '—', 'proj');
+        setText('seedTick', String(data.seed_tick ?? '—'));
+        setText('seedGen', String(data.seed_generation ?? '—'));
+        setText('primeCount', String(data.prime_count ?? '—'));
+        setText('latticePoints', String(data.lattice_points ?? '—'));
+        setText('crawlerRunning', data.crawler_running ? 'yes' : 'no', data.crawler_running ? 'ok' : 'err');
+        setText('crawlerFrontier', String(data.crawler_frontier ?? '—'));
+        setText('crawlerVisited', String(data.crawler_visited ?? '—'));
+        setText('aeeaSymbol', data.aeea_symbol || '—', 'proj');
+        setText('aeeaPrice', data.aeea_price !== undefined ? String(data.aeea_price) : '—');
+    } catch (e) {
+        dot.className = 'status-dot err';
+        statusText.textContent = 'Bridge unreachable: ' + (e.message || e);
     }
 }
 
-BACKEND FIXES (app.py):
------------------------
-- Ensure ThreadingHTTPServer binds $PORT: app.py already does ThreadingHTTPServer(0.0.0.0, $PORT)
-- Ensure procfile: web: python app.py
-- Check SEED_TICK_INTERVAL not too large (default 2s), CRAWL_INTERVAL
-- Check RELAY_URL: set RELAY_URL and RELAY_KEY env vars, test: curl -H "X-Relay-Key: $KEY" "$RELAY_URL/?url=https://en.wikipedia.org/wiki/Riemann_hypothesis"
-- Telegram DB: if using ephemeral disk, enable ENABLE_TELEGRAM_DB=1 + TELEGRAM_DB_CHANNEL_ID or TELEGRAM_DB_CENTRAL_USER_ID to avoid losing seed on dyno restart
+probe();
+setInterval(probe, 5000);
 
-Redeploy steps if Heroku app dead:
-  git push heroku main
-  heroku config:set TELEGRAM_BOT_TOKEN=... REQUIRE_AUTH=1 RELAY_URL=... RELAY_KEY=... -a aei-37a29e073070
-  heroku ps:scale web=1 -a aei-37a29e073070
-  heroku logs --tail -a aei-37a29e073070 | grep -i "AEI seed"
-
-After redeploy, update frontend DEFAULT_BACKENDS in index.html or set BotFather Web App URL to https://peachmuffin421-cyber.github.io/aeindex/?backend=https://aei-37a29e073070.herokuapp.com/
-
-Q.E.D. - LOGOS = Phi
+})();
+</script>
+</body>
+</html>
