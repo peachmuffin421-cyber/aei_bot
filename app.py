@@ -4451,28 +4451,37 @@ class AE_Bot:
         self._seed_worker: Optional[SeedWorker] = None
         self._crawler_worker: Optional[CrawlerWorker] = None
         self._market_worker: Optional[MarketTickWorker] = None
-        self._async_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._async_thread: Optional[threading.Thread] = None
 
     async def _post_init(self, application) -> None:
+        # REDO: PTB calls this on ITS OWN loop, after initialize(), before polling.
+        # That is the only loop Bot calls and asyncio.create_task() may legally use.
         try:
             self._loop = asyncio.get_running_loop()
-            logger.info("Event loop captured")
+            logger.info("Event loop captured (PTB post_init)")
         except RuntimeError:
             self._loop = None
         BRIDGE_ENGINE_REF["bot"] = self
+        # If a webhook was ever set, polling gets NOTHING until it is deleted.
+        # This is the classic silent-/start cause. Delete it here, every boot.
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook deleted - polling will receive updates")
+        except Exception as e:
+            logger.warning(f"delete_webhook failed (polling may starve): {e}")
+        try:
+            me = await application.bot.get_me()
+            logger.info(f"Bot identity OK: @{me.username} id={me.id} - /start will be answered")
+        except Exception as e:
+            logger.error(f"Bot get_me failed - check TELEGRAM_BOT_TOKEN: {e}")
+            raise
         if self._bridge_server is None:
             server = BridgeServer()
             self._bridge_server = server
-            boot_thread = threading.Thread(
-                target=server.start, name="ae-bridge-boot", daemon=True
-            )
-            boot_thread.start()
-            ready = server._listen_ready.wait(timeout=BRIDGE_PUBLIC_TIMEOUT)
-            if not ready or not server._listen_ok:
-                logger.error(
-                    f"Bridge failed to bind within {BRIDGE_PUBLIC_TIMEOUT}s; workers will not start"
-                )
+            # BridgeServer.start() binds synchronously and spawns its own
+            # serve_forever thread. NEVER block an async fn on Event.wait().
+            server.start()
+            if not server._listen_ok:
+                logger.error("Bridge failed to bind - workers will not start")
                 return
             logger.info("Bridge binding verified")
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
@@ -4505,12 +4514,24 @@ class AE_Bot:
             logger.warning("_post_init ran before seed/crawler/aeea were registered")
 
     async def start(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
-        await update.message.reply_text(
-            "🔷 Æ TWA — Fusion of ÆI (seed) + ÆEA (market)\n"
-            "/webapp — open the Mini App\n"
-            "/whoami — your Telegram user ID\n"
-            "One ordered feed → ÆEA market engine → ÆI seed step with lifted x."
-        )
+        # REDO: log the hit. Before this, a silent /start was indistinguishable
+        # from "handler never ran" vs "reply failed" - now the logs prove it.
+        try:
+            u = update.effective_user
+            logger.info(f"/start from user_id={u.id if u else None} username=@{u.username if u and u.username else '—'} chat={update.effective_chat.id if update.effective_chat else None}")
+        except Exception:
+            pass
+        try:
+            await update.message.reply_text(
+                "🔷 Æ TWA — Fusion of ÆI (seed) + ÆEA (market)\n"
+                "/webapp — open the Mini App\n"
+                "/whoami — your Telegram user ID\n"
+                "One ordered feed → ÆEA market engine → ÆI seed step with lifted x."
+            )
+            logger.info("/start reply sent")
+        except Exception as e:
+            logger.error(f"/start reply FAILED: {type(e).__name__}: {e}")
+            raise
 
     async def webapp(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"):
         url = TELEGRAM_WEBAPP_URL or BRIDGE_ENGINE_REF.get("public_url")
@@ -4540,29 +4561,15 @@ class AE_Bot:
         err = context.error
         err_str = f"{type(err).__name__}: {err}" if err is not None else "unknown"
         if "Conflict" in err_str or "terminated by other getUpdates" in err_str:
-            logger.warning("Conflict detected (another bot instance): sleeping 5s")
+            logger.error("Conflict: ANOTHER bot instance is polling with this token (old dyno / local run). Kill the other instance or /start will keep starving. Sleeping 5s.")
             await asyncio.sleep(5.0)
             return
         logger.error(f"handler error: {err_str}")
 
-    def _async_worker_loop(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._async_loop = loop
-
-        async def _start_workers():
-            await self._post_init(self.application)
-
-        try:
-            loop.run_until_complete(_start_workers())
-            loop.run_forever()
-        except Exception as e:
-            logger.error(f"async worker loop error: {e}")
-        finally:
-            try:
-                loop.close()
-            except Exception:
-                pass
+    # REDO: _async_worker_loop DELETED. It ran _post_init on a second event
+    # loop, where Bot calls are illegal and create_task() workers land on
+    # the wrong loop. PTB now calls _post_init on its own loop via the
+    # builder (see run()). Nothing else may start the workers.
 
     def run(self):
         if not TELEGRAM_AVAILABLE:
@@ -4600,6 +4607,7 @@ class AE_Bot:
         self.application = (
             Application.builder()
             .token(self.token)
+            .post_init(self._post_init)  # REDO: was missing - _post_init never ran
             .build()
         )
         self.application.add_handler(CommandHandler("start", self.start))
@@ -4607,11 +4615,10 @@ class AE_Bot:
         self.application.add_handler(CommandHandler("mini", self.webapp))
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_error_handler(self.error_handler)
-
-        self._async_thread = threading.Thread(
-            target=self._async_worker_loop, name="ae-async-workers", daemon=True
-        )
-        self._async_thread.start()
+        # REDO: no side thread. run_polling() MUST run on the thread that
+        # calls run() (main thread, see main()), so PTB can install signal
+        # handlers and use one event loop. A daemon-thread poller that dies
+        # silently was the /start failure.
 
         logger.info(f"🤖 {self.bot_name} starting... pid={os.getpid()}")
         logger.info(f"AE Fused — seed + ÆEA + crawler + market on one ordered feed")
@@ -4619,15 +4626,16 @@ class AE_Bot:
         logger.info(f"Relay configured: {bool(RELAY_URL)}")
         logger.info(f"Bridge: http://{BRIDGE_HOST}:{BRIDGE_PORT}")
 
-        try:
-            self.application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                stop_signals=[],
-                close_loop=False,
-                drop_pending_updates=True,
-            )
-        except TypeError:
-            self.application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        # REDO: polling on THIS (main) thread, default signal handling.
+        # drop_pending_updates=False here: post_init already cleared the stale
+        # queue via delete_webhook(), so a /start sent just after a deploy is
+        # delivered instead of dropped. Any exception here must PROPAGATE -
+        # main() logs it and exits non-zero so Heroku restarts the dyno.
+        # Swallowing it (old code) left a live-looking dyno with a dead bot.
+        self.application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=False,
+        )
 
 
 # ============================================================================
@@ -4659,39 +4667,27 @@ def main():
 
     bot = AE_Bot(TELEGRAM_BOT_TOKEN_ENV, "AEFusedBot")
 
-    def _bot_thread():
-        try:
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            except Exception:
-                pass
-            bot.run()
-        except Exception as e:
-            try:
-                print(f"Bot thread error: {e}", flush=True)
-            except Exception:
-                pass
-
-    t = threading.Thread(target=_bot_thread, name="ae-bot-polling", daemon=True)
-    t.start()
-
-    _loop_count = 0
+    # REDO: run_polling() on the MAIN thread (this thread). The old code ran
+    # it in a daemon thread, swallowed its exception, and heartbeated forever
+    # - a dyno that looked alive with a dead bot. Now if polling dies, we
+    # log the traceback and exit(1) so Heroku restarts the dyno. A crash
+    # loop is diagnosable; a silent dead bot is not.
+    # _shutdown_event / signal handlers are still installed above; PTB's
+    # run_polling (main thread) honours SIGTERM/SIGINT itself.
     try:
-        while not _shutdown_event.is_set():
-            try:
-                _shutdown_event.wait(timeout=1.0)
-            except Exception:
-                time.sleep(0.5)
-            _loop_count += 1
-            if _loop_count % 10 == 0:
-                print(f"♥ main heartbeat {_loop_count} pid={os.getpid()}", flush=True)
+        bot.run()
     except KeyboardInterrupt:
         print("KeyboardInterrupt -> shutdown", flush=True)
-        _shutdown_event.set()
-    except Exception as _e:
-        print(f"main loop exception {_e} -> shutdown", flush=True)
-        _shutdown_event.set()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        print("⚡ bot.run() DIED - exiting 1 so Heroku restarts (do NOT heartbeat past this)", flush=True)
+        try:
+            if bot._bridge_server:
+                bot._bridge_server.stop()
+        except Exception:
+            pass
+        sys.exit(1)
 
     try:
         c = BRIDGE_ENGINE_REF.get("crawler")
@@ -4707,10 +4703,6 @@ def main():
         pass
 
     print("⚡ main exiting cleanly", flush=True)
-    try:
-        time.sleep(1.0)
-    except Exception:
-        pass
     sys.exit(0)
 
 
