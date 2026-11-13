@@ -2333,7 +2333,6 @@ class AEEA_Engine:
             self.indicators = self._compute_indicators()
             self.bb58 = self._compute_bb58()
             warming = (len(self.bars) < 5 or len(self.indicators) < 13)
-            # Count and toll reset at the top of OnBar.
             self.count = 0
             self.toll = 0
             if warming:
@@ -2358,7 +2357,6 @@ class AEEA_Engine:
             self.m = m
             self.n = n
             self.delta = m - n - 2
-            # Regime
             if self.delta >= 1:
                 self.regime = "↑ BULL / Hawk"
                 self.signal_dir = 1
@@ -2371,17 +2369,13 @@ class AEEA_Engine:
                 self.regime = "⊙ NEUTRAL"
                 self.signal_dir = 0
                 self.signal = "⊙ NEUTRAL"
-            # Count and toll blocks
             tick = ordered_index if ordered_index > 0 else (self.signal_tick + 5)
             if self.signal_dir != 0:
-                # Toll block: first bar after a signal bar (signalTick + 5).
                 if self.signal_tick != -1 and tick == self.signal_tick + 5:
                     self.toll = 1
-                # Count block: signal bar. Independent if, not else.
                 if tick != self.signal_tick and tick != self.signal_tick + 5:
                     self.count = 1
                     self.signal_tick = tick
-            # P_arc extrapolation
             if len(self.bars) >= 3:
                 last = self.bars[-1].c
                 prev = self.bars[-2].c
@@ -2391,7 +2385,6 @@ class AEEA_Engine:
                 if bb:
                     target = max(bb["lo"], min(bb["up"], target))
                 self.parc = target
-            # FVG maintenance
             if self.price > 0:
                 kept = []
                 for a in self.fvg:
@@ -2402,7 +2395,6 @@ class AEEA_Engine:
                     else:
                         logger.info(f"FVG maintenance: remove {a['type']} @ {a['price']}")
                 self.fvg = kept
-            # Signal history
             if self.signal != "⊙ NEUTRAL":
                 self.signal_history.append(f"{self.signal} @ ordered {tick} (δ {self.delta})")
                 if len(self.signal_history) > 40:
@@ -2547,6 +2539,9 @@ class AEEA_Engine:
                  "timestamp": datetime.fromtimestamp(b.t).isoformat() if b.t else datetime.now().isoformat()}
                 for b in self.bars[-200:]
             ]
+            if not bars and self.price > 0:
+                now = time.time()
+                bars = [{"t": now, "o": self.price, "h": self.price, "l": self.price, "c": self.price, "v": 1.0, "timestamp": datetime.now().isoformat()}]
             return {
                 "symbol": self.symbol,
                 "timeframe": self.timeframe,
@@ -2898,7 +2893,6 @@ class AEI_Seed:
         arc_sq = self.monitor.compute_arc_length_squared(traj)
         radius_sq = traj[-1].magnitude_squared() if traj else Fraction.zero()
         deviation_sq = arc_sq - radius_sq
-        # Arc-check: exact comparison, never a constant string
         coherent = (arc_sq == radius_sq)
         arc_check = "s = r ✓" if coherent else "s ≠ r ✗"
         return {
@@ -3185,7 +3179,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
         return
 
     def _set_cors(self) -> None:
-        # Wildcard only when pinned to '*' — no Origin reflection with '*'.
         origin = CORS_ORIGIN
         if origin == "*":
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -3248,7 +3241,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         query = dict(parse_qsl(urlparse(self.path).query))
 
-        # ---- /health : public liveness only, no secrets ----
         if path == "/health":
             seed = BRIDGE_ENGINE_REF.get("seed")
             crawler = BRIDGE_ENGINE_REF.get("crawler")
@@ -3276,7 +3268,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # ---- / : serve index.html if present ----
         if path == "/" or path == "/index.html":
             try:
                 base = os.path.dirname(os.path.abspath(__file__))
@@ -3294,7 +3285,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": "read_index_failed", "detail": str(e)})
             return
 
-        # ---- Everything below requires auth ----
         if not _require_auth(self):
             self._send_json(401, {"error": "unauthorized",
                                   "detail": "Missing or invalid X-Telegram-Init-Data"})
@@ -3304,7 +3294,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         aeea = BRIDGE_ENGINE_REF.get("aeea")
 
-        # ---- /config : auth-gated, no secrets, no user ids ----
         if path == "/config":
             self._send_json(200, {
                 "version": "Final, First edition",
@@ -3330,7 +3319,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # ---- /miniapp-state : authoritative seed state ----
         if path == "/miniapp-state":
             import time as _t_fast
             _start_fast = _t_fast.time()
@@ -3357,7 +3345,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                             return
                     except Exception:
                         pass
-                # Fallback placeholder: never block on heavy state
                 placeholder = {
                     "state": getattr(seed, 'state', 'evolving') if seed else 'initializing',
                     "tick": getattr(seed, 'tick', 0) if seed else 0,
@@ -3578,7 +3565,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # ---- /ohlcv : market bars (backend authoritative) ----
         if path == "/ohlcv":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -3589,7 +3575,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, aeea.get_ohlcv())
             return
 
-        # ---- /signals : full shape required by frontend ----
         if path == "/signals":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -3600,7 +3585,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, aeea.get_signals())
             return
 
-        # ---- /diagnostics : engine snapshot + settings (backend authoritative) ----
         if path == "/diagnostics":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -3624,7 +3608,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, snap)
             return
 
-        # ---- /orders : open orders list ----
         if path == "/orders":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -3647,7 +3630,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "orders": open_orders, "count": len(open_orders)})
             return
 
-        # ---- /settings : backend-authoritative settings exposure ----
         if path == "/settings":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -3668,7 +3650,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
 
-        # ---- /handshake : user identity binding (auth is inside) ----
         if path == "/handshake":
             try:
                 data = self._read_json()
@@ -3709,14 +3690,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         aeea = BRIDGE_ENGINE_REF.get("aeea")
 
-        # ---- /step : advance the ÆI seed with market-derived x ----
         if path == "/step":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
                 return
             data = self._read_json()
             try:
-                # x may come as a Fraction string (a/b) or as x_num/x_den pair.
                 x_raw = data.get("x")
                 if x_raw is not None:
                     x = Fraction.from_string(str(x_raw))
@@ -3746,7 +3725,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "record": record})
             return
 
-        # ---- /reset : reset the ÆI seed ----
         if path == "/reset":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -3764,7 +3742,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "state": seed.snapshot()})
             return
 
-        # ---- /crawler-enqueue : add a URL to the crawler frontier ----
         if path == "/crawler-enqueue":
             if crawler is None:
                 self._send_json(503, {"error": "crawler_not_ready"})
@@ -3780,7 +3757,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                   "frontier_size": crawler.state.frontier_size()})
             return
 
-        # ---- /encode-syllable : arc-check is computed, never a constant ----
         if path == "/encode-syllable":
             if seed is None:
                 self._send_json(503, {"error": "seed_not_ready"})
@@ -3794,7 +3770,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": "encode_failed", "detail": str(e)})
             return
 
-        # ---- /anchor : commit a quaternionic anchor ----
         if path == "/anchor":
             data = self._read_json()
             try:
@@ -3812,7 +3787,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "idx": idx})
             return
 
-        # ---- /orders : place an order, return full fill shape ----
         if path == "/orders":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -3849,7 +3823,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(400, result)
             return
 
-        # ---- /order/close : close one or all ----
         if path == "/order/close":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -3869,7 +3842,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": "close_failed", "detail": str(e)})
             return
 
-        # ---- /settings : apply engine settings (backend authoritative) ----
         if path == "/settings":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -3901,7 +3873,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": "settings_failed", "detail": str(e)})
             return
 
-        # ---- /symbol : change active symbol ----
         if path == "/symbol":
             if aeea is None:
                 self._send_json(503, {"error": "engine_not_ready"})
@@ -4205,8 +4176,6 @@ class SeedWorker:
         self._executor = _DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="ae-seed-step")
 
     def _lift_market_x(self) -> Fraction:
-        """The fusion point. x = abs(price - prevPrice) / 10000 (or 1/100 when zero).
-        Exact Fraction. Never a float in the seed state."""
         try:
             p = self.aeea.price
             prev = self.aeea.prev_price
@@ -4214,14 +4183,12 @@ class SeedWorker:
                 delta = abs(p - prev)
                 if delta == 0:
                     return Fraction(1, 100)
-                # Lift the float delta to an exact rational at the scale boundary.
                 num = int(round(delta * 10000))
                 if num <= 0:
                     num = 1
                 return Fraction(num, 10000)
         except Exception:
             pass
-        # Fallback: crawler hash_frac if available.
         try:
             hash_frac = self.crawler.state.latest_hash_fraction()
             if hash_frac != PyFraction(0, 1):
@@ -4343,11 +4310,6 @@ class SeedWorker:
 # MARKET TICK WORKER (drives the ordered feed from the backend side)
 # ============================================================================
 class MarketTickWorker:
-    """Pulls the current market price via the relay (or synthetic if absent)
-    and calls aeea.on_tick(price) on each iteration. The aeea engine runs
-    every tick; the seed worker (separate) runs every SEED_TICK_INTERVAL
-    using x from the current market delta. This preserves the fusion order:
-    market tick arrives first (drives ÆEA), then ÆI consumes the lift."""
     def __init__(self, aeea: AEEA_Engine, relay: CrawlerRelayClient):
         self.aeea = aeea
         self.relay = relay
@@ -4359,7 +4321,6 @@ class MarketTickWorker:
         self._ordered_index = 0
 
     def _fetch_price_sync(self) -> Tuple[float, str]:
-        """Kraken -> synthetic. No Yahoo fallback (this is a display path)."""
         sym = self.aeea.symbol
         if "BTC" in sym or "ETH" in sym or "SOL" in sym or "XRP" in sym or "DOGE" in sym or "ADA" in sym or "AVAX" in sym or "LINK" in sym or "TON" in sym or "GRAM" in sym:
             pair = sym.replace("/", "")
@@ -4376,7 +4337,6 @@ class MarketTickWorker:
                             return last, "Kraken"
             except Exception:
                 pass
-        # Synthetic fallback
         self._synth_seed = (self._synth_seed * 1103515245 + 12345) % 2147483648
         r = (self._synth_seed / 2147483648 - 0.5) * 2
         self._synth_price = max(1.0, self._synth_price + self._synth_price * 0.002 * r)
@@ -4474,7 +4434,6 @@ class AE_Bot:
                 logger.warning(f"Failed to set menu button: {e}")
         else:
             logger.info("MenuButtonWebApp deferred — no public URL yet")
-        # Start the workers
         seed = BRIDGE_ENGINE_REF.get("seed")
         crawler = BRIDGE_ENGINE_REF.get("crawler")
         aeea = BRIDGE_ENGINE_REF.get("aeea")
@@ -4533,9 +4492,6 @@ class AE_Bot:
         logger.error(f"handler error: {err_str}")
 
     def _async_worker_loop(self):
-        """Background asyncio loop that owns all workers (bridge, seed, crawler, market).
-        This decouples worker lifecycles from Telegram's polling loop, so SIGTERM
-        is graceful and /health remains fast even when the seed is heavy."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._async_loop = loop
@@ -4570,7 +4526,6 @@ class AE_Bot:
         else:
             logger.info("TelegramChatDB disabled (set ENABLE_TELEGRAM_DB=1 + CHANNEL_ID or CENTRAL_USER_ID)")
 
-        # Build the fused engine state
         crawler_state = CrawlerSeedState(CRAWLER_DB_PATH)
         relay = CrawlerRelayClient(RELAY_URL, RELAY_KEY, timeout=RELAY_TIMEOUT,
                                    max_retries=RELAY_MAX_RETRIES)
@@ -4599,7 +4554,6 @@ class AE_Bot:
         self.application.add_handler(CommandHandler("whoami", self.whoami))
         self.application.add_error_handler(self.error_handler)
 
-        # Start the async worker loop in a background thread (owns bridge + seed + crawler + market)
         self._async_thread = threading.Thread(
             target=self._async_worker_loop, name="ae-async-workers", daemon=True
         )
