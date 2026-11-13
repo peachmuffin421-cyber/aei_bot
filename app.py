@@ -2006,7 +2006,10 @@ class AEEA_Order:
 
 
 class AEEA_Engine:
-    """MT4-parity port. Bar close every 5 ticks. 13 normalised indicators.
+    """MT4-parity port. Bar close on wall-clock timeframe bucket (M1 = 60s, M15 = 900s, ...).
+    PATCH M1: bars are no longer every-5-ticks. Heroku TIMEFRAME is honoured;
+    GET /ohlcv?timeframe= and POST /settings {timeframe} switch via set_timeframe().
+    13 normalised indicators.
     m/n counted only on >66.6 / <33.3. delta = m-n-2.
     Order of operations per OnBar:
       tick -> bars -> 13 indicators + IHK -> m/n -> delta -> regime -> BB58
@@ -2022,11 +2025,16 @@ class AEEA_Engine:
         "SPX": 2, "DJI": 2, "IXIC": 2, "FTSE": 2, "DAX": 2, "Nikkei": 2,
     }
     DEFAULT_DIGITS = 2
+    # PATCH M1: wall-clock minutes per timeframe label.
+    TIMEFRAME_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
     def __init__(self, symbol: str = "BTC/USD", timeframe: str = "M15", dev: float = 2.0,
                  commission: float = 0.0001):
         self.symbol = symbol
-        self.timeframe = timeframe
+        self.timeframe = str(timeframe or "M15").upper()
+        if self.timeframe not in self.TIMEFRAME_MINUTES:
+            self.timeframe = "M15"
+        self._current_bucket = None
         self.bb_dev = dev
         self.commission = commission
         self.bars: List[AEEA_Bar] = []
@@ -2059,6 +2067,8 @@ class AEEA_Engine:
     def set_symbol(self, symbol: str):
         with self._lock:
             self.symbol = symbol
+            self._current_bucket = None
+            self.tick_in_bar = 0
             self.bars = []
             self.indicators = []
             self.bb58 = []
@@ -2079,18 +2089,54 @@ class AEEA_Engine:
             self.point_size = point
             self.commission_frozen = self.commission * point
 
-    def on_tick(self, price: float, volume: float = 1.0, ordered_index: int = 0):
+    def timeframe_minutes(self) -> int:
+        return self.TIMEFRAME_MINUTES.get(str(self.timeframe).upper(), 15)
+    def _bar_bucket(self, ts: float) -> int:
+        return int(ts // (self.timeframe_minutes() * 60))
+    def set_timeframe(self, timeframe) -> bool:
+        tf = str(timeframe or "").strip().upper()
+        if tf not in self.TIMEFRAME_MINUTES:
+            return False
+        with self._lock:
+            if tf == self.timeframe:
+                return False
+            self.timeframe = tf
+            self.bars = []
+            self.indicators = []
+            self.bb58 = []
+            self.m = 0
+            self.n = 0
+            self.delta = 0
+            self.regime = "— warming up"
+            self.signal = "⊙ NEUTRAL"
+            self.signal_dir = 0
+            self.parc = 0.0
+            self.signal_tick = -1
+            self.count = 0
+            self.toll = 0
+            self.fvg = []
+            self.signal_history = []
+            self.ihk = None
+            self._current_bucket = None
+            self.tick_in_bar = 0
+            return True
+    def on_tick(self, price: float, volume: float = 1.0, ordered_index: int = 0, ts: float = None):
         with self._lock:
             if not is_finite_number(price) or price <= 0:
                 return
             if self.price > 0:
                 self.prev_price = self.price
             self.price = price
-            self.tick_in_bar += 1
-            if not self.bars or self.tick_in_bar > 5:
+            now = float(ts) if ts else time.time()
+            bucket = self._bar_bucket(now)
+            if not self.bars or bucket != self._current_bucket:
+                if self.bars:
+                    self._on_bar(len(self.bars) - 1)
+                bar_t = float(bucket * self.timeframe_minutes() * 60)
                 self.bars.append(AEEA_Bar(
-                    t=time.time(), o=price, h=price, l=price, c=price, v=volume
+                    t=bar_t, o=price, h=price, l=price, c=price, v=volume
                 ))
+                self._current_bucket = bucket
                 self.tick_in_bar = 1
                 if len(self.bars) > 200:
                     self.bars = self.bars[-200:]
@@ -2100,8 +2146,7 @@ class AEEA_Engine:
                 last.l = min(last.l, price)
                 last.c = price
                 last.v += volume
-            if self.tick_in_bar == 5 or ordered_index % 5 == 0:
-                self._on_bar(ordered_index)
+                self.tick_in_bar += 1
             self._trailing_and_stops()
 
     def _compute_indicators(self) -> List[Dict[str, Any]]:
@@ -2369,11 +2414,11 @@ class AEEA_Engine:
                 self.regime = "⊙ NEUTRAL"
                 self.signal_dir = 0
                 self.signal = "⊙ NEUTRAL"
-            tick = ordered_index if ordered_index > 0 else (self.signal_tick + 5)
+            tick = ordered_index if ordered_index >= 0 else (self.signal_tick + 1)
             if self.signal_dir != 0:
-                if self.signal_tick != -1 and tick == self.signal_tick + 5:
+                if self.signal_tick != -1 and tick == self.signal_tick + 1:
                     self.toll = 1
-                if tick != self.signal_tick and tick != self.signal_tick + 5:
+                if tick != self.signal_tick and tick != self.signal_tick + 1:
                     self.count = 1
                     self.signal_tick = tick
             if len(self.bars) >= 3:
@@ -2550,6 +2595,7 @@ class AEEA_Engine:
                 "prev_price": self.prev_price,
                 "provider": "ae-fused",
                 "source": "backend",
+                "timeframe_minutes": self.timeframe_minutes(),
             }
 
     def get_signals(self) -> Dict[str, Any]:
@@ -3572,6 +3618,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             sym = query.get("symbol")
             if sym and sym != aeea.symbol:
                 aeea.set_symbol(sym)
+            tf = query.get("timeframe")
+            if tf:
+                aeea.set_timeframe(tf)
             self._send_json(200, aeea.get_ohlcv())
             return
 
@@ -3582,6 +3631,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             sym = query.get("symbol")
             if sym and sym != aeea.symbol:
                 aeea.set_symbol(sym)
+            tf = query.get("timeframe")
+            if tf:
+                aeea.set_timeframe(tf)
             self._send_json(200, aeea.get_signals())
             return
 
@@ -3859,7 +3911,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if "symbol" in data:
                     aeea.set_symbol(str(data["symbol"]))
                 if "timeframe" in data:
-                    aeea.timeframe = str(data["timeframe"])
+                    if not aeea.set_timeframe(data["timeframe"]):
+                        self._send_json(400, {"error": "invalid_timeframe", "timeframe": str(data["timeframe"]), "allowed": sorted(aeea.TIMEFRAME_MINUTES.keys())})
+                        return
                 self._send_json(200, {
                     "ok": True,
                     "bb_dev": aeea.bb_dev,
