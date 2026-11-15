@@ -1,7 +1,9 @@
 {
-  "name": "Æ TWA — Fusion ÆI + ÆEA",
-  "description": "Lossless fusion of ÆI (GAIA/ÆI seed) and ÆEA (MT4-parity market engine) as a Telegram Mini App. One ordered market feed advances both engines: the ÆEA bar ring (13 normalised indicators + Ichimoku → m/n/δ → regime → BB×58 → 𝒫_arc → signal iff δ-gate → orders/trailing/FVG) and the ÆI seed (prime → outward Λ₂₄ → Hopf → s²=r² → DbZ → I → SelfEvolution), with x lifted from the same tick as abs(price-prevPrice)/10000 (or 1/100 on zero). MarketTickWorker is relay-first (fused worker.js ?symbol= route, then Kraken direct, then synthetic), so both worker routes (crawler ?url= and market ?symbol=) are consumed end-to-end. All seed values are exact Fractions; the backend is authoritative when connected. CS-translated UI throughout. Version: Final, First edition.",
-  "repository": "https://github.com/yourusername/aei-backend",
+  "name": "AE TWA Unified, AEA Feed",
+  "description": "AE TWA Unified, AEA Feed. Lossless fusion of ÆI (GAIA/ÆI seed) and ÆEA (MT4-parity market engine) as a Telegram Mini App. One ordered market feed advances both engines: the ÆEA bar ring (13 normalised indicators + Ichimoku → m/n/δ → regime → BB×58 → 𝒫_arc → signal iff δ-gate → orders/trailing/FVG) and the ÆI seed (prime → outward Λ₂₄ → Hopf → s²=r² → DbZ → I → SelfEvolution), with x lifted from the same tick as abs(price-prevPrice)/10000 (or 1/100 on zero). Backend authoritative. Frontend view only. No synthetic bars. Lattice [] equals WAITING, never 0. One formatter for app and bot. CS feed back / forward: Bot / TWA feeds CS, CS feeds Bot / TWA. Final, First edition.",
+  "repository": "https://github.com/peachmuffin421-cyber/aeindex",
+  "website": "https://peachmuffin421-cyber.github.io",
+  "success_url": "/",
   "keywords": [
     "aetheric-intelligence",
     "gaia",
@@ -21,29 +23,38 @@
     "telegram-mini-app",
     "twa",
     "exact-arithmetic",
-    "riemann-hypothesis",
     "consciousness-operator",
     "lingoso",
     "crawler-relay",
     "market-data",
     "kraken-primary",
-    "stooq-primary",
-    "non-hermitian",
     "bollinger-bands",
     "fvg",
     "final-edition"
   ],
   "env": {
     "TELEGRAM_BOT_TOKEN": {
-      "description": "Your Telegram Bot Token from @BotFather",
+      "description": "Your Telegram Bot Token from @BotFather. Set via Heroku config, never commit.",
+      "required": true
+    },
+    "TELEGRAM_CHAT_ID": {
+      "description": "Telegram chat id for bot notifications.",
       "required": true
     },
     "TELEGRAM_WEBAPP_URL": {
-      "description": "Public HTTPS URL of the Telegram Mini App (GitHub Pages URL). Skips tunnel spawn when set.",
+      "description": "Public HTTPS URL of the Telegram Mini App (GitHub Pages URL).",
+      "required": false
+    },
+    "BACKEND_URL": {
+      "description": "Heroku URL of the backend, used by the frontend via ?backend=.",
+      "required": false
+    },
+    "ALLOWED_ORIGIN": {
+      "description": "GitHub Pages origin the worker allows.",
       "required": false
     },
     "RELAY_URL": {
-      "description": "Cloudflare Worker relay URL (deployed from the aei-relay repo). Required for both crawler and market data.",
+      "description": "Cloudflare Worker relay URL (deployed from the aei-relay repo).",
       "required": false
     },
     "RELAY_KEY": {
@@ -87,14 +98,14 @@
       "required": false
     },
     "ALLOWED_USER_IDS": {
-      "description": "Comma-separated Telegram user IDs. Empty = open bot. For a private deployment, put your own user ID (from /whoami).",
+      "description": "Comma-separated Telegram user IDs. Empty = open bot.",
       "required": false
     }
   },
   "formation": {
-    "worker": {
+    "web": {
       "quantity": 1,
-      "size": "eco"
+      "size": "basic"
     }
   },
   "buildpacks": [

@@ -1989,6 +1989,7 @@ class AEEA_Bar:
     l: float
     c: float
     v: float
+    ordered_index: int = 0  # FIT: real ordered_index of the bar's first tick
 
 
 @dataclass
@@ -2006,10 +2007,7 @@ class AEEA_Order:
 
 
 class AEEA_Engine:
-    """MT4-parity port. Bar close on wall-clock timeframe bucket (M1 = 60s, M15 = 900s, ...).
-    PATCH M1: bars are no longer every-5-ticks. Heroku TIMEFRAME is honoured;
-    GET /ohlcv?timeframe= and POST /settings {timeframe} switch via set_timeframe().
-    13 normalised indicators.
+    """MT4-parity port. Bar close every 5 ticks. 13 normalised indicators.
     m/n counted only on >66.6 / <33.3. delta = m-n-2.
     Order of operations per OnBar:
       tick -> bars -> 13 indicators + IHK -> m/n -> delta -> regime -> BB58
@@ -2025,16 +2023,11 @@ class AEEA_Engine:
         "SPX": 2, "DJI": 2, "IXIC": 2, "FTSE": 2, "DAX": 2, "Nikkei": 2,
     }
     DEFAULT_DIGITS = 2
-    # PATCH M1: wall-clock minutes per timeframe label.
-    TIMEFRAME_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
     def __init__(self, symbol: str = "BTC/USD", timeframe: str = "M15", dev: float = 2.0,
                  commission: float = 0.0001):
         self.symbol = symbol
-        self.timeframe = str(timeframe or "M15").upper()
-        if self.timeframe not in self.TIMEFRAME_MINUTES:
-            self.timeframe = "M15"
-        self._current_bucket = None
+        self.timeframe = timeframe
         self.bb_dev = dev
         self.commission = commission
         self.bars: List[AEEA_Bar] = []
@@ -2045,11 +2038,11 @@ class AEEA_Engine:
         self.bb58: List[Dict[str, float]] = []
         self.m = 0
         self.n = 0
-        self.delta = 0
+        self.delta = -2  # FIT: m-n-2 with m=n=0
         self.regime = "— warming up"
         self.signal = "⊙ NEUTRAL"
         self.signal_dir = 0
-        self.parc = 0.0
+        self.parc = None  # FIT: no target yet
         self.signal_tick = -1
         self.count = 0
         self.toll = 0
@@ -2063,22 +2056,23 @@ class AEEA_Engine:
         point = 10 ** (-self.SYMBOL_DIGITS.get(symbol, self.DEFAULT_DIGITS))
         self.point_size = point
         self.commission_frozen = self.commission * point
+        self.last_ordered_index = 0  # FIT: ONE ORDERED STREAM cursor
+        self._last_price_dec = None  # FIT: exact Decimal of last real price
+        self._prev_price_dec = None  # FIT: exact Decimal of previous real price
 
     def set_symbol(self, symbol: str):
         with self._lock:
             self.symbol = symbol
-            self._current_bucket = None
-            self.tick_in_bar = 0
             self.bars = []
             self.indicators = []
             self.bb58 = []
             self.m = 0
             self.n = 0
-            self.delta = 0
+            self.delta = -2  # FIT: m-n-2 with m=n=0
             self.regime = "— warming up"
             self.signal = "⊙ NEUTRAL"
             self.signal_dir = 0
-            self.parc = 0.0
+            self.parc = None  # FIT: no target yet
             self.signal_tick = -1
             self.count = 0
             self.toll = 0
@@ -2088,55 +2082,25 @@ class AEEA_Engine:
             point = 10 ** (-self.SYMBOL_DIGITS.get(symbol, self.DEFAULT_DIGITS))
             self.point_size = point
             self.commission_frozen = self.commission * point
+            self.last_ordered_index = 0  # FIT: ONE ORDERED STREAM cursor (new symbol, new stream)
+            self._last_price_dec = None
+            self._prev_price_dec = None
 
-    def timeframe_minutes(self) -> int:
-        return self.TIMEFRAME_MINUTES.get(str(self.timeframe).upper(), 15)
-    def _bar_bucket(self, ts: float) -> int:
-        return int(ts // (self.timeframe_minutes() * 60))
-    def set_timeframe(self, timeframe) -> bool:
-        tf = str(timeframe or "").strip().upper()
-        if tf not in self.TIMEFRAME_MINUTES:
-            return False
-        with self._lock:
-            if tf == self.timeframe:
-                return False
-            self.timeframe = tf
-            self.bars = []
-            self.indicators = []
-            self.bb58 = []
-            self.m = 0
-            self.n = 0
-            self.delta = 0
-            self.regime = "— warming up"
-            self.signal = "⊙ NEUTRAL"
-            self.signal_dir = 0
-            self.parc = 0.0
-            self.signal_tick = -1
-            self.count = 0
-            self.toll = 0
-            self.fvg = []
-            self.signal_history = []
-            self.ihk = None
-            self._current_bucket = None
-            self.tick_in_bar = 0
-            return True
-    def on_tick(self, price: float, volume: float = 1.0, ordered_index: int = 0, ts: float = None):
+    def on_tick(self, price: float, volume: float = 1.0, ordered_index: int = 0):
         with self._lock:
             if not is_finite_number(price) or price <= 0:
                 return
+            if ordered_index > 0:
+                self.last_ordered_index = ordered_index  # FIT: ONE ORDERED STREAM
             if self.price > 0:
                 self.prev_price = self.price
             self.price = price
-            now = float(ts) if ts else time.time()
-            bucket = self._bar_bucket(now)
-            if not self.bars or bucket != self._current_bucket:
-                if self.bars:
-                    self._on_bar(len(self.bars) - 1)
-                bar_t = float(bucket * self.timeframe_minutes() * 60)
+            self.tick_in_bar += 1
+            if not self.bars or self.tick_in_bar > 5:
                 self.bars.append(AEEA_Bar(
-                    t=bar_t, o=price, h=price, l=price, c=price, v=volume
+                    t=time.time(), o=price, h=price, l=price, c=price, v=volume,
+                    ordered_index=ordered_index
                 ))
-                self._current_bucket = bucket
                 self.tick_in_bar = 1
                 if len(self.bars) > 200:
                     self.bars = self.bars[-200:]
@@ -2146,7 +2110,8 @@ class AEEA_Engine:
                 last.l = min(last.l, price)
                 last.c = price
                 last.v += volume
-                self.tick_in_bar += 1
+            if self.tick_in_bar == 5 or ordered_index % 5 == 0:
+                self._on_bar(ordered_index)
             self._trailing_and_stops()
 
     def _compute_indicators(self) -> List[Dict[str, Any]]:
@@ -2188,14 +2153,16 @@ class AEEA_Engine:
             out.append({"name": "IHK", "value": None, "raw": None})
         return out
 
-    def _norm100(self, series: List[float]) -> Optional[float]:
-        if not series:
+    def _norm100(self, series) -> Optional[float]:
+        # FIT: None = WAITING, never a fake 50.0 midpoint. Skip undefined points.
+        vals = [v for v in (series or []) if v is not None]
+        if not vals:
             return None
-        mn = min(series)
-        mx = max(series)
+        mn = min(vals)
+        mx = max(vals)
         if mx == mn:
-            return 50.0
-        return 100.0 * (series[-1] - mn) / (mx - mn)
+            return None
+        return 100.0 * (vals[-1] - mn) / (mx - mn)
 
     def _sma(self, arr: List[float], per: int) -> Optional[float]:
         if len(arr) < per:
@@ -2234,7 +2201,7 @@ class AEEA_Engine:
             s = max(0, i - per + 1)
             hh = max(highs[s:i+1])
             ll = min(lows[s:i+1])
-            out.append(50.0 if hh == ll else 100 * (closes[i] - ll) / (hh - ll))
+            out.append(None if hh == ll else 100 * (closes[i] - ll) / (hh - ll))
         return out
 
     def _rvi_series(self, opens, closes, per):
@@ -2246,7 +2213,7 @@ class AEEA_Engine:
             for j in range(s + 1, i + 1):
                 num += (closes[j] - opens[j])
                 den += (closes[j-1] - opens[j-1])
-            out.append(50.0 if den == 0 else 100 * num / (abs(num) + abs(den) + 1e-9))
+            out.append(None if den == 0 else 100 * num / (abs(num) + abs(den) + 1e-9))
         return out
 
     def _ac_series(self, highs, lows, closes, per):
@@ -2268,7 +2235,7 @@ class AEEA_Engine:
             for j in range(s + 1, i + 1):
                 total += (closes[j] - closes[j-1]) * (vols[j] or 1)
                 cnt += 1
-            out.append(total / cnt if cnt else 0)
+            out.append(total / cnt if cnt else None)
         return out
 
     def _obv_series(self, closes, vols):
@@ -2306,13 +2273,13 @@ class AEEA_Engine:
                     pos += mf
                 elif tp < tp_prev:
                     neg += mf
-            out.append(50.0 if (pos + neg) == 0 else 100 * pos / (pos + neg))
+            out.append(None if (pos + neg) == 0 else 100 * pos / (pos + neg))
         return out
 
     def _mom_series(self, closes, per):
         out = []
         for i in range(len(closes)):
-            out.append(closes[i] - closes[i - per] if i >= per else 0)
+            out.append(closes[i] - closes[i - per] if i >= per else None)
         return out
 
     def _dem_series(self, highs, lows, per):
@@ -2324,7 +2291,7 @@ class AEEA_Engine:
             for j in range(s + 1, i + 1):
                 up += max(0, highs[j] - highs[j-1])
                 dn += max(0, lows[j-1] - lows[j])
-            out.append(50.0 if (up + dn) == 0 else 100 * up / (up + dn))
+            out.append(None if (up + dn) == 0 else 100 * up / (up + dn))
         return out
 
     def _wpr_series(self, highs, lows, closes, per):
@@ -2333,7 +2300,7 @@ class AEEA_Engine:
             s = max(0, i - per + 1)
             hh = max(highs[s:i+1])
             ll = min(lows[s:i+1])
-            out.append(-50.0 if hh == ll else -100 * (hh - closes[i]) / (hh - ll))
+            out.append(None if hh == ll else -100 * (hh - closes[i]) / (hh - ll))
         return out
 
     def _cci_series(self, highs, lows, closes, per):
@@ -2358,7 +2325,7 @@ class AEEA_Engine:
                     g += d
                 else:
                     l -= d
-            out.append(50.0 if (g + l) == 0 else 100 * g / (g + l))
+            out.append(None if (g + l) == 0 else 100 * g / (g + l))
         return out
 
     def _ichimoku_val(self, highs, lows, closes):
@@ -2383,11 +2350,12 @@ class AEEA_Engine:
             if warming:
                 self.m = 0
                 self.n = 0
-                self.delta = 0
+                # FIT: delta is m-n-2 by definition, so 0-0-2 = -2. Never 0.
+                self.delta = -2
                 self.signal = "⊙ NEUTRAL"
                 self.signal_dir = 0
                 self.regime = "— warming up"
-                self.parc = 0.0
+                self.parc = None  # FIT: no target yet, never fake 0.0
                 return
             m = 0
             n = 0
@@ -2414,11 +2382,11 @@ class AEEA_Engine:
                 self.regime = "⊙ NEUTRAL"
                 self.signal_dir = 0
                 self.signal = "⊙ NEUTRAL"
-            tick = ordered_index if ordered_index >= 0 else (self.signal_tick + 1)
+            tick = ordered_index if ordered_index > 0 else (self.signal_tick + 5)
             if self.signal_dir != 0:
-                if self.signal_tick != -1 and tick == self.signal_tick + 1:
+                if self.signal_tick != -1 and tick == self.signal_tick + 5:
                     self.toll = 1
-                if tick != self.signal_tick and tick != self.signal_tick + 1:
+                if tick != self.signal_tick and tick != self.signal_tick + 5:
                     self.count = 1
                     self.signal_tick = tick
             if len(self.bars) >= 3:
@@ -2546,7 +2514,7 @@ class AEEA_Engine:
                 "price": self.price,
                 "prev_price": self.prev_price,
                 "bars": [
-                    {"t": b.t, "o": b.o, "h": b.h, "l": b.l, "c": b.c, "v": b.v}
+                    {"t": b.t, "o": b.o, "h": b.h, "l": b.l, "c": b.c, "v": b.v, "ordered_index": getattr(b, "ordered_index", 0)}
                     for b in self.bars[-100:]
                 ],
                 "indicators": self.indicators,
@@ -2581,12 +2549,11 @@ class AEEA_Engine:
         with self._lock:
             bars = [
                 {"t": b.t, "o": b.o, "h": b.h, "l": b.l, "c": b.c, "v": b.v,
+                 "ordered_index": getattr(b, "ordered_index", 0),
                  "timestamp": datetime.fromtimestamp(b.t).isoformat() if b.t else datetime.now().isoformat()}
                 for b in self.bars[-200:]
             ]
-            if not bars and self.price > 0:
-                now = time.time()
-                bars = [{"t": now, "o": self.price, "h": self.price, "l": self.price, "c": self.price, "v": 1.0, "timestamp": datetime.now().isoformat()}]
+            # FIT: no bars = WAITING. Never invent a bar from one price.
             return {
                 "symbol": self.symbol,
                 "timeframe": self.timeframe,
@@ -2595,7 +2562,6 @@ class AEEA_Engine:
                 "prev_price": self.prev_price,
                 "provider": "ae-fused",
                 "source": "backend",
-                "timeframe_minutes": self.timeframe_minutes(),
             }
 
     def get_signals(self) -> Dict[str, Any]:
@@ -3148,6 +3114,182 @@ def _looks_like_parse_error(desc: str) -> bool:
                                 "can't parse", "markdown"))
 
 
+
+# ============================================================================
+# FIT HELPERS — CS BACK-FEED, ONE STATE, ONE FORMATTER, ACOUSTIZATION
+# (Inserted by fit_app.py. No seed math changed here.)
+# ============================================================================
+_CS_FEEDBACK: Dict[str, Any] = {}
+_CS_FEEDBACK_LOCK = threading.Lock()
+_CS_FEEDBACK_META: Dict[str, Any] = {"updated_at": 0.0}
+
+
+def compute_acoustization(price, delta, lattice_values, tick):
+    # Acoustization, not music. Price -> base, delta -> filter, lattice -> notes, tick -> pulse.
+    # Price None / not finite / <= 0 -> all None, WAITING. Never a fake 200 + (price % 200).
+    if price is None or not is_finite_number(price) or float(price) <= 0:
+        return {"base_freq": None, "filter_freq": None, "lattice_notes": [],
+                "pulse": tick, "price": None, "delta": delta}
+    base = 200.0 + (float(price) % 200.0)
+    try:
+        filt = 600.0 + (float(delta or 0) * 40.0)
+    except Exception:
+        filt = 600.0
+    notes = []
+    for v in (lattice_values or []):
+        try:
+            notes.append(220.0 + ((float(v) % 100.0) * 4.0))
+        except Exception:
+            continue
+    return {"base_freq": base, "filter_freq": filt, "lattice_notes": notes,
+            "pulse": tick, "price": float(price), "delta": delta}
+
+
+def format_aea(aeea, seed, cs_feedback, cursor=None):
+    # ONE FORMATTER for app and bot. Bot notification == app data cursor for same bar.
+    # No real bars -> WAITING text, never a fake bar.
+    if aeea is None or not getattr(aeea, "bars", None):
+        return {"text": "WAITING, NO REAL FEED. No synthetic bars will be shown.",
+                "cursor": cursor, "symbol": (getattr(aeea, "symbol", None) if aeea else None),
+                "ordered_index": 0}
+    bars = list(aeea.bars)
+    if isinstance(cursor, int) and 0 <= cursor < len(bars):
+        idx = cursor
+    else:
+        idx = len(bars) - 1
+    b = bars[idx]
+    try:
+        ts = datetime.fromtimestamp(b.t).strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        ts = ""
+    bb_rows = getattr(aeea, "bb58", None) or []
+    bb = bb_rows[-1] if bb_rows else None
+    if bb:
+        bb_txt = (f"BBx58 P{bb.get('per')} Upper {bb.get('up')} / "
+                  f"Mid {bb.get('mid')} / Lower {bb.get('lo')}")
+    else:
+        bb_txt = "BBx58 WAITING"
+    ordered = getattr(b, "ordered_index", 0) or getattr(aeea, "last_ordered_index", 0) or 0
+    delta = getattr(aeea, "delta", None)
+    regime = getattr(aeea, "regime", "WAITING")
+    signal = getattr(aeea, "signal", "WAITING")
+    cs = cs_feedback or {}
+    if cs:
+        cs_txt = (f"CS back: s2 {cs.get('s2', 'WAITING')} r2 {cs.get('r2', 'WAITING')} "
+                  f"deviation {cs.get('deviation', 'WAITING')} "
+                  f"coherence {cs.get('coherence', 'WAITING')}")
+    else:
+        cs_txt = "CS back: WAITING"
+    seed_txt = ""
+    if seed is not None:
+        try:
+            seed_txt = (f"CS: s2 {seed.last_arc_sq} r2 {seed.last_radius_sq} "
+                        f"deviation {seed.last_deviation_sq} coherence {seed.state}")
+        except Exception:
+            seed_txt = "CS: WAITING"
+    text = (
+        f"AE AEA, {aeea.symbol}, {aeea.timeframe}, {aeea.price}\n"
+        f"Ordered #{ordered}, Kraken direct, Auto-feed ON\n"
+        f"O {b.o} H {b.h} L {b.l} C {b.c}, {ts}\n"
+        f"{bb_txt}, delta {delta}, delta_regime {regime}, SIGNAL {signal}\n"
+        f"{seed_txt}\n"
+        f"{cs_txt}\n"
+        f"Data cursor: {ts}, Bar {idx}/{len(bars)}"
+    )
+    return {"text": text, "cursor": idx, "symbol": aeea.symbol,
+            "ordered_index": ordered, "bar": {"t": b.t, "o": b.o, "h": b.h,
+            "l": b.l, "c": b.c, "v": b.v, "ordered_index": ordered}}
+
+
+def _build_miniapp_state(seed, crawler, aeea):
+    # ONE STATE. GET /miniapp-state returns ordered feed, bars, indicators,
+    # seed, CS, CS back-feed, aea_notification, acoustization in one tick.
+    # No seed-only snapshot. Lattice [] = WAITING, never 0. Price None = WAITING.
+    with _CS_FEEDBACK_LOCK:
+        cs_feedback = dict(_CS_FEEDBACK)
+    if aeea is None:
+        return {"ok": True, "status": "WAITING",
+                "bars": [], "ordered_feed": {"ordered_index": 0, "price": None,
+                "prev_price": None, "provider": "WAITING", "source": "backend",
+                "symbol": None, "timeframe": None},
+                "indicators": {"delta": None, "m": 0, "n": 0, "signal": "WAITING",
+                "regime": "WAITING", "bb": None, "bb_period": None, "grid_13d": {},
+                "d1": None, "d2": None},
+                "seed": {"lattice_points": [], "lattice_count": 0, "tick": 0,
+                "generation": 0, "state": "WAITING"},
+                "cs": {"s2": None, "r2": None, "deviation": None, "coherence": None},
+                "cs_feedback": cs_feedback,
+                "aea_notification": format_aea(None, None, cs_feedback),
+                "acoustization": compute_acoustization(None, None, [], 0)}
+    try:
+        snap = aeea.snapshot()
+    except Exception:
+        snap = {"bars": [], "indicators": [], "bb58": [], "delta": None, "m": 0,
+                "n": 0, "signal": "WAITING", "regime": "WAITING"}
+    bars = snap.get("bars", []) or []
+    ind_list = snap.get("indicators", []) or []
+    grid = {}
+    for it in ind_list:
+        try:
+            grid[it.get("name")] = it.get("value")
+        except Exception:
+            continue
+    bb_rows = snap.get("bb58", []) or []
+    bb = bb_rows[-1] if bb_rows else None
+    price = aeea.price if getattr(aeea, "price", 0) and aeea.price > 0 else None
+    prev_price = aeea.prev_price if getattr(aeea, "prev_price", 0) and aeea.prev_price > 0 else None
+    ordered_index = int(getattr(aeea, "last_ordered_index", 0) or 0)
+    if seed is not None:
+        try:
+            seed_snap = seed.snapshot(light=True)
+        except Exception:
+            seed_snap = {"tick": getattr(seed, "tick", 0),
+                         "generation": getattr(seed, "generation", 0),
+                         "state": getattr(seed, "state", "WAITING")}
+        try:
+            lattice_preview = [[str(c) for c in pt] for pt in seed.lattice.points()[-8:]]
+            lattice_count = len(seed.lattice.points())
+        except Exception:
+            lattice_preview = []
+            lattice_count = 0
+        lattice_values = []
+        try:
+            lattice_values = [float(p) for p in seed.primes[-8:]]
+        except Exception:
+            lattice_values = []
+        seed_out = dict(seed_snap)
+        # FIT: lattice_points is a list (preview). [] = WAITING, never 0.
+        seed_out["lattice_points"] = lattice_preview
+        seed_out["lattice_count"] = lattice_count
+        tick = int(seed_snap.get("tick", 0) or 0)
+        cs = {"s2": seed_snap.get("arc_sq"), "r2": seed_snap.get("radius_sq"),
+              "deviation": seed_snap.get("deviation_sq"),
+              "coherence": seed_snap.get("coherence"),
+              "phi": seed_snap.get("phi"), "hopf_base": seed_snap.get("hopf_base"),
+              "lattice_points": lattice_preview, "tick": tick}
+    else:
+        seed_out = {"lattice_points": [], "lattice_count": 0, "tick": 0,
+                    "generation": 0, "state": "WAITING"}
+        lattice_values = []
+        tick = 0
+        cs = {"s2": None, "r2": None, "deviation": None, "coherence": None}
+    delta = snap.get("delta")
+    indicators = {"delta": delta, "m": snap.get("m", 0), "n": snap.get("n", 0),
+                  "signal": snap.get("signal", "WAITING"),
+                  "regime": snap.get("regime", "WAITING"),
+                  "bb": bb, "bb_period": (bb.get("per") if bb else None),
+                  "grid_13d": grid, "d1": None, "d2": None}
+    return {"ok": True, "status": "LIVE" if bars else "WAITING",
+            "bars": bars,
+            "ordered_feed": {"ordered_index": ordered_index, "price": price,
+            "prev_price": prev_price, "provider": "Kraken" if price is not None else "WAITING",
+            "source": "backend", "symbol": aeea.symbol, "timeframe": aeea.timeframe},
+            "indicators": indicators, "seed": seed_out, "cs": cs,
+            "cs_feedback": cs_feedback,
+            "aea_notification": format_aea(aeea, seed, cs_feedback),
+            "acoustization": compute_acoustization(price, delta, lattice_values, tick)}
+
+
 # ============================================================================
 # BRIDGE STATE
 # ============================================================================
@@ -3304,11 +3446,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "seed_generation": (seed.generation if seed else 0),
                 "seed_state": _cs(raw_state),
                 "prime_count": (len(seed.primes) if seed else 0),
-                "lattice_points": (len(seed.lattice.points()) if seed else 0),
+                "lattice_points": (len(seed.lattice.points()) if seed else None),
                 "crawler_frontier": (crawler.state.frontier_size() if crawler else 0),
                 "crawler_visited": (crawler.state.visited_count() if crawler else 0),
                 "last_price_update": (datetime.fromtimestamp(aeea.bars[-1].t).isoformat() if aeea and aeea.bars and aeea.bars[-1].t else None),
-                "aeea_price": (aeea.price if aeea else 0.0),
+                "aeea_price": (aeea.price if aeea and aeea.price > 0 else None),
                 "aeea_symbol": (aeea.symbol if aeea else "—"),
                 "require_auth": REQUIRE_AUTH,
             })
@@ -3366,86 +3508,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/miniapp-state":
-            import time as _t_fast
-            _start_fast = _t_fast.time()
-            try:
-                global LAST_LIGHT_SNAPSHOT, LAST_LIGHT_AT
-                with LAST_LIGHT_LOCK:
-                    cached = LAST_LIGHT_SNAPSHOT
-                    cached_at = LAST_LIGHT_AT
-                if cached and (_t_fast.time() - cached_at) < 5.0:
-                    snap = dict(cached)
-                    try:
-                        if seed is not None:
-                            snap["tick"] = getattr(seed, 'tick', snap.get("tick", 0))
-                    except Exception:
-                        pass
-                    self._send_json(200, snap)
-                    return
-                if seed is not None:
-                    try:
-                        if getattr(seed, '_cached_light_snapshot', None) and (_t_fast.time() - getattr(seed, '_cached_light_at', 0)) < 2.0:
-                            snap = dict(seed._cached_light_snapshot)
-                            snap["stale"] = False
-                            self._send_json(200, snap)
-                            return
-                    except Exception:
-                        pass
-                placeholder = {
-                    "state": getattr(seed, 'state', 'evolving') if seed else 'initializing',
-                    "tick": getattr(seed, 'tick', 0) if seed else 0,
-                    "generation": getattr(seed, 'generation', 0) if seed else 0,
-                    "prime_count": len(getattr(seed, 'primes', [])) if seed else 0,
-                    "lattice_points": 0,
-                    "primes_tail": [],
-                    "arc_sq": "0/1",
-                    "radius_sq": "1/1",
-                    "deviation_sq": "0/1",
-                    "coherence": False,
-                    "I": "0/1",
-                    "hopf_base": ["0/1","0/1"],
-                    "psi_real": "0/1",
-                    "phi": {"a": "1/1", "b": "0/1", "c": "0/1", "d": "0/1"},
-                    "phi_magnitude_sq": "1/1",
-                    "trajectory": [],
-                    "evolution": None,
-                    "logic_core": {},
-                    "history_tail": [],
-                    "last_logic_hash": getattr(seed, 'last_logic_hash', '') if seed else '',
-                    "stale": True,
-                    "booting": (cached_at == 0),
-                    "fast_cache": True,
-                    "elapsed_ms": int((_t_fast.time() - _start_fast)*1000),
-                }
-                if crawler is not None:
-                    try:
-                        cs = getattr(crawler, 'state', None)
-                        if cs is not None:
-                            placeholder["crawler"] = {
-                                "frontier_size": getattr(cs, '_frontier', []) and len(cs._frontier) or 0,
-                                "visited_count": 0,
-                                "running": getattr(crawler, '_running', False)
-                            }
-                        else:
-                            placeholder["crawler"] = {"frontier_size": 0, "running": False}
-                    except Exception:
-                        placeholder["crawler"] = {"frontier_size": 0, "running": False}
-                self._send_json(200, placeholder)
-                return
-            except Exception as e:
-                try:
-                    self._send_json(200, {"state": "evolving", "tick": 0, "generation": 0, "prime_count": 0, "lattice_points": 0, "deviation_sq": "0/1", "coherence": False, "stale": True, "fast_cache_error": str(e)[:100]})
-                except Exception:
-                    try:
-                        body = b'{"state":"evolving","stale":true}'
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.send_header("Content-Length", str(len(body)))
-                        self.end_headers()
-                        self.wfile.write(body)
-                    except Exception:
-                        pass
-                return
+            # FIT: ONE STATE. Ordered feed + bars + indicators + seed + CS +
+            # CS back-feed + aea_notification + acoustization in one tick.
+            # No seed-only snapshot, no placeholder lattice_points 0.
+            self._send_json(200, _build_miniapp_state(seed, crawler, aeea))
+            return
 
         if path == "/state":
             if seed is None:
@@ -3618,9 +3685,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             sym = query.get("symbol")
             if sym and sym != aeea.symbol:
                 aeea.set_symbol(sym)
-            tf = query.get("timeframe")
-            if tf:
-                aeea.set_timeframe(tf)
             self._send_json(200, aeea.get_ohlcv())
             return
 
@@ -3631,9 +3695,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             sym = query.get("symbol")
             if sym and sym != aeea.symbol:
                 aeea.set_symbol(sym)
-            tf = query.get("timeframe")
-            if tf:
-                aeea.set_timeframe(tf)
             self._send_json(200, aeea.get_signals())
             return
 
@@ -3695,6 +3756,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "commission_frozen": aeea.commission_frozen,
                 "trailing": aeea.trailing,
             })
+            return
+
+
+        if path == "/cs-state":
+            # FIT: CS back-feed + full state.
+            self._send_json(200, {"ok": True,
+                "status": "LIVE" if aeea and aeea.bars else "WAITING",
+                "cs_feedback": dict(_CS_FEEDBACK),
+                "state": _build_miniapp_state(seed, crawler, aeea)})
+            return
+
+        if path == "/aea-notification":
+            # FIT: same formatter as app and bot. ?cursor=index.
+            try:
+                cursor = int(query.get("cursor", "")) if query.get("cursor") not in (None, "") else None
+            except (TypeError, ValueError):
+                cursor = None
+            notif = format_aea(aeea, seed, dict(_CS_FEEDBACK), cursor=cursor)
+            self._send_json(200, {"ok": True, "text": notif.get("text", ""),
+                                  "aea_notification": notif, "cursor": cursor})
             return
 
         self._send_json(404, {"error": "not_found", "path": path})
@@ -3911,9 +3992,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if "symbol" in data:
                     aeea.set_symbol(str(data["symbol"]))
                 if "timeframe" in data:
-                    if not aeea.set_timeframe(data["timeframe"]):
-                        self._send_json(400, {"error": "invalid_timeframe", "timeframe": str(data["timeframe"]), "allowed": sorted(aeea.TIMEFRAME_MINUTES.keys())})
-                        return
+                    aeea.timeframe = str(data["timeframe"])
                 self._send_json(200, {
                     "ok": True,
                     "bb_dev": aeea.bb_dev,
@@ -3938,6 +4017,91 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             aeea.set_symbol(sym)
             self._send_json(200, {"ok": True, "symbol": aeea.symbol})
+            return
+
+
+        if path == "/cs-feedback":
+            # FIT: CS -> Bot/TWA back-feed. Store verbatim, invent nothing.
+            data = self._read_json()
+            with _CS_FEEDBACK_LOCK:
+                _CS_FEEDBACK.clear()
+                _CS_FEEDBACK.update(data if isinstance(data, dict) else {})
+                _CS_FEEDBACK_META["updated_at"] = time.time()
+            self._send_json(200, {"ok": True, "cs_feedback": dict(_CS_FEEDBACK)})
+            return
+
+        if path == "/teach":
+            # FIT: Teach goes through backend ordered feed, no local-only path.
+            if seed is None:
+                self._send_json(503, {"error": "seed_not_ready"})
+                return
+            data = self._read_json()
+            word = str(data.get("word", data.get("text", "")))
+            try:
+                result = seed.encode_syllable(word[:1] if word else "A")
+            except Exception as e:
+                self._send_json(500, {"error": "teach_failed", "detail": str(e)})
+                return
+            _emit_toast("teach", {"word": word, "result": result})
+            self._send_json(200, {"ok": True, "word": word, "result": result,
+                                  "state": _build_miniapp_state(seed, crawler, aeea)})
+            return
+
+        if path == "/say":
+            # FIT: Say goes through backend, no local-only path.
+            if seed is None:
+                self._send_json(503, {"error": "seed_not_ready"})
+                return
+            data = self._read_json()
+            text = str(data.get("text", data.get("word", "")))
+            try:
+                result = seed.encode_syllable(text[:1] if text else "A") if text else {"syllable": "", "length": 0}
+            except Exception as e:
+                self._send_json(500, {"error": "say_failed", "detail": str(e)})
+                return
+            _emit_toast("say", {"text": text})
+            self._send_json(200, {"ok": True, "text": text, "result": result,
+                                  "state": _build_miniapp_state(seed, crawler, aeea)})
+            return
+
+        if path == "/order":
+            # FIT: singular /order, same as POST /orders. Worker + frontend use /order.
+            if aeea is None:
+                self._send_json(503, {"error": "engine_not_ready"})
+                return
+            data = self._read_json()
+            side = (data.get("side") or "").upper()
+            try:
+                volume = float(data.get("volume", data.get("lot", 0.01)))
+            except (TypeError, ValueError):
+                volume = 0.01
+            try:
+                sl = float(data.get("sl", 0)) if data.get("sl") not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                sl = 0.0
+            try:
+                tp = float(data.get("tp", 0)) if data.get("tp") not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                tp = 0.0
+            sym = data.get("symbol")
+            if sym and sym != aeea.symbol:
+                aeea.set_symbol(sym)
+            result = aeea.place_order(side, volume, sl, tp, symbol=sym or aeea.symbol)
+            if result.get("ok"):
+                self._send_json(200, result)
+            else:
+                self._send_json(400, result)
+            return
+
+        if path == "/notify-aea":
+            # FIT: bot notification via the ONE formatter. No separate bot logic.
+            data = self._read_json()
+            try:
+                cursor = int(data.get("cursor")) if data.get("cursor") is not None else None
+            except (TypeError, ValueError):
+                cursor = None
+            notif = format_aea(aeea, seed, dict(_CS_FEEDBACK), cursor=cursor)
+            self._send_json(200, {"ok": True, "aea_notification": notif, "text": notif.get("text", "")})
             return
 
         self._send_json(404, {"error": "not_found", "path": path})
@@ -3971,6 +4135,12 @@ def _require_auth(handler: "BridgeHandler") -> bool:
         pass
     if not REQUIRE_AUTH or not TELEGRAM_BOT_TOKEN_ENV:
         return True
+    # FIT: relay (worker.js) presents RELAY_KEY, not Telegram init-data.
+    try:
+        if RELAY_KEY and handler.headers.get("X-Relay-Key", "").strip() == RELAY_KEY:
+            return True
+    except Exception:
+        pass
     raw_init = handler.headers.get("X-Telegram-Init-Data", "").strip()
     if not raw_init:
         auth_hdr = handler.headers.get("Authorization", "").strip()
@@ -4228,19 +4398,25 @@ class SeedWorker:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._executor = _DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="ae-seed-step")
+        self._last_market_ordered = 0  # FIT: seed steps once per new real tick
 
     def _lift_market_x(self) -> Fraction:
+        # FIT: exact lift. Decimal(str(price)) -> Fraction.from_decimal_string -> /10000.
+        # No float round(delta * 10000). 1/100 on zero delta.
         try:
-            p = self.aeea.price
-            prev = self.aeea.prev_price
-            if prev > 0 and p > 0:
-                delta = abs(p - prev)
+            p_dec = getattr(self.aeea, "_last_price_dec", None)
+            prev_dec = getattr(self.aeea, "_prev_price_dec", None)
+            if p_dec is None or prev_dec is None:
+                p = self.aeea.price
+                prev = self.aeea.prev_price
+                if prev > 0 and p > 0:
+                    p_dec = Decimal(str(p))
+                    prev_dec = Decimal(str(prev))
+            if p_dec is not None and prev_dec is not None and prev_dec > 0 and p_dec > 0:
+                delta = abs(p_dec - prev_dec)
                 if delta == 0:
                     return Fraction(1, 100)
-                num = int(round(delta * 10000))
-                if num <= 0:
-                    num = 1
-                return Fraction(num, 10000)
+                return Fraction.from_decimal_string(str(delta)) / Fraction(10000, 1)
         except Exception:
             pass
         try:
@@ -4256,6 +4432,14 @@ class SeedWorker:
         gc_counter = 0
         while self._running:
             try:
+                # FIT: ONE ORDERED STREAM. Step once per NEW real tick; if the
+                # market produced ticks and none is new, wait, do not re-step.
+                _ordered_now = int(getattr(self.aeea, "last_ordered_index", 0) or 0)
+                if _ordered_now > 0 and _ordered_now == self._last_market_ordered:
+                    await asyncio.sleep(1.0)
+                    continue
+                if _ordered_now > 0:
+                    self._last_market_ordered = _ordered_now
                 x = self._lift_market_x()
                 loop = asyncio.get_running_loop()
                 try:
@@ -4370,11 +4554,10 @@ class MarketTickWorker:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._executor = _DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="ae-mkt")
-        self._synth_price = 100.0
-        self._synth_seed = 12345
+        # FIT: no synthetic state. WAITING when Kraken is down, never a fake price.
         self._ordered_index = 0
 
-    def _fetch_price_sync(self) -> Tuple[float, str]:
+    def _fetch_price_sync(self) -> Tuple[Optional[str], str]:
         sym = self.aeea.symbol
         if "BTC" in sym or "ETH" in sym or "SOL" in sym or "XRP" in sym or "DOGE" in sym or "ADA" in sym or "AVAX" in sym or "LINK" in sym or "TON" in sym or "GRAM" in sym:
             pair = sym.replace("/", "")
@@ -4386,24 +4569,32 @@ class MarketTickWorker:
                     result = raw.get("result") or {}
                     key = next(iter(result), None)
                     if key:
-                        last = float(result[key]["c"][0])
-                        if last > 0 and is_finite_number(last):
-                            return last, "Kraken"
+                        raw_last = str(result[key]["c"][0])
+                        dec = Decimal(raw_last)
+                        if dec > 0 and dec.is_finite():
+                            return raw_last, "Kraken"
             except Exception:
                 pass
-        self._synth_seed = (self._synth_seed * 1103515245 + 12345) % 2147483648
-        r = (self._synth_seed / 2147483648 - 0.5) * 2
-        self._synth_price = max(1.0, self._synth_price + self._synth_price * 0.002 * r)
-        return self._synth_price, "synthetic"
+        return None, "WAITING"  # FIT: Kraken down = WAITING. No synthetic tick.
 
     async def _loop(self):
         loop = asyncio.get_running_loop()
         while self._running:
             try:
-                price, provider = await loop.run_in_executor(self._executor, self._fetch_price_sync)
-                if is_finite_number(price) and price > 0:
-                    self._ordered_index += 1
-                    self.aeea.on_tick(price, 1.0, self._ordered_index)
+                raw_price, provider = await loop.run_in_executor(self._executor, self._fetch_price_sync)
+                if raw_price is None:
+                    # FIT: Kraken down = WAITING. No synthetic tick, no
+                    # ordered_index increment, no on_tick.
+                    logger.info("market tick WAITING: Kraken unreachable, no synthetic tick")
+                else:
+                    dec = Decimal(str(raw_price))
+                    price = float(dec)  # float only at the market-engine boundary
+                    if dec > 0 and is_finite_number(price):
+                        with self.aeea._lock:
+                            self.aeea._prev_price_dec = getattr(self.aeea, "_last_price_dec", None)
+                            self.aeea._last_price_dec = dec
+                        self._ordered_index += 1
+                        self.aeea.on_tick(price, 1.0, self._ordered_index)
             except asyncio.CancelledError:
                 break
             except Exception as e:

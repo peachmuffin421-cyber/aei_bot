@@ -126,7 +126,7 @@ code {
 <div class="container">
 
 <h1>⚡ Æ TWA BRIDGE</h1>
-<div class="subtitle">HEROKU WORKER DYNO · FUSION ÆI + ÆEA · FINAL, FIRST EDITION</div>
+<div class="subtitle">HEROKU WEB DYNO · AE TWA UNIFIED, AEA FEED · FINAL, FIRST EDITION</div>
 
 <div class="status-line">
     <div class="status-dot wait" id="dot"></div>
@@ -156,7 +156,14 @@ code {
     <ul class="endpoint-list">
         <li><span class="method">GET</span><span class="path">/health</span><span class="desc">liveness (no auth)</span></li>
         <li><span class="method">GET</span><span class="path">/config</span><span class="desc">configuration (auth)</span></li>
-        <li><span class="method">GET</span><span class="path">/miniapp-state</span><span class="desc">authoritative seed state</span></li>
+        <li><span class="method">GET</span><span class="path">/miniapp-state</span><span class="desc">single truth, ordered feed + CS + CS back-feed</span></li>
+        <li><span class="method">GET</span><span class="path">/cs-state</span><span class="desc">CS back-feed + state</span></li>
+        <li><span class="method">GET</span><span class="path">/aea-notification</span><span class="desc">bot text, same formatter</span></li>
+        <li><span class="method">POST</span><span class="path">/cs-feedback</span><span class="desc">CS sends s2, r2, deviation, coherence back</span></li>
+        <li><span class="method">POST</span><span class="path">/notify-aea</span><span class="desc">send bot notification</span></li>
+        <li><span class="method">POST</span><span class="path">/teach</span><span class="desc">teach via ordered feed</span></li>
+        <li><span class="method">POST</span><span class="path">/say</span><span class="desc">say via ordered feed</span></li>
+        <li><span class="method">POST</span><span class="path">/order</span><span class="desc">order via backend</span></li>
         <li><span class="method">GET</span><span class="path">/state</span><span class="desc">full seed snapshot</span></li>
         <li><span class="method">GET</span><span class="path">/crawler-state</span><span class="desc">crawler frontier + visited</span></li>
         <li><span class="method">GET</span><span class="path">/crawler-queue</span><span class="desc">crawler queue preview</span></li>
@@ -187,7 +194,7 @@ code {
         <li><span class="method">DELETE</span><span class="path">/anchor/&lt;idx&gt;</span><span class="desc">delete anchor</span></li>
     </ul>
     <div class="note">
-        All non-<code>/health</code> and non-<code>/</code> endpoints require <code>X-Telegram-Init-Data</code> when <code>REQUIRE_AUTH=1</code>.
+        Backend authoritative. Frontend view only. No synthetic bars. Lattice [] equals WAITING, never 0. CS back-feed appears in /miniapp-state and in bot text.
     </div>
 </div>
 
@@ -202,7 +209,7 @@ code {
 </div>
 
 <div class="footer">
-    Æ TWA · Fusion ÆI + ÆEA · Final, First edition · LOGOS = Φ = Truth = Path = Origin
+    Æ TWA · AE TWA Unified, AEA Feed · Final, First edition · LOGOS = Φ = Truth = Path = Origin
 </div>
 
 </div>

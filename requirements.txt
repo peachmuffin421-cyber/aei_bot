@@ -1,25 +1,23 @@
 # ============================================================================
 # Æ TWA — FUSED BACKEND — PYTHON DEPENDENCIES
 # Version: Final, First edition
-# Platform: Heroku worker dyno / Termux / any POSIX-compatible Python 3.10+
+# Platform: Heroku web dyno / Termux / any POSIX-compatible Python 3.10+
 # ============================================================================
 
 # ----------------------------------------------------------------------------
-# CORE TELEGRAM BOT FRAMEWORK
+# CORE — STDLIB ONLY, NO DEPENDENCIES NEEDED
 # ----------------------------------------------------------------------------
-python-telegram-bot==21.6
-# Provides: Application, CommandHandler, ContextTypes, WebAppInfo,
-# MenuButtonWebApp. Requires Python >= 3.9. Uses asyncio + httpx internally.
-
+# The backend is a single file, app.py, stdlib only.
+# No Flask, no python-telegram-bot, no httpx, no external packages.
+# Telegram send uses stdlib urllib.request to the Bot API.
+# Heroku installs nothing. The build slug is app.py + supporting files.
 # ----------------------------------------------------------------------------
-# HTTP CLIENT (used implicitly by python-telegram-bot)
-# ----------------------------------------------------------------------------
-httpx>=0.27,<0.28
+# stdlib only, no dependencies needed
 
 # ----------------------------------------------------------------------------
 # EXACT SYMBOLIC ARITHMETIC
 # ----------------------------------------------------------------------------
-# The fused backend ships with a self-contained Fraction wrapper built on
+# The backend ships with a self-contained Fraction wrapper built on
 # Python's stdlib `fractions.Fraction` and `decimal.Decimal`. No external
 # symbolic-math library is required for the ÆI seed pipeline or the ÆEA
 # engine.
@@ -32,6 +30,9 @@ httpx>=0.27,<0.28
 # TLS, SQLITE, LOGGING, RING BUFFERS, THREADS
 # ----------------------------------------------------------------------------
 # All provided by the Python standard library. No additional packages needed.
+# TLS: stdlib ssl. Logging: stdlib logging. Ring buffers: collections.deque.
+# Threads: threading. HTTP server: http.server ThreadingHTTPServer.
+# JSON: stdlib json. Time: stdlib time, datetime. Hash: hashlib.
 
 # ----------------------------------------------------------------------------
 # RUNTIME COMPATIBILITY
