@@ -32,6 +32,19 @@ Audit directives, enforced in this file:
     thread is never masked as alive.
   - AUDIT FIX (pending updates): run_polling uses drop_pending_updates=True, documented.
     Test /start with a fresh message after redeploy.
+  - AUDIT FIX (set_wakeup_fd, 2026-11-15): AE_Bot runs in thread 'ae-bot', NOT the
+    main thread. PTB 21.6 run_polling() with default stop_signals installs signal
+    handlers via signal.set_wakeup_fd(), which Python only allows in the main
+    thread. That raised "set_wakeup_fd only works in main thread of the main
+    interpreter" before any polling, and left "coroutine 'Updater.start_polling'
+    was never awaited". Fix: run_polling(stop_signals=[], close_loop=False).
+    Signals stay owned by main(), which runs in the main thread. Main asks the
+    bot to stop via AE_Bot.request_stop() on shutdown. Do NOT create a loop in
+    main(): run() creates exactly one placeholder current loop before
+    Application.builder().build() (build needs get_event_loop), then
+    run_polling() owns the running loop, and _post_init captures that running
+    loop as self._loop. The old bug was TWO placeholder loops (main + run),
+    neither of them the running loop.
 
 Exactness:
   - No floats anywhere in seed state. Fraction or PyFraction only.
@@ -81,7 +94,7 @@ Bounded-precision revision (constraint-locked, this file only):
   Perfect-square sqrt stays exactly exact; everything else is exact to
   30 decimal digits, which is the documented precision of this revision.
 """
-__version__ = "Final, First edition - Revised (bounded-precision exact rational)"
+__version__ = "Final, First edition - Revised (bounded-precision exact rational) + set_wakeup_fd fix"
 import sys
 try:
     if hasattr(sys, "set_int_max_str_digits"):
@@ -3152,6 +3165,28 @@ class AE_Bot:
                 pass
         self._async_thread = threading.Thread(target=_run, name="ae-bot-async", daemon=True)
         self._async_thread.start()
+    def request_stop(self):
+        # Called from main() thread on SIGTERM / SIGINT.
+        # With stop_signals=[], PTB will NOT exit on signals by itself, because
+        # it installed no signal handlers in the bot thread. Main owns signals,
+        # so main must ask the bot to stop on the bot's own running loop.
+        # Returns True if Application.stop() was scheduled and completed.
+        # If this fails, the bot thread is daemon, so process exit still kills
+        # it. Never raise out of here: shutdown must continue.
+        try:
+            app = self.application
+            loop = self._loop
+            if app is None or loop is None:
+                return False
+            if loop.is_closed() or not loop.is_running():
+                return False
+            fut = asyncio.run_coroutine_threadsafe(app.stop(), loop)
+            fut.result(timeout=5)
+            return True
+        except Exception as e:
+            _log("warning", f"bot request_stop failed: {e}")
+            return False
+
     def run(self):
         # AUDIT FIX: If PTB is missing, log LOUDLY and return. Bridge is already started in main(),
         # so $PORT stays bound and the Bridge stays up. Never silently kill everything.
@@ -3194,6 +3229,23 @@ class AE_Bot:
             except Exception:
                 pass
             BRIDGE_ENGINE_REF["bot"] = self
+            # One placeholder CURRENT loop for THIS thread, created once here, BEFORE
+            # Application.builder().build(). PTB creates asyncio primitives (Event /
+            # Lock) during build that call get_event_loop(). Without a current loop
+            # in this thread, build() raises "There is no current event loop in
+            # thread 'ae-bot'" on Python 3.9 and on some PTB paths. This is the
+            # ONLY loop created in run(). Do NOT create a second one before
+            # run_polling(). run_polling() owns the running loop; _post_init
+            # overwrites self._loop with that running loop. The old bug was
+            # TWO loops: one in main() plus one in run(), neither of them the
+            # running loop. Here there is one placeholder plus the running loop.
+            _placeholder_loop = None
+            try:
+                _placeholder_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(_placeholder_loop)
+                self._loop = _placeholder_loop
+            except Exception:
+                _placeholder_loop = None
             # Build Application
             app = Application.builder().token(self.token).post_init(self._post_init).build()
             self.application = app
@@ -3230,18 +3282,35 @@ class AE_Bot:
             app.add_handler(CommandHandler("crawler", self.crawler_cmd))
             app.add_handler(CommandHandler("order", self.order_cmd))
             app.add_error_handler(self.error_handler)
-            _log("info", "AE_Bot starting polling (drop_pending_updates=True - test /start with a fresh message after redeploy)")
+            _log("info", "AE_Bot starting polling (drop_pending_updates=True, stop_signals=[] - test /start with a fresh message after redeploy)")
             # drop_pending_updates=True: old /start messages from the crash loop are discarded.
-            # AEA E-10: PTB 21.x needs a CURRENT event loop in THIS thread.
-            # The Heroku crash was: "no current event loop in thread 'ae-bot'"
-            # + "coroutine 'Updater.start_polling' was never awaited".
+            # FIX 2026-11-15 set_wakeup_fd: AE_Bot runs in thread 'ae-bot', NOT main thread.
+            # PTB 21.6 run_polling() with default stop_signals installs signal handlers via
+            # signal.set_wakeup_fd(), which Python only allows in the main thread. That raised
+            # "set_wakeup_fd only works in main thread of the main interpreter" before any
+            # polling, and left "coroutine 'Updater.start_polling' was never awaited".
+            # stop_signals=[] tells PTB not to install signal handlers here. Signals stay
+            # owned by main(), which runs in the main thread and sets _shutdown_event.
+            # Do NOT create a SECOND loop here: run_polling() owns its running loop.
+            # The real running loop is captured in _post_init via get_running_loop() and
+            # stored as self._loop, which _send_message_sync uses for cross-thread sends.
+            # The placeholder loop above exists only so build() can call
+            # get_event_loop(). It is never run.
+            app.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES if Update is not None else None,
+                stop_signals=[],
+                close_loop=False,
+            )
+            # If run_polling() used its own loop (asyncio.run), the placeholder is
+            # a dead, never-running loop. Close it so it does not leak. If
+            # run_polling() reused the placeholder, self._loop IS the placeholder,
+            # so do not close it here.
             try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                _bot_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(_bot_loop)
-                self._loop = _bot_loop
-            app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES if Update is not None else None)
+                if _placeholder_loop is not None and self._loop is not _placeholder_loop and not _placeholder_loop.is_closed():
+                    _placeholder_loop.close()
+            except Exception:
+                pass
         except Exception as e:
             _log("error", f"AE_Bot run failed: {e}")
             return
@@ -3329,12 +3398,9 @@ def main():
             bot = AE_Bot(TELEGRAM_BOT_TOKEN_ENV, seed=seed, crawler=crawler, aeea=aeea, race=race, market=market, seed_worker=seed_worker)
             BRIDGE_ENGINE_REF["bot"] = bot
             def _bot_thread_runner():
-                try:
-                    _loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(_loop)
-                    bot._loop = _loop
-                except Exception:
-                    pass
+                # No loop created here. AE_Bot.run() -> run_polling() owns its loop.
+                # Creating one here made a second, never-running loop that overwrote
+                # the real running loop captured in _post_init. See run() fix.
                 bot.run()
             bot_thread = threading.Thread(target=_bot_thread_runner, name="ae-bot", daemon=True)
             bot_thread.start()
@@ -3357,9 +3423,22 @@ def main():
         except Exception as e:
             _log("warning", f"main loop error: {e}")
             _shutdown_event.wait(timeout=1.0)
-    # Shutdown
+    # Shutdown: stop bot polling first, so run_polling() returns cleanly.
+    # With stop_signals=[], PTB will not exit on SIGTERM by itself. Main owns
+    # signals, so main must ask the bot to stop on its running loop.
+    # If this fails, bot thread is daemon, process exit still kills it.
     try:
         _log("info", "Shutting down AE Fused")
+        if bot is not None:
+            try:
+                bot.request_stop()
+            except Exception:
+                pass
+            try:
+                if bot_thread is not None:
+                    bot_thread.join(timeout=5.0)
+            except Exception:
+                pass
         if market is not None:
             try:
                 market.stop()
