@@ -1,47 +1,16 @@
 # ============================================================================
 # Æ TWA — FUSED BACKEND — PYTHON DEPENDENCIES
-# Version: Final, First edition
+# Version: Final, First edition (corrected)
 # Platform: Heroku web dyno / Termux / any POSIX-compatible Python 3.10+
 # ============================================================================
 
 # ----------------------------------------------------------------------------
-# CORE — STDLIB ONLY, NO DEPENDENCIES NEEDED
+# TELEGRAM BOT RUNTIME
 # ----------------------------------------------------------------------------
-# The backend is a single file, app.py, stdlib only.
-# No Flask, no python-telegram-bot, no httpx, no external packages.
-# Telegram send uses stdlib urllib.request to the Bot API.
-# Heroku installs nothing. The build slug is app.py + supporting files.
+# The deployed app.py imports python-telegram-bot (see startup log:
+# "python-telegram-bot not installed; cannot run bot"). Pin a version that
+# matches the API the app expects. v21.x is the current async API.
+# If app.py was written against the pre-20 API (Updater/dispatcher with
+# MessageHandler filters as first arg), use python-telegram-bot==13.15 instead.
 # ----------------------------------------------------------------------------
-# stdlib only, no dependencies needed
-
-# ----------------------------------------------------------------------------
-# EXACT SYMBOLIC ARITHMETIC
-# ----------------------------------------------------------------------------
-# The backend ships with a self-contained Fraction wrapper built on
-# Python's stdlib `fractions.Fraction` and `decimal.Decimal`. No external
-# symbolic-math library is required for the ÆI seed pipeline or the ÆEA
-# engine.
-#
-# The seed's `_symbolic_log`, `_symbolic_exp`, and
-# `_symbolic_log_integral_approx` are exact-rational Taylor / Ramanujan
-# series with dynamic truncation. They do not depend on `mpmath` or `sympy`.
-
-# ----------------------------------------------------------------------------
-# TLS, SQLITE, LOGGING, RING BUFFERS, THREADS
-# ----------------------------------------------------------------------------
-# All provided by the Python standard library. No additional packages needed.
-# TLS: stdlib ssl. Logging: stdlib logging. Ring buffers: collections.deque.
-# Threads: threading. HTTP server: http.server ThreadingHTTPServer.
-# JSON: stdlib json. Time: stdlib time, datetime. Hash: hashlib.
-
-# ----------------------------------------------------------------------------
-# RUNTIME COMPATIBILITY
-# ----------------------------------------------------------------------------
-# Minimum: Python 3.10
-# Recommended: Python 3.11 or 3.12
-# Tested: Python 3.11.9 on Heroku-22; Python 3.12.3 on Termux ARM64.
-#
-# All arithmetic in the seed uses exact `fractions.Fraction` and
-# `decimal.Decimal` from the standard library — zero floating-point entropy
-# in the state machine, in accordance with the Arc-Length Axiom (s = r).
-# ============================================================================
+python-telegram-bot==21.1.1
