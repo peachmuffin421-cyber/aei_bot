@@ -27,241 +27,192 @@ html, body {
     min-height: 100vh;
     line-height: 1.6;
 }
-.container {
-    max-width: 760px;
-    margin: 0 auto;
-    padding: 32px 20px 64px;
-}
-h1 {
-    color: var(--text-bright);
-    font-size: 1.4rem;
-    letter-spacing: 2px;
-    margin-bottom: 4px;
-}
-.subtitle {
-    color: var(--text-dim);
-    font-size: 0.7rem;
-    letter-spacing: 1px;
-    margin-bottom: 28px;
-}
-.panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 18px;
-    margin-bottom: 14px;
-}
-.panel-title {
-    color: var(--cyan);
-    font-size: 0.7rem;
-    font-weight: bold;
-    letter-spacing: 1px;
-    margin-bottom: 8px;
-    text-transform: uppercase;
-}
-.row {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 3px 0;
-    border-bottom: 1px solid rgba(51,85,119,0.15);
-    font-size: 0.65rem;
-}
-.row:last-child { border-bottom: none; }
-.row .lbl { color: var(--text-dim); flex: 0 0 170px; }
-.row .val { color: var(--text-bright); text-align: right; word-break: break-all; }
-.row .val.ok { color: var(--green); }
-.row .val.err { color: var(--red); }
-.row .val.warn { color: var(--gold); }
-.row .val.proj { color: var(--purple); }
-.endpoint-list { list-style: none; font-size: 0.6rem; }
-.endpoint-list li {
-    padding: 3px 0;
-    border-bottom: 1px solid rgba(51,85,119,0.15);
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-}
-.endpoint-list li:last-child { border-bottom: none; }
-.endpoint-list .method { color: var(--gold); flex: 0 0 60px; }
-.endpoint-list .path { color: var(--text-bright); flex: 0 0 240px; }
-.endpoint-list .desc { color: var(--text-dim); text-align: right; }
-.status-line {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.7rem;
-    margin-bottom: 12px;
-}
-.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
-.status-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.status-dot.err { background: var(--red); box-shadow: 0 0 6px var(--red); }
-.status-dot.wait { background: var(--gold); box-shadow: 0 0 6px var(--gold); }
-.note {
-    color: var(--text-dim);
-    font-size: 0.55rem;
-    line-height: 1.7;
-    margin-top: 12px;
-    padding-top: 10px;
-    border-top: 1px solid rgba(51,85,119,0.2);
-}
-.note b { color: var(--gold); }
-code {
-    background: rgba(20,30,50,0.9);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 0.6rem;
-    color: var(--cyan);
-}
-.footer {
-    text-align: center;
-    color: var(--text-dim);
-    font-size: 0.55rem;
-    letter-spacing: 2px;
-    margin-top: 40px;
-}
+.container { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+h1 { color: var(--text-bright); font-size: 1.4rem; letter-spacing: 2px; margin-bottom: 4px; }
+.subtitle { color: var(--text-dim); font-size: 0.7rem; letter-spacing: 1px; margin-bottom: 28px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px 18px; margin-bottom: 14px; }
+.panel-title { color: var(--cyan); font-size: 0.7rem; font-weight: bold; letter-spacing: 1px; margin-bottom: 8px; text-transform: uppercase; }
+.row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 0.68rem; }
+.label { color: var(--text-dim); }
+.value { color: var(--text); font-weight: bold; text-align: right; word-break: break-word; }
+.value.ok { color: var(--green); }
+.value.warn { color: var(--gold); }
+.value.err { color: var(--red); }
+.value.proj { color: var(--purple); }
+.status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--gold); margin-right: 6px; vertical-align: middle; }
+.status-dot.ok { background: var(--green); }
+.status-dot.err { background: var(--red); }
+.endpoint-list { list-style: none; font-size: 0.65rem; }
+.endpoint-list li { display: flex; gap: 10px; padding: 2px 0; }
+.method { color: var(--green); min-width: 36px; }
+.path { color: var(--text-bright); min-width: 150px; }
+.desc { color: var(--text-dim); }
+.note { font-size: 0.62rem; color: var(--text-dim); margin-top: 10px; line-height: 1.7; }
 </style>
 </head>
 <body>
 <div class="container">
-
-<h1>⚡ Æ TWA BRIDGE</h1>
-<div class="subtitle">HEROKU WEB DYNO · AE TWA UNIFIED, AEA FEED · FINAL, FIRST EDITION</div>
-
-<div class="status-line">
-    <div class="status-dot wait" id="dot"></div>
-    <span id="statusText">Probing bridge…</span>
-</div>
-
+<h1>Æ TWA Bridge</h1>
+<div class="subtitle">Backend fallback page · Final, First edition · Backend authoritative · WAITING means WAITING</div>
 <div class="panel">
-    <div class="panel-title">Bridge Endpoint</div>
-    <div class="row"><span class="lbl">Origin</span><span class="val" id="origin">—</span></div>
-    <div class="row"><span class="lbl">Version</span><span class="val" id="version">—</span></div>
-    <div class="row"><span class="lbl">Seed Initialized</span><span class="val" id="seedInit">—</span></div>
-    <div class="row"><span class="lbl">Engine Initialized</span><span class="val" id="engInit">—</span></div>
-    <div class="row"><span class="lbl">Seed State</span><span class="val proj" id="seedState">—</span></div>
-    <div class="row"><span class="lbl">Seed Tick</span><span class="val" id="seedTick">—</span></div>
-    <div class="row"><span class="lbl">Seed Generation</span><span class="val" id="seedGen">—</span></div>
-    <div class="row"><span class="lbl">Prime Count</span><span class="val" id="primeCount">—</span></div>
-    <div class="row"><span class="lbl">Lattice Points</span><span class="val" id="latticePoints">—</span></div>
-    <div class="row"><span class="lbl">Crawler Running</span><span class="val" id="crawlerRunning">—</span></div>
-    <div class="row"><span class="lbl">Crawler Frontier</span><span class="val" id="crawlerFrontier">—</span></div>
-    <div class="row"><span class="lbl">Crawler Visited</span><span class="val" id="crawlerVisited">—</span></div>
-    <div class="row"><span class="lbl">ÆEA Symbol</span><span class="val proj" id="aeeaSymbol">—</span></div>
-    <div class="row"><span class="lbl">ÆEA Price</span><span class="val" id="aeeaPrice">—</span></div>
+<div class="panel-title">Status</div>
+<div class="row"><span class="label">Bridge</span><span class="value" id="statusText"><span class="status-dot" id="dot"></span>WAITING</span></div>
+<div class="row"><span class="label">Version</span><span class="value" id="version">—</span></div>
+<div class="row"><span class="label">State</span><span class="value" id="state">—</span></div>
 </div>
-
 <div class="panel">
-    <div class="panel-title">Available Endpoints</div>
-    <ul class="endpoint-list">
-        <li><span class="method">GET</span><span class="path">/health</span><span class="desc">liveness (no auth)</span></li>
-        <li><span class="method">GET</span><span class="path">/config</span><span class="desc">configuration (auth)</span></li>
-        <li><span class="method">GET</span><span class="path">/miniapp-state</span><span class="desc">single truth, ordered feed + CS + CS back-feed</span></li>
-        <li><span class="method">GET</span><span class="path">/cs-state</span><span class="desc">CS back-feed + state</span></li>
-        <li><span class="method">GET</span><span class="path">/aea-notification</span><span class="desc">bot text, same formatter</span></li>
-        <li><span class="method">POST</span><span class="path">/cs-feedback</span><span class="desc">CS sends s2, r2, deviation, coherence back</span></li>
-        <li><span class="method">POST</span><span class="path">/notify-aea</span><span class="desc">send bot notification</span></li>
-        <li><span class="method">POST</span><span class="path">/teach</span><span class="desc">teach via ordered feed</span></li>
-        <li><span class="method">POST</span><span class="path">/say</span><span class="desc">say via ordered feed</span></li>
-        <li><span class="method">POST</span><span class="path">/order</span><span class="desc">order via backend</span></li>
-        <li><span class="method">GET</span><span class="path">/state</span><span class="desc">full seed snapshot</span></li>
-        <li><span class="method">GET</span><span class="path">/crawler-state</span><span class="desc">crawler frontier + visited</span></li>
-        <li><span class="method">GET</span><span class="path">/crawler-queue</span><span class="desc">crawler queue preview</span></li>
-        <li><span class="method">GET</span><span class="path">/symbolic-state</span><span class="desc">primes + ψ + logic</span></li>
-        <li><span class="method">GET</span><span class="path">/lattice-state</span><span class="desc">Λ₂₄ preview</span></li>
-        <li><span class="method">GET</span><span class="path">/fibration-state</span><span class="desc">Hopf base + φ + trajectories</span></li>
-        <li><span class="method">GET</span><span class="path">/observer-integral</span><span class="desc">𝒪[Ψ] 4D Riemann sum</span></li>
-        <li><span class="method">GET</span><span class="path">/evolution-state</span><span class="desc">SelfEvolution history</span></li>
-        <li><span class="method">GET</span><span class="path">/toasts</span><span class="desc">incremental notifications</span></li>
-        <li><span class="method">GET</span><span class="path">/anchors</span><span class="desc">quaternionic anchors</span></li>
-        <li><span class="method">GET</span><span class="path">/log</span><span class="desc">server log buffer</span></li>
-        <li><span class="method">GET</span><span class="path">/seeds</span><span class="desc">frontier preview</span></li>
-        <li><span class="method">GET</span><span class="path">/ohlcv</span><span class="desc">market bars (auth)</span></li>
-        <li><span class="method">GET</span><span class="path">/signals</span><span class="desc">signal state (auth)</span></li>
-        <li><span class="method">GET</span><span class="path">/diagnostics</span><span class="desc">engine snapshot + settings</span></li>
-        <li><span class="method">GET</span><span class="path">/orders</span><span class="desc">open orders</span></li>
-        <li><span class="method">GET</span><span class="path">/settings</span><span class="desc">backend settings</span></li>
-        <li><span class="method">POST</span><span class="path">/handshake</span><span class="desc">Telegram initData exchange</span></li>
-        <li><span class="method">POST</span><span class="path">/step</span><span class="desc">advance seed by one step</span></li>
-        <li><span class="method">POST</span><span class="path">/reset</span><span class="desc">reset seed state</span></li>
-        <li><span class="method">POST</span><span class="path">/crawler-enqueue</span><span class="desc">enqueue a URL</span></li>
-        <li><span class="method">POST</span><span class="path">/encode-syllable</span><span class="desc">encode A/U/M/AUM</span></li>
-        <li><span class="method">POST</span><span class="path">/anchor</span><span class="desc">commit quaternionic anchor</span></li>
-        <li><span class="method">POST</span><span class="path">/orders</span><span class="desc">place order</span></li>
-        <li><span class="method">POST</span><span class="path">/order/close</span><span class="desc">close one or all</span></li>
-        <li><span class="method">POST</span><span class="path">/settings</span><span class="desc">apply backend settings</span></li>
-        <li><span class="method">POST</span><span class="path">/symbol</span><span class="desc">change symbol</span></li>
-        <li><span class="method">DELETE</span><span class="path">/anchor/&lt;idx&gt;</span><span class="desc">delete anchor</span></li>
-    </ul>
-    <div class="note">
-        Backend authoritative. Frontend view only. No synthetic bars. Lattice [] equals WAITING, never 0. CS back-feed appears in /miniapp-state and in bot text.
-    </div>
+<div class="panel-title">Seed</div>
+<div class="row"><span class="label">Seed initialized</span><span class="value" id="seedInit">—</span></div>
+<div class="row"><span class="label">Engine initialized</span><span class="value" id="engInit">—</span></div>
+<div class="row"><span class="label">Seed state</span><span class="value proj" id="seedState">—</span></div>
+<div class="row"><span class="label">Seed tick</span><span class="value" id="seedTick">—</span></div>
+<div class="row"><span class="label">Seed generation</span><span class="value" id="seedGen">—</span></div>
+<div class="row"><span class="label">Prime count</span><span class="value" id="primeCount">—</span></div>
+<div class="row"><span class="label">Lattice points</span><span class="value" id="latticePoints">—</span></div>
+<div class="row"><span class="label">s² (exact)</span><span class="value proj" id="s2">— WAITING</span></div>
+<div class="row"><span class="label">r² (exact)</span><span class="value proj" id="r2">— WAITING</span></div>
+<div class="row"><span class="label">Deviation</span><span class="value" id="deviation">— WAITING</span></div>
+<div class="row"><span class="label">Coherence</span><span class="value" id="coherence">— WAITING</span></div>
 </div>
-
 <div class="panel">
-    <div class="panel-title">Sibling Repositories</div>
-    <div class="row"><span class="lbl">Frontend</span><span class="val"><code>aeindex</code> — GitHub Pages (fused TWA)</span></div>
-    <div class="row"><span class="lbl">Backend</span><span class="val"><code>aei-backend</code> — this repo (Heroku)</span></div>
-    <div class="row"><span class="lbl">Relay</span><span class="val"><code>aei-relay</code> — Cloudflare Workers (dual-route)</span></div>
-    <div class="note">
-        The TWA lives in the <b>frontend</b> repo. This backend page is a diagnostic surface only — it is <b>not</b> the TWA.
-    </div>
+<div class="panel-title">Crawler</div>
+<div class="row"><span class="label">Crawler running</span><span class="value" id="crawlerRunning">—</span></div>
+<div class="row"><span class="label">Frontier</span><span class="value" id="crawlerFrontier">—</span></div>
+<div class="row"><span class="label">Visited</span><span class="value" id="crawlerVisited">—</span></div>
 </div>
-
-<div class="footer">
-    Æ TWA · AE TWA Unified, AEA Feed · Final, First edition · LOGOS = Φ = Truth = Path = Origin
+<div class="panel">
+<div class="panel-title">ÆEA</div>
+<div class="row"><span class="label">Symbol</span><span class="value proj" id="aeeaSymbol">—</span></div>
+<div class="row"><span class="label">Price</span><span class="value" id="aeeaPrice">—</span></div>
+<div class="row"><span class="label">Ordered</span><span class="value" id="aeeaOrdered">—</span></div>
+<div class="row"><span class="label">Bars</span><span class="value" id="aeeaBars">—</span></div>
+<div class="row"><span class="label">Delta</span><span class="value" id="aeeaDelta">—</span></div>
+<div class="row"><span class="label">m / n</span><span class="value" id="aeeaMN">—</span></div>
+<div class="row"><span class="label">Regime</span><span class="value" id="aeeaRegime">—</span></div>
+<div class="row"><span class="label">Signal</span><span class="value" id="aeeaSignal">—</span></div>
 </div>
-
+<div class="panel">
+<div class="panel-title">Acoustization (backend-computed)</div>
+<div class="row"><span class="label">Base tone</span><span class="value" id="acBase">— WAITING</span></div>
+<div class="row"><span class="label">Filter</span><span class="value" id="acFilter">— WAITING</span></div>
+<div class="row"><span class="label">Lattice notes</span><span class="value" id="acNotes">— WAITING</span></div>
 </div>
-
+<div class="panel">
+<div class="panel-title">Available Endpoints</div>
+<ul class="endpoint-list">
+<li><span class="method">GET</span><span class="path">/health</span><span class="desc">liveness (no auth)</span></li>
+<li><span class="method">GET</span><span class="path">/config</span><span class="desc">configuration (auth)</span></li>
+<li><span class="method">GET</span><span class="path">/miniapp-state</span><span class="desc">one state: ordered feed, bars, indicators, seed, CS, acoustization</span></li>
+<li><span class="method">GET</span><span class="path">/state</span><span class="desc">seed snapshot</span></li>
+<li><span class="method">GET</span><span class="path">/crawler-state</span><span class="desc">crawler state</span></li>
+<li><span class="method">GET</span><span class="path">/symbolic-state</span><span class="desc">primes tail, psi, logic core</span></li>
+<li><span class="method">GET</span><span class="path">/lattice-state</span><span class="desc">lattice dimension, preview</span></li>
+<li><span class="method">GET</span><span class="path">/fibration-state</span><span class="desc">Hopf fibration state</span></li>
+<li><span class="method">GET</span><span class="path">/observer-integral</span><span class="desc">observer integral state</span></li>
+<li><span class="method">GET</span><span class="path">/evolution-state</span><span class="desc">evolution vs NN state</span></li>
+<li><span class="method">GET</span><span class="path">/toasts</span><span class="desc">toast ring buffer</span></li>
+<li><span class="method">GET</span><span class="path">/anchors</span><span class="desc">anchors list</span></li>
+<li><span class="method">GET</span><span class="path">/log</span><span class="desc">log ring buffer</span></li>
+<li><span class="method">GET</span><span class="path">/seeds</span><span class="desc">seed list</span></li>
+<li><span class="method">GET</span><span class="path">/ohlcv</span><span class="desc">OHLCV bars</span></li>
+<li><span class="method">GET</span><span class="path">/signals</span><span class="desc">signal list</span></li>
+<li><span class="method">GET</span><span class="path">/diagnostics</span><span class="desc">diagnostics</span></li>
+<li><span class="method">GET</span><span class="path">/orders</span><span class="desc">orders list (read)</span></li>
+<li><span class="method">GET</span><span class="path">/settings</span><span class="desc">engine settings (read)</span></li>
+<li><span class="method">GET</span><span class="path">/cs-state</span><span class="desc">CS back-feed + state</span></li>
+<li><span class="method">GET</span><span class="path">/aea-notification</span><span class="desc">format_aea output for cursor bar</span></li>
+<li><span class="method">POST</span><span class="path">/step</span><span class="desc">seed step, x as Fraction</span></li>
+<li><span class="method">POST</span><span class="path">/reset</span><span class="desc">reset AEEA + race + seed</span></li>
+<li><span class="method">POST</span><span class="path">/crawler-enqueue</span><span class="desc">enqueue crawler URL</span></li>
+<li><span class="method">POST</span><span class="path">/encode-syllable</span><span class="desc">encode A / U / M / AUM</span></li>
+<li><span class="method">POST</span><span class="path">/anchor</span><span class="desc">add anchor</span></li>
+<li><span class="method">POST</span><span class="path">/cs-feedback</span><span class="desc">CS back-feed, backend values only</span></li>
+<li><span class="method">POST</span><span class="path">/teach</span><span class="desc">teach</span></li>
+<li><span class="method">POST</span><span class="path">/say</span><span class="desc">say</span></li>
+<li><span class="method">POST</span><span class="path">/order</span><span class="desc">place order (singular)</span></li>
+<li><span class="method">POST</span><span class="path">/order/close</span><span class="desc">close order</span></li>
+<li><span class="method">POST</span><span class="path">/settings</span><span class="desc">update engine settings</span></li>
+<li><span class="method">POST</span><span class="path">/symbol</span><span class="desc">change symbol</span></li>
+<li><span class="method">POST</span><span class="path">/notify-aea</span><span class="desc">send AEA notification</span></li>
+<li><span class="method">POST</span><span class="path">/handshake</span><span class="desc">Web App session registration</span></li>
+</ul>
+</div>
+<div class="note">This page is served by the backend itself, so it fetches by same-origin relative path. No backend URL appears in this file. Auth: X-Telegram-Init-Data header on every endpoint except /health. WAITING means WAITING — no synthetic bars, no placeholder lattice, no local truth.</div>
+</div>
 <script>
 (function() {
-'use strict';
-const BASE = window.location.origin;
-
-function setText(id, text, cls) {
-    const el = document.getElementById(id);
+"use strict";
+function setText(id, val, cls) {
+    var el = document.getElementById(id);
     if (!el) return;
-    el.textContent = text;
-    if (cls !== undefined) el.className = 'val' + (cls ? ' ' + cls : '');
+    el.textContent = (val === null || val === undefined || val === "") ? "—" : String(val);
+    if (cls) el.className = "value " + cls;
 }
-
+function setDot(ok) {
+    var dot = document.getElementById("dot");
+    var st = document.getElementById("statusText");
+    if (!dot || !st) return;
+    dot.className = "status-dot " + (ok === true ? "ok" : ok === false ? "err" : "");
+    st.textContent = ok === true ? "Bridge online" : ok === false ? "Bridge unreachable" : "WAITING";
+}
+function trunc(s, n) { s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n) + "…" : s; }
 async function probe() {
-    const dot = document.getElementById('dot');
-    const statusText = document.getElementById('statusText');
-    setText('origin', BASE);
+    var health = null, state = null;
     try {
-        const res = await fetch(BASE + '/health', { headers: { 'Accept': 'application/json' } });
-        if (!res.ok) {
-            dot.className = 'status-dot err';
-            statusText.textContent = 'Bridge returned HTTP ' + res.status;
-            return;
-        }
-        const data = await res.json();
-        dot.className = 'status-dot ok';
-        statusText.textContent = 'Bridge online';
-        setText('version', data.version || '—');
-        setText('seedInit', String(data.seed_initialized), data.seed_initialized ? 'ok' : 'warn');
-        setText('engInit', String(data.engine_initialized), data.engine_initialized ? 'ok' : 'warn');
-        setText('seedState', data.seed_state || '—', 'proj');
-        setText('seedTick', String(data.seed_tick ?? '—'));
-        setText('seedGen', String(data.seed_generation ?? '—'));
-        setText('primeCount', String(data.prime_count ?? '—'));
-        setText('latticePoints', String(data.lattice_points ?? '—'));
-        setText('crawlerRunning', data.crawler_running ? 'yes' : 'no', data.crawler_running ? 'ok' : 'err');
-        setText('crawlerFrontier', String(data.crawler_frontier ?? '—'));
-        setText('crawlerVisited', String(data.crawler_visited ?? '—'));
-        setText('aeeaSymbol', data.aeea_symbol || '—', 'proj');
-        setText('aeeaPrice', data.aeea_price !== undefined ? String(data.aeea_price) : '—');
-    } catch (e) {
-        dot.className = 'status-dot err';
-        statusText.textContent = 'Bridge unreachable: ' + (e.message || e);
+        var r1 = await fetch("/health", { headers: { "Accept": "application/json" } });
+        if (r1.ok) health = await r1.json().catch(function() { return null; });
+    } catch (e) { health = null; }
+    try {
+        var r2 = await fetch("/miniapp-state", { headers: { "Accept": "application/json" } });
+        if (r2.ok) state = await r2.json().catch(function() { return null; });
+    } catch (e) { state = null; }
+    if (!health && !state) { setDot(false); return; }
+    setDot(true);
+    if (health) {
+        setText("version", health.version || "—");
+        setText("seedInit", String(health.seed_initialized), health.seed_initialized ? "ok" : "warn");
+        setText("engInit", String(health.engine_initialized), health.engine_initialized ? "ok" : "warn");
+        setText("seedState", health.seed_state || "—", "proj");
+        setText("seedTick", String(health.seed_tick ?? "—"));
+        setText("seedGen", String(health.seed_generation ?? "—"));
+        setText("primeCount", String(health.prime_count ?? "—"));
+        setText("latticePoints", String(health.lattice_points ?? "—"));
+        setText("crawlerRunning", health.crawler_running ? "yes" : "no", health.crawler_running ? "ok" : "err");
+        setText("crawlerFrontier", String(health.crawler_frontier ?? "—"));
+        setText("crawlerVisited", String(health.crawler_visited ?? "—"));
+    }
+    if (state) {
+        setText("state", state.status || "—");
+        var feed = state.feed || state.ordered_feed || {};
+        var aeea = state.aeea || {};
+        var ind = state.indicators || {};
+        var seed = state.seed || {};
+        var cs = state.cs || {};
+        setText("aeeaSymbol", feed.symbol || aeea.symbol || "—", "proj");
+        setText("aeeaPrice", (feed.price !== undefined ? feed.price : (aeea.last_price !== undefined ? aeea.last_price : "—")));
+        setText("aeeaOrdered", (state.ordered !== undefined ? state.ordered : (feed.ordered_index !== undefined ? feed.ordered_index : "—")));
+        var bars = aeea.bars || state.bars || [];
+        setText("aeeaBars", Array.isArray(bars) ? String(bars.length) : "—");
+        setText("aeeaDelta", (aeea.delta !== undefined ? aeea.delta : (ind.delta !== undefined ? ind.delta : "—")));
+        setText("aeeaMN", ((aeea.m !== undefined ? aeea.m : ind.m) !== undefined ? (aeea.m !== undefined ? aeea.m : ind.m) + " / " + (aeea.n !== undefined ? aeea.n : ind.n) : "—"));
+        setText("aeeaRegime", aeea.regime || ind.regime || "—");
+        setText("aeeaSignal", aeea.current_signal || ind.signal || aeea.signal || "—");
+        var s2 = (seed.s2 !== undefined ? seed.s2 : (seed.arc_sq !== undefined ? seed.arc_sq : cs.s2));
+        var r2 = (seed.r2 !== undefined ? seed.r2 : (seed.radius_sq !== undefined ? seed.radius_sq : cs.r2));
+        var dev = (seed.deviation_sq !== undefined ? seed.deviation_sq : (seed.deviation !== undefined ? seed.deviation : cs.deviation));
+        var coh = (seed.coherent !== undefined ? seed.coherent : (seed.coherence !== undefined ? seed.coherence : cs.coherence));
+        setText("s2", s2 !== undefined ? trunc(s2, 48) : "— WAITING", "proj");
+        setText("r2", r2 !== undefined ? trunc(r2, 48) : "— WAITING", "proj");
+        setText("deviation", dev !== undefined ? trunc(dev, 48) : "— WAITING");
+        setText("coherence", coh !== undefined ? String(coh) : "— WAITING");
+        var ac = state.acoustization || null;
+        setText("acBase", (ac && ac.base_freq !== null && ac.base_freq !== undefined) ? Number(ac.base_freq).toFixed(1) + " Hz" : "— WAITING");
+        setText("acFilter", (ac && ac.filter_freq !== null && ac.filter_freq !== undefined) ? Number(ac.filter_freq).toFixed(1) + " Hz" : "— WAITING");
+        setText("acNotes", (ac && ac.lattice_notes && ac.lattice_notes.length) ? ac.lattice_notes.map(function(n) { return Number(n).toFixed(0); }).join(", ") : "— WAITING");
     }
 }
-
 probe();
 setInterval(probe, 5000);
-
 })();
 </script>
 </body>

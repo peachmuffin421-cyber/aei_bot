@@ -1,8 +1,8 @@
 {
   "name": "AE TWA Unified, AEA Feed",
   "description": "AE TWA Unified, AEA Feed. Lossless fusion of ÆI (GAIA/ÆI seed) and ÆEA (MT4-parity market engine) as a Telegram Mini App. One ordered market feed advances both engines: the ÆEA bar ring (13 normalised indicators + Ichimoku → m/n/δ → regime → BB×58 → 𝒫_arc → signal iff δ-gate → orders/trailing/FVG) and the ÆI seed (prime → outward Λ₂₄ → Hopf → s²=r² → DbZ → I → SelfEvolution), with x lifted from the same tick as abs(price-prevPrice)/10000 (or 1/100 on zero). Backend authoritative. Frontend view only. No synthetic bars. Lattice [] equals WAITING, never 0. One formatter for app and bot. CS feed back / forward: Bot / TWA feeds CS, CS feeds Bot / TWA. Final, First edition.",
-  "repository": "https://github.com/peachmuffin421-cyber/aeindex",
-  "website": "https://peachmuffin421-cyber.github.io",
+  "repository": "https://github.com/<OWNER>/<BACKEND-REPO>",
+  "website": "<PAGES-ORIGIN>",
   "success_url": "/",
   "keywords": [
     "aetheric-intelligence",
@@ -42,15 +42,15 @@
       "required": true
     },
     "TELEGRAM_WEBAPP_URL": {
-      "description": "Public HTTPS URL of the Telegram Mini App (GitHub Pages URL).",
+      "description": "Public HTTPS URL of the Telegram Mini App (Pages origin).",
       "required": false
     },
     "BACKEND_URL": {
-      "description": "Heroku URL of the backend, used by the frontend via ?backend=.",
+      "description": "Backend base URL. Set via Heroku config, never commit.",
       "required": false
     },
     "ALLOWED_ORIGIN": {
-      "description": "GitHub Pages origin the worker allows.",
+      "description": "Pages origin the worker allows.",
       "required": false
     },
     "RELAY_URL": {
@@ -66,7 +66,7 @@
       "required": false
     },
     "CORS_ORIGIN": {
-      "description": "Lock down writes to your GitHub Pages origin. Defaults to '*'.",
+      "description": "Lock down writes to your Pages origin. Defaults to '*'.",
       "required": false
     },
     "SYMBOL": {

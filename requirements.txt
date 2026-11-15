@@ -1,16 +1,30 @@
 # ============================================================================
 # Æ TWA — FUSED BACKEND — PYTHON DEPENDENCIES
-# Version: Final, First edition (corrected)
+# Version: Final, First edition
 # Platform: Heroku web dyno / Termux / any POSIX-compatible Python 3.10+
 # ============================================================================
+#
+# app.py imports:
+#   from telegram import Update, WebAppInfo, MenuButtonWebApp
+#   from telegram.ext import Application, CommandHandler, ContextTypes
+#   from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+#
+# Those imports REQUIRE python-telegram-bot. Do not ship a stdlib-only
+# requirements.txt. That was the /start failure: the dyno booted, the
+# import failed, the bot never answered, and the failure was silent.
+#
+# Everything else in app.py is stdlib: http.server ThreadingHTTPServer,
+# fractions.Fraction, decimal.Decimal, sqlite3, urllib, ssl, threading,
+# logging, collections.deque, hashlib, hmac, json, time, datetime.
+# No Flask, no httpx, no external symbolic-math library.
+# The seed's _symbolic_log, _symbolic_exp, and _symbolic_log_integral_approx
+# are exact-rational Taylor / Ramanujan series with dynamic truncation.
+# They do not depend on mpmath or sympy.
+#
+# Runtime compatibility:
+#   Minimum: Python 3.10
+#   Recommended: Python 3.11 or 3.12
+#   Tested: Python 3.11.9 on Heroku-22; Python 3.12.3 on Termux ARM64.
+# ============================================================================
 
-# ----------------------------------------------------------------------------
-# TELEGRAM BOT RUNTIME
-# ----------------------------------------------------------------------------
-# The deployed app.py imports python-telegram-bot (see startup log:
-# "python-telegram-bot not installed; cannot run bot"). Pin a version that
-# matches the API the app expects. v21.x is the current async API.
-# If app.py was written against the pre-20 API (Updater/dispatcher with
-# MessageHandler filters as first arg), use python-telegram-bot==13.15 instead.
-# ----------------------------------------------------------------------------
-python-telegram-bot==21.1.1
+python-telegram-bot==21.4
