@@ -1,1 +1,1 @@
-web: exec python app.py
+worker: exec python app.py
