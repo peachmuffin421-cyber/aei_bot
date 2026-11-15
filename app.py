@@ -486,6 +486,57 @@ TELEGRAM_DB_USER_SHARDS: bool = os.getenv("TELEGRAM_DB_USER_SHARDS", "0").strip(
 TELEGRAM_DB_SHARD_POOL: List[str] = [x.strip() for x in os.getenv("TELEGRAM_DB_SHARD_POOL", "").split(",") if x.strip()]
 TELEGRAM_DB_SAVE_INTERVAL: int = int(os.getenv("TELEGRAM_DB_SAVE_INTERVAL", "5"))
 TELEGRAM_DB_CHUNK_SIZE: int = int(os.getenv("TELEGRAM_DB_CHUNK_SIZE", "3800"))
+
+# ============================================================================
+# AEA TWA PUSH GATES (v4.6.0 E-1) - Telegram push on signal / execution /
+# FVG / close, deduplicated. Defaults all ON, exactly like AEA TWA.
+# ============================================================================
+PUSH_ON_SIGNAL: bool = os.getenv("PUSH_ON_SIGNAL", "1").strip() in ("1", "true", "yes")
+PUSH_ON_EXECUTION: bool = os.getenv("PUSH_ON_EXECUTION", "1").strip() in ("1", "true", "yes")
+PUSH_ON_FVG: bool = os.getenv("PUSH_ON_FVG", "1").strip() in ("1", "true", "yes")
+PUSH_ON_CLOSE: bool = os.getenv("PUSH_ON_CLOSE", "1").strip() in ("1", "true", "yes")
+PUSH_DEDUP_WINDOW_MS: int = int(os.getenv("PUSH_DEDUP_WINDOW_MS", "800"))
+# Fallback push target when no inbound message has bound a chat yet.
+# Set on Heroku: heroku config:set TELEGRAM_CHAT_ID="<your id>"
+TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+# Bound chat / reply threading (AEA E-10/E-11). Updated on every inbound
+# command via AE_Bot._track_inbound_message; pushes thread as replies to it.
+_LAST_INBOUND: Dict[str, Any] = {"chat_id": None, "message_id": None, "user_id": None, "username": None}
+_LAST_INBOUND_LOCK = threading.Lock()
+def _bind_inbound(chat_id, message_id=None, user_id=None, username=None):
+    try:
+        with _LAST_INBOUND_LOCK:
+            if chat_id is not None:
+                _LAST_INBOUND["chat_id"] = chat_id
+            if message_id is not None:
+                _LAST_INBOUND["message_id"] = message_id
+            if user_id is not None:
+                _LAST_INBOUND["user_id"] = user_id
+            if username is not None:
+                _LAST_INBOUND["username"] = username
+    except Exception:
+        pass
+def _get_bound_chat() -> Dict[str, Any]:
+    try:
+        with _LAST_INBOUND_LOCK:
+            return dict(_LAST_INBOUND)
+    except Exception:
+        return {"chat_id": None, "message_id": None, "user_id": None, "username": None}
+def _resolve_push_chat_id():
+    bound = _get_bound_chat()
+    if bound.get("chat_id") is not None:
+        return bound.get("chat_id")
+    try:
+        ref = globals().get("BRIDGE_ENGINE_REF", {}) or {}
+        aeea = ref.get("aeea")
+        if aeea is not None and getattr(aeea, "chat_id", None) is not None:
+            return aeea.chat_id
+    except Exception:
+        pass
+    if TELEGRAM_CHAT_ID:
+        return TELEGRAM_CHAT_ID
+    return None
+
 TELEGRAM_DB_PIN_INDEX: bool = os.getenv("TELEGRAM_DB_PIN_INDEX", "0").strip() in ("1", "true", "yes")
 # ============================================================================
 # LOGGING / RING BUFFERS
@@ -494,7 +545,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("ae-fused")
 _LOG_LOCK = threading.Lock()
 _LOG_BUFFER: deque = deque(maxlen=LOG_BUFFER_SIZE)
+# ============================================================================
+# TOAST RING BUFFER + TELEGRAM PUSH (AEA TWA E-1/E-6/E-7/E-10..E-13)
+# One sequenced toast per logical event. The TWA polls /toasts?since=<seq>
+# and the push worker delivers the same event to Telegram exactly once.
+# ============================================================================
+_TOAST_LOCK = threading.Lock()
 _TOAST_BUFFER: deque = deque(maxlen=TOAST_BUFFER_SIZE)
+_TOAST_SEQ = 0
+_TOAST_FIRST_AVAILABLE_SEQ = 0
 def _log(level: str, msg: str):
     try:
         with _LOG_LOCK:
@@ -510,12 +569,260 @@ def _log(level: str, msg: str):
             logger.info(msg)
     except Exception:
         pass
-def _toast(msg: str):
+def _md_escape(s) -> str:
+    # AEA E-12: escape legacy-Markdown control chars in INTERPOLATED values only.
+    if s is None:
+        return "—"
+    t = str(s)
+    return (t.replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_")
+             .replace("`", "\\`").replace("[", "\\[").replace("]", "\\]"))
+# --- Push dedup (AEA E-1): one push per logical event inside the window. ---
+_PUSH_DEDUP: Dict[Any, float] = {}
+_PUSH_DEDUP_LOCK = threading.Lock()
+def _push_dedup_key(kind: str, payload: Dict[str, Any]):
     try:
-        with _LOG_LOCK:
-            _TOAST_BUFFER.append({"ts": datetime.now().isoformat(), "msg": msg})
+        if kind == "signal":
+            return ("signal", payload.get("symbol"), payload.get("ordered_index", payload.get("tick")))
+        if kind in ("execution", "close"):
+            o = payload.get("order") or {}
+            return (kind, o.get("ticket"), o.get("status"), payload.get("reason"), payload.get("event"))
+        if kind == "fvg":
+            return ("fvg", payload.get("price"), payload.get("tick"), payload.get("action"))
+        if kind == "notify":
+            return ("notify", hash(str(payload.get("text", ""))))
+        return (kind, json.dumps(payload, sort_keys=True, default=str)[:200])
+    except Exception:
+        return (kind, str(payload)[:200])
+def _push_should_send(kind: str, payload: Dict[str, Any]) -> bool:
+    key = _push_dedup_key(kind, payload)
+    now_ms = time.time() * 1000.0
+    with _PUSH_DEDUP_LOCK:
+        last = _PUSH_DEDUP.get(key)
+        if last is not None and (now_ms - last) < PUSH_DEDUP_WINDOW_MS:
+            return False
+        _PUSH_DEDUP[key] = now_ms
+        # Prune stale keys so the dict stays bounded.
+        stale = [k for k, v in _PUSH_DEDUP.items() if now_ms - v > max(PUSH_DEDUP_WINDOW_MS * 10, 10000)]
+        for k in stale:
+            _PUSH_DEDUP.pop(k, None)
+    return True
+def _format_push_message(kind: str, payload: Dict[str, Any], force: bool = False) -> Optional[str]:
+    """AEA _format_push_message, same gates / same CS bodies. Returns None when gated off."""
+    if kind == "signal" and not PUSH_ON_SIGNAL and not force:
+        return None
+    if kind == "execution" and not PUSH_ON_EXECUTION and not force:
+        return None
+    if kind == "fvg" and not PUSH_ON_FVG and not force:
+        return None
+    if kind == "close" and not PUSH_ON_CLOSE and not force:
+        return None
+    if kind == "alert" and not PUSH_ON_SIGNAL and not force:
+        return None
+    if kind == "signal" or kind == "alert":
+        direction = str(payload.get("type") or payload.get("side") or "NEUTRAL").upper()
+        arrow = "📈" if direction == "BUY" else ("📉" if direction == "SELL" else "⚪")
+        dir_cs = {"BUY": "↑", "SELL": "↓"}.get(direction, "⊙")
+        hdr = "🎯 *ÆEA 𝒮_signal*" if kind == "signal" else "🎯 *ÆEA 𝒮_signal ℰ_alert*"
+        return (
+            f"{hdr} {arrow}\n"
+            f"*Type:* {_md_escape(dir_cs)}\n"
+            f"*Price:* `{_md_escape(payload.get('price'))}`\n"
+            f"*m/n:* {_md_escape(payload.get('m'))}/{_md_escape(payload.get('n'))} @ h={_md_escape(payload.get('h', payload.get('tick', '—')) )}\n"
+            f"*ℛ_regime:* {_md_escape(payload.get('regime', '—'))}\n"
+            f"*Tick:* {_md_escape(payload.get('tick', '—'))}\n"
+            f"💎 Natalia Tanyatia"
+        )
+    if kind == "execution":
+        event = str(payload.get("event") or "ManualOrder")
+        emoji_map = {"Bull": "🐂", "Bear": "🐻", "Whisky": "🥃", "Wine": "🍷", "Watter": "💧", "Blood": "🩸", "Hawk": "🦅", "Dove": "🕊️", "Diamond": "🔷", "Ruby": "🔻", "Top": "▲", "Bott": "▼", "A": "🅰️", "B": "🅱️", "ManualOrder": "📝", "ManualClose": "✂️", "ManualOpen": "➕", "Pending": "⏳"}
+        o = payload.get("order") or {}
+        return (
+            f"⚡ *ÆEA ℰ_exec* {emoji_map.get(event, '⚡')}\n"
+            f"*Event:* {_md_escape(event)}\n"
+            f"*Side:* {_md_escape(o.get('side', payload.get('side', '—')))} *Vol:* {_md_escape(o.get('volume', payload.get('volume', '—')) )}\n"
+            f"*Entry:* `{_md_escape(o.get('price', payload.get('price', '—')))}` *Ticket:* {_md_escape(o.get('ticket', o.get('id', '—')) )}\n"
+            f"💎 Natalia Tanyatia"
+        )
+    if kind == "fvg":
+        return (
+            f"ℱ_VG *ÆEA ℱ_VG*\n"
+            f"*Action:* {_md_escape(payload.get('action', 'commit'))}\n"
+            f"*Price:* `{_md_escape(payload.get('price'))}` *Type:* {_md_escape(payload.get('type', '—'))}\n"
+            f"💎 Natalia Tanyatia"
+        )
+    if kind == "close":
+        o = payload.get("order") or {}
+        return (
+            f"✂️ *ÆEA 𝒜/ℬ close*\n"
+            f"*Ticket:* {_md_escape(o.get('ticket', o.get('id', '—')))} *Side:* {_md_escape(o.get('side', '—'))}\n"
+            f"*Reason:* {_md_escape(payload.get('reason', '—'))} *Entry:* `{_md_escape(o.get('price', '—'))}`\n"
+            f"💎 Natalia Tanyatia"
+        )
+    if kind == "notify":
+        return f"🔔 *ÆEA*\n{_md_escape(payload.get('text', ''))}"
+    return None
+def _tg_post(chat_id, text: str, parse_mode: Optional[str] = None, reply_to=None) -> bool:
+    """Stdlib Bot API sendMessage. Works from ANY thread (no PTB loop needed)."""
+    token = TELEGRAM_BOT_TOKEN_ENV
+    if not token or chat_id is None:
+        return False
+    try:
+        payload: Dict[str, Any] = {"chat_id": int(chat_id), "text": str(text)[:4096], "disable_web_page_preview": True}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if reply_to is not None:
+            payload["reply_to_message_id"] = int(reply_to)
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return bool(body.get("ok"))
+    except Exception as e:
+        _log("warning", f"Push failed (tg_post parse_mode={parse_mode} reply_to={reply_to}): {e}")
+        return False
+def _send_message_sync(chat_id, text: str, reply_to=None) -> bool:
+    """AEA E-11/E-13 three-attempt send: threaded Markdown -> standalone Markdown -> plain text."""
+    if chat_id is None or not text:
+        return False
+    # Attempt 1+2: PTB loop when the bot is polling (E-10 cross-thread send).
+    try:
+        bot = (globals().get("BRIDGE_ENGINE_REF", {}) or {}).get("bot")
+        loop = getattr(bot, "_loop", None) if bot is not None else None
+        app_obj = getattr(bot, "application", None) if bot is not None else None
+        if loop is not None and app_obj is not None and loop.is_running():
+            for attempt_reply in (reply_to, None):
+                try:
+                    coro = app_obj.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown", reply_to_message_id=attempt_reply)
+                    fut = asyncio.run_coroutine_threadsafe(coro, loop)
+                    fut.result(timeout=15)
+                    _log("info", f"📲 Push sent (PTB loop) to {chat_id} reply_to={attempt_reply}")
+                    return True
+                except Exception as e:
+                    _log("warning", f"Push attempt via PTB loop reply_to={attempt_reply} failed: {e}")
+                    if attempt_reply is None:
+                        break
+                    if "reply" not in str(e).lower() and "message to reply" not in str(e).lower():
+                        break
+    except Exception as e:
+        _log("warning", f"Push via PTB loop unavailable: {e}")
+    # Attempt 3: stdlib Markdown, then plain text (E-13 fallback).
+    if _tg_post(chat_id, text, parse_mode="Markdown", reply_to=reply_to):
+        _log("info", f"📲 Push sent (signal) to {chat_id} reply_to={reply_to}")
+        return True
+    if reply_to is not None and _tg_post(chat_id, text, parse_mode="Markdown", reply_to=None):
+        _log("info", f"📲 Push sent (signal, standalone) to {chat_id}")
+        return True
+    if _tg_post(chat_id, text, parse_mode=None, reply_to=None):
+        _log("info", f"📲 Push sent (signal, plain) to {chat_id}")
+        return True
+    _log("warning", f"📲 Push failed to {chat_id}")
+    return False
+# --- Bounded push queue: ONE daemon worker, O(1) threads (AEA E-7). ---
+_PUSH_QUEUE: "queue.Queue" = queue.Queue(maxsize=512)
+_PUSH_WORKER_STARTED = False
+def _ensure_push_worker():
+    global _PUSH_WORKER_STARTED
+    if _PUSH_WORKER_STARTED:
+        return
+    _PUSH_WORKER_STARTED = True
+    def _worker():
+        while True:
+            try:
+                kind, text = _PUSH_QUEUE.get()
+            except Exception:
+                continue
+            try:
+                chat_id = _resolve_push_chat_id()
+                if chat_id is None:
+                    _log("warning", "📲 Push skipped: no bound chat_id (send /start to the bot, or set TELEGRAM_CHAT_ID)")
+                    continue
+                reply_to = _get_bound_chat().get("message_id")
+                _send_message_sync(chat_id, text, reply_to=reply_to)
+            except Exception as e:
+                _log("warning", f"Push worker error: {e}")
+    threading.Thread(target=_worker, name="aea-push", daemon=True).start()
+def _telegram_push(kind: str, payload: Dict[str, Any], force: bool = False) -> bool:
+    """AEA (b) path: format (gated) -> dedup -> bounded queue. Never blocks the tick."""
+    try:
+        text = _format_push_message(kind, payload, force=force)
+        if text is None:
+            return False
+        if not force and not _push_should_send(kind, payload):
+            _log("info", f"📲 Push suppressed (dedup, {PUSH_DEDUP_WINDOW_MS}ms): kind={kind}")
+            return False
+        if force and not _push_should_send(kind, payload):
+            return False
+        _ensure_push_worker()
+        try:
+            _PUSH_QUEUE.put_nowait((kind, text))
+        except queue.Full:
+            try:
+                _PUSH_QUEUE.get_nowait()
+            except Exception:
+                pass
+            _PUSH_QUEUE.put_nowait((kind, text))
+            _log("warning", "Push queue full: dropped oldest push (toast buffer is authoritative)")
+        return True
+    except Exception as e:
+        _log("warning", f"_telegram_push failed: {e}")
+        return False
+def _emit_toast(kind: str, payload: Dict[str, Any]) -> int:
+    """AEA _emit_toast: sequenced ring-buffer entry + Telegram push for market kinds."""
+    global _TOAST_SEQ, _TOAST_FIRST_AVAILABLE_SEQ
+    try:
+        clean: Dict[str, Any] = {}
+        for k, v in (payload or {}).items():
+            if isinstance(v, str) and len(v) > 500:
+                clean[k] = v[:500]
+            else:
+                clean[k] = v
+        with _TOAST_LOCK:
+            was_full = len(_TOAST_BUFFER) >= (_TOAST_BUFFER.maxlen or 1)
+            evicted_seq = _TOAST_BUFFER[0].get("seq", 0) if was_full and len(_TOAST_BUFFER) else 0
+            _TOAST_SEQ += 1
+            seq = _TOAST_SEQ
+            entry = {"seq": seq, "ts": datetime.now().isoformat(), "kind": kind}
+            entry.update(clean)
+            _TOAST_BUFFER.append(entry)
+            if was_full:
+                _TOAST_FIRST_AVAILABLE_SEQ = evicted_seq + 1
+            elif _TOAST_FIRST_AVAILABLE_SEQ == 0 and len(_TOAST_BUFFER) > 0:
+                _TOAST_FIRST_AVAILABLE_SEQ = _TOAST_BUFFER[0].get("seq", seq)
+    except Exception as e:
+        _log("warning", f"_emit_toast failed: {e}")
+        return 0
+    if kind in ("signal", "execution", "fvg", "close", "alert", "notify"):
+        _telegram_push(kind, dict(payload or {}))
+    return seq
+def _toast(msg: str):
+    """Back-compat: plain string -> info toast. Info toasts are TWA-only, never pushed."""
+    try:
+        _emit_toast("info", {"text": str(msg)})
     except Exception:
         pass
+def _send_signal_alert(aeea, signal) -> None:
+    """AEA (c) legacy alert path. Fires ONLY when the (b) push path is gated off;
+    when (b) already pushed, the dedup key suppresses this duplicate."""
+    try:
+        if PUSH_ON_SIGNAL:
+            return
+        if aeea is None or signal is None:
+            return
+        payload = {"type": signal.get("side", "BUY"), "price": signal.get("price"), "m": signal.get("m"), "n": signal.get("n"), "h": signal.get("ordered_index"), "regime": signal.get("regime"), "tick": signal.get("ordered_index"), "symbol": getattr(aeea, "symbol", None), "ordered_index": signal.get("ordered_index")}
+        _telegram_push("signal", payload, force=True)
+    except Exception as e:
+        _log("warning", f"_send_signal_alert failed: {e}")
+def _send_execution_alert(aeea, order, reason: str = "ManualClose") -> None:
+    """AEA (c) legacy execution/close alert. Same dedup rule as _send_signal_alert."""
+    try:
+        if PUSH_ON_EXECUTION and PUSH_ON_CLOSE:
+            return
+        if order is None:
+            return
+        _telegram_push("close", {"order": order, "reason": reason}, force=True)
+    except Exception as e:
+        _log("warning", f"_send_execution_alert failed: {e}")
+
 # ============================================================================
 # AUTH - HEADER ONLY
 # ============================================================================
@@ -1340,10 +1647,13 @@ class AEEA_Engine:
                 self.signal_count += 1
                 self.current_signal = signal
                 self.aeea_notification = {"type": "signal", "signal": signal, "text": f"Signal BUY {self.symbol} @ {price} delta={self.delta} m={self.m} n={self.n}"}
-                _toast(f"Signal BUY {self.symbol} @ {price}")
+                # AEA: toast (b) pushes via _telegram_push; legacy (c) fires only if (b) is gated off.
+                _emit_toast("signal", {"type": "BUY", "price": float(price), "signal_level": float(price), "m": self.m, "n": self.n, "h": int(ordered_index), "regime": self.regime, "tick": int(ordered_index), "ordered_index": int(ordered_index), "symbol": self.symbol, "source": "on_tick"})
+                _send_signal_alert(self, signal)
             else:
                 self.current_signal = None
             # Trailing SL/TP enforcement on open orders.
+            _open_before = {o.ticket for o in self.orders if o.status == "open"}
             for o in list(self.orders):
                 if o.status != "open":
                     continue
@@ -1361,6 +1671,10 @@ class AEEA_Engine:
                     elif o.sl is not None and float(price) >= o.sl:
                         o.status = "closed"
                         self.aeea_notification = {"type": "close", "order": o.to_dict(), "reason": "SL"}
+            for o in list(self.orders):
+                if o.ticket in _open_before and o.status == "closed":
+                    _reason = "TP" if ((o.side == "BUY" and o.tp is not None and float(price) >= o.tp) or (o.side != "BUY" and o.tp is not None and float(price) <= o.tp)) else "SL"
+                    _emit_toast("close", {"order": o.to_dict(), "reason": _reason, "symbol": self.symbol, "tick": int(ordered_index), "ordered_index": int(ordered_index)})
             return {"bar": bar.to_dict(), "indicators": self.indicators, "m": self.m, "n": self.n, "delta": self.delta, "regime": self.regime, "bb": self.bb, "projection": self.projection, "signal": signal}
     def place_order(self, side: str, volume, sl, tp, backend_id=None, ordered_index: int = 0):
         with self._lock:
@@ -1369,12 +1683,15 @@ class AEEA_Engine:
             o = Order(id=self._order_seq, ticket=self._order_seq, side=str(side or "BUY").upper(), volume=float(volume) if volume else 0.01, price=float(price), sl=float(sl) if sl not in (None, "") else None, tp=float(tp) if tp not in (None, "") else None, status="open", backend_id=backend_id, tick=len(self.bars), ordered_index=int(ordered_index))
             self.orders.append(o)
             self.aeea_notification = {"type": "order", "order": o.to_dict(), "text": f"Order {o.side} {o.volume} {self.symbol} @ {price}"}
+            _emit_toast("execution", {"event": "ManualOrder", "order": o.to_dict(), "side": o.side, "volume": o.volume, "price": float(price), "symbol": self.symbol, "tick": len(self.bars), "ordered_index": int(ordered_index)})
             return o.to_dict()
     def close_order(self, ticket: int):
         with self._lock:
             for o in self.orders:
                 if o.ticket == int(ticket) and o.status == "open":
                     o.status = "closed"
+                    _emit_toast("close", {"order": o.to_dict(), "reason": "ManualClose", "symbol": self.symbol})
+                    _send_execution_alert(self, o.to_dict(), reason="ManualClose")
                     return {"ok": True, "order": o.to_dict()}
             return {"ok": False, "error": "order_not_found"}
     def close_all_orders(self):
@@ -1384,15 +1701,18 @@ class AEEA_Engine:
                 if o.status == "open":
                     o.status = "closed"
                     closed.append(o.to_dict())
+                    _emit_toast("close", {"order": o.to_dict(), "reason": "ManualClose", "symbol": self.symbol})
             return {"ok": True, "closed": closed, "closed_ids": [c["id"] for c in closed]}
     def add_fvg(self, price: float, ftype: str = "topp", ordered_index: int = 0):
         with self._lock:
             item = {"price": float(price), "type": ftype, "tick": len(self.bars), "ordered_index": int(ordered_index), "ts": time.time()}
             self.fvg.append(item)
+            _emit_toast("fvg", {"action": "commit", "price": float(price), "type": ftype, "tick": len(self.bars), "ordered_index": int(ordered_index), "symbol": self.symbol})
             return item
     def clear_fvg(self):
         with self._lock:
             self.fvg.clear()
+            _emit_toast("fvg", {"action": "clear", "symbol": self.symbol})
             return {"ok": True}
     def get_projection(self):
         if self.projection is None:
@@ -1442,6 +1762,64 @@ class AEEA_Engine:
             self.y = 0
             self.Regime = []
             return {"ok": True}
+# ============================================================================
+# ASYNC WORKER STARTER - AEA E-10 FIX
+# NEVER construct a coroutine in the caller thread: asyncio.create_task()
+# on a thread with no running loop creates an orphan coroutine (RuntimeWarning)
+# and delivers nothing. The coroutine is created INSIDE the worker thread,
+# on that thread's own fresh event loop. The loop is stored as _event_loop
+# (NOT _loop - that name is the worker's coroutine method).
+# ============================================================================
+def _start_async_worker(owner, coro_factory, thread_name: str):
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        owner._event_loop = loop
+        try:
+            owner._task = loop.create_task(coro_factory())
+            loop.run_forever()
+        except Exception as e:
+            _log("warning", f"worker {thread_name} loop error: {e}")
+        finally:
+            try:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
+    t = threading.Thread(target=_run, name=thread_name, daemon=True)
+    owner._worker_thread = t
+    t.start()
+    return t
+def _stop_async_worker(owner):
+    owner._running = False
+    try:
+        task = getattr(owner, "_task", None)
+        loop = getattr(owner, "_event_loop", None)
+        if loop is not None and loop.is_running():
+            def _shutdown():
+                try:
+                    if task is not None and not task.done():
+                        task.cancel()
+                except Exception:
+                    pass
+                # Let the cancellation land, then stop the loop. The worker
+                # thread's finally-block gathers the cancelled task before
+                # closing the loop, so no "Task was destroyed" error.
+                try:
+                    loop.call_later(0.3, loop.stop)
+                except Exception:
+                    pass
+            loop.call_soon_threadsafe(_shutdown)
+    except Exception:
+        pass
+
 # ============================================================================
 # MARKET TICK WORKER - KRAKEN PRIMARY, NO SYNTHETIC BARS EVER
 # ============================================================================
@@ -1542,23 +1920,9 @@ class MarketTickWorker:
         if self._running:
             return
         self._running = True
-        try:
-            self._task = asyncio.create_task(self._loop())
-        except RuntimeError:
-            # No running loop in this thread: create one in a daemon thread.
-            def _run():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                self._task = loop.create_task(self._loop())
-                loop.run_forever()
-            threading.Thread(target=_run, name="market-loop", daemon=True).start()
+        _start_async_worker(self, self._loop, "market-loop")
     def stop(self):
-        self._running = False
-        try:
-            if self._task and not self._task.done():
-                self._task.cancel()
-        except Exception:
-            pass
+        _stop_async_worker(self)
         try:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
@@ -1711,22 +2075,9 @@ class CrawlerWorker:
         if self._running:
             return
         self._running = True
-        try:
-            self._task = asyncio.create_task(self._loop())
-        except RuntimeError:
-            def _run():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                self._task = loop.create_task(self._loop())
-                loop.run_forever()
-            threading.Thread(target=_run, name="crawler-loop", daemon=True).start()
+        _start_async_worker(self, self._loop, "crawler-loop")
     def stop(self):
-        self._running = False
-        try:
-            if self._task and not self._task.done():
-                self._task.cancel()
-        except Exception:
-            pass
+        _stop_async_worker(self)
         try:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
@@ -1760,22 +2111,9 @@ class SeedWorker:
         if self._running:
             return
         self._running = True
-        try:
-            self._task = asyncio.create_task(self._loop())
-        except RuntimeError:
-            def _run():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                self._task = loop.create_task(self._loop())
-                loop.run_forever()
-            threading.Thread(target=_run, name="seed-loop", daemon=True).start()
+        _start_async_worker(self, self._loop, "seed-loop")
     def stop(self):
-        self._running = False
-        try:
-            if self._task and not self._task.done():
-                self._task.cancel()
-        except Exception:
-            pass
+        _stop_async_worker(self)
 # ============================================================================
 # EVOLUTION VS NN - SAME ORDERED TICKS, LEARNING SPEED IN TICKS-TO-TARGET
 # ============================================================================
@@ -2146,7 +2484,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "ohlcv": aeea.get_ohlcv(limit) if aeea else [], "symbol": aeea.symbol if aeea else None})
                 return
             if path == "/signals":
-                self._send_json(200, {"ok": True, "current_signal": aeea.current_signal if aeea else None, "signal_history": list(aeea.signal_history[-20:]) if aeea else []})
+                _hist = list(aeea.signal_history[-50:]) if aeea else []
+                self._send_json(200, {"ok": True, "current_signal": aeea.current_signal if aeea else None, "signal_history": _hist, "signals": _hist, "last_signal_at": (_hist[-1].get("ts") if _hist else None), "signal_count": aeea.signal_count if aeea else 0, "symbol": aeea.symbol if aeea else None})
                 return
             if path == "/diagnostics":
                 self._send_json(200, {"ok": True, "aeea": aeea.diagnostics() if aeea else {}, "seed": seed.snapshot() if seed else {}, "race": race.snapshot() if race else {}, "feed": {"ordered": ORDERED_FEED.ordered_index, "provider": ORDERED_FEED.last_provider}})
@@ -2160,9 +2499,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "log": logs})
                 return
             if path == "/toasts":
-                with _LOG_LOCK:
-                    toasts = list(_TOAST_BUFFER)[-100:]
-                self._send_json(200, {"ok": True, "toasts": toasts})
+                try:
+                    since = int(self.headers.get("X-Since", query.get("since", "0")) or 0)
+                except Exception:
+                    since = 0
+                with _TOAST_LOCK:
+                    toasts = [t for t in _TOAST_BUFFER if t.get("seq", 0) > since]
+                    latest_seq = _TOAST_SEQ
+                    first_available = _TOAST_FIRST_AVAILABLE_SEQ
+                self._send_json(200, {"ok": True, "toasts": toasts, "count": len(toasts), "latest_seq": latest_seq, "first_available_seq": first_available, "since": since})
                 return
             if path == "/lattice-state":
                 snap = seed.snapshot() if seed else {"lattice_points": []}
@@ -2177,7 +2522,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "aea_notification": getattr(aeea, "aeea_notification", None) if aeea else None})
                 return
             if path == "/config":
-                self._send_json(200, {"ok": True, "config": {"symbol": aeea.symbol if aeea else SYMBOL_ENV, "timeframe": aeea.timeframe if aeea else TIMEFRAME_ENV, "bridge_port": BRIDGE_PORT, "require_auth": REQUIRE_AUTH, "version": __version__, "crawl_interval": CRAWL_INTERVAL, "seed_tick_interval": SEED_TICK_INTERVAL}})
+                self._send_json(200, {"ok": True, "config": {"symbol": aeea.symbol if aeea else SYMBOL_ENV, "timeframe": aeea.timeframe if aeea else TIMEFRAME_ENV, "bridge_port": BRIDGE_PORT, "require_auth": REQUIRE_AUTH, "version": __version__, "crawl_interval": CRAWL_INTERVAL, "seed_tick_interval": SEED_TICK_INTERVAL, "push_on_signal": PUSH_ON_SIGNAL, "push_on_execution": PUSH_ON_EXECUTION, "push_on_fvg": PUSH_ON_FVG, "push_on_close": PUSH_ON_CLOSE, "push_dedup_window_ms": PUSH_DEDUP_WINDOW_MS}})
                 return
             if path == "/probe":
                 crawler = self._crawler()
@@ -2302,7 +2647,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 msg = body.get("message", "") if isinstance(body, dict) else ""
                 if aeea is not None:
                     aeea.aeea_notification = {"type": "notify", "text": str(msg), "ts": datetime.now().isoformat()}
-                _toast(str(msg))
+                _emit_toast("notify", {"text": str(msg), "source": "notify-aea"})
                 self._send_json(200, {"ok": True, "notification": getattr(aeea, "aeea_notification", None) if aeea else None})
                 return
             if path == "/encode-syllable":
@@ -2505,6 +2850,11 @@ class AE_Bot:
             user = update.effective_user if update else None
             if user:
                 self._tracked.append({"user_id": user.id, "username": getattr(user, "username", None), "ts": datetime.now().isoformat()})
+                try:
+                    _msg = update.message if update is not None else None
+                    _bind_inbound(user.id, message_id=getattr(_msg, "message_id", None), user_id=user.id, username=getattr(user, "username", None))
+                except Exception:
+                    pass
                 if self.aeea is not None:
                     try:
                         self.aeea.chat_id = user.id
@@ -2882,6 +3232,15 @@ class AE_Bot:
             app.add_error_handler(self.error_handler)
             _log("info", "AE_Bot starting polling (drop_pending_updates=True - test /start with a fresh message after redeploy)")
             # drop_pending_updates=True: old /start messages from the crash loop are discarded.
+            # AEA E-10: PTB 21.x needs a CURRENT event loop in THIS thread.
+            # The Heroku crash was: "no current event loop in thread 'ae-bot'"
+            # + "coroutine 'Updater.start_polling' was never awaited".
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                _bot_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(_bot_loop)
+                self._loop = _bot_loop
             app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES if Update is not None else None)
         except Exception as e:
             _log("error", f"AE_Bot run failed: {e}")
@@ -2969,7 +3328,15 @@ def main():
         try:
             bot = AE_Bot(TELEGRAM_BOT_TOKEN_ENV, seed=seed, crawler=crawler, aeea=aeea, race=race, market=market, seed_worker=seed_worker)
             BRIDGE_ENGINE_REF["bot"] = bot
-            bot_thread = threading.Thread(target=bot.run, name="ae-bot", daemon=True)
+            def _bot_thread_runner():
+                try:
+                    _loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(_loop)
+                    bot._loop = _loop
+                except Exception:
+                    pass
+                bot.run()
+            bot_thread = threading.Thread(target=_bot_thread_runner, name="ae-bot", daemon=True)
             bot_thread.start()
             _log("info", "Bot thread started")
         except Exception as e:
