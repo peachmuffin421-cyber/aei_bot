@@ -30,7 +30,7 @@
     "kraken-primary",
     "bollinger-bands",
     "fvg",
-    "final-edition"
+    "final-first"
   ],
   "env": {
     "TELEGRAM_BOT_TOKEN": {
@@ -62,11 +62,11 @@
       "required": false
     },
     "REQUIRE_AUTH": {
-      "description": "Enforce X-Telegram-Init-Data on all non-/health endpoints. Defaults to '1'.",
+      "description": "Enforce X-Telegram-Init-Data on all non-/health endpoints. Defaults to '1'. Auth fails closed when '1' and no bot token is configured.",
       "required": false
     },
     "CORS_ORIGIN": {
-      "description": "Lock down writes to your Pages origin. Defaults to '*'.",
+      "description": "Lock down writes to your Pages origin. Defaults to '*'. Star returns '*', never reflects an arbitrary Origin.",
       "required": false
     },
     "SYMBOL": {

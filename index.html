@@ -59,12 +59,14 @@ h1 { color: var(--text-bright); font-size: 1.4rem; letter-spacing: 2px; margin-b
 <div class="row"><span class="label">Bridge</span><span class="value" id="statusText"><span class="status-dot" id="dot"></span>WAITING</span></div>
 <div class="row"><span class="label">Version</span><span class="value" id="version">—</span></div>
 <div class="row"><span class="label">State</span><span class="value" id="state">—</span></div>
+<div class="row"><span class="label">Last price update</span><span class="value" id="lastUpdate">—</span></div>
+<div class="row"><span class="label">Age (s)</span><span class="value" id="ageSeconds">—</span></div>
+<div class="row"><span class="label">Stale</span><span class="value" id="stale">—</span></div>
+<div class="row"><span class="label">Provider</span><span class="value" id="provider">—</span></div>
 </div>
 <div class="panel">
 <div class="panel-title">Seed</div>
-<div class="row"><span class="label">Seed initialized</span><span class="value" id="seedInit">—</span></div>
 <div class="row"><span class="label">Engine initialized</span><span class="value" id="engInit">—</span></div>
-<div class="row"><span class="label">Seed state</span><span class="value proj" id="seedState">—</span></div>
 <div class="row"><span class="label">Seed tick</span><span class="value" id="seedTick">—</span></div>
 <div class="row"><span class="label">Seed generation</span><span class="value" id="seedGen">—</span></div>
 <div class="row"><span class="label">Prime count</span><span class="value" id="primeCount">—</span></div>
@@ -93,9 +95,10 @@ h1 { color: var(--text-bright); font-size: 1.4rem; letter-spacing: 2px; margin-b
 </div>
 <div class="panel">
 <div class="panel-title">Acoustization (backend-computed)</div>
-<div class="row"><span class="label">Base tone</span><span class="value" id="acBase">— WAITING</span></div>
-<div class="row"><span class="label">Filter</span><span class="value" id="acFilter">— WAITING</span></div>
-<div class="row"><span class="label">Lattice notes</span><span class="value" id="acNotes">— WAITING</span></div>
+<div class="row"><span class="label">Frequency</span><span class="value" id="acFreq">— WAITING</span></div>
+<div class="row"><span class="label">Amplitude</span><span class="value" id="acAmp">— WAITING</span></div>
+<div class="row"><span class="label">Type</span><span class="value" id="acType">— WAITING</span></div>
+<div class="row"><span class="label">Source</span><span class="value" id="acSource">— WAITING</span></div>
 </div>
 <div class="panel">
 <div class="panel-title">Available Endpoints</div>
@@ -107,34 +110,42 @@ h1 { color: var(--text-bright); font-size: 1.4rem; letter-spacing: 2px; margin-b
 <li><span class="method">GET</span><span class="path">/crawler-state</span><span class="desc">crawler state</span></li>
 <li><span class="method">GET</span><span class="path">/symbolic-state</span><span class="desc">primes tail, psi, logic core</span></li>
 <li><span class="method">GET</span><span class="path">/lattice-state</span><span class="desc">lattice dimension, preview</span></li>
+<li><span class="method">GET</span><span class="path">/seed-state</span><span class="desc">lattice, s2, r2, deviation, seed</span></li>
 <li><span class="method">GET</span><span class="path">/fibration-state</span><span class="desc">Hopf fibration state</span></li>
 <li><span class="method">GET</span><span class="path">/observer-integral</span><span class="desc">observer integral state</span></li>
 <li><span class="method">GET</span><span class="path">/evolution-state</span><span class="desc">evolution vs NN state</span></li>
 <li><span class="method">GET</span><span class="path">/toasts</span><span class="desc">toast ring buffer</span></li>
-<li><span class="method">GET</span><span class="path">/anchors</span><span class="desc">anchors list</span></li>
 <li><span class="method">GET</span><span class="path">/log</span><span class="desc">log ring buffer</span></li>
-<li><span class="method">GET</span><span class="path">/seeds</span><span class="desc">seed list</span></li>
 <li><span class="method">GET</span><span class="path">/ohlcv</span><span class="desc">OHLCV bars</span></li>
 <li><span class="method">GET</span><span class="path">/signals</span><span class="desc">signal list</span></li>
+<li><span class="method">GET</span><span class="path">/fvg</span><span class="desc">FVG list</span></li>
+<li><span class="method">GET</span><span class="path">/probe</span><span class="desc">feed probe + signal status</span></li>
 <li><span class="method">GET</span><span class="path">/diagnostics</span><span class="desc">diagnostics</span></li>
 <li><span class="method">GET</span><span class="path">/orders</span><span class="desc">orders list (read)</span></li>
+<li><span class="method">GET</span><span class="path">/regime-map</span><span class="desc">regime map</span></li>
+<li><span class="method">GET</span><span class="path">/indicators</span><span class="desc">indicator list / series</span></li>
+<li><span class="method">GET</span><span class="path">/projection</span><span class="desc">P_arc projection</span></li>
 <li><span class="method">GET</span><span class="path">/settings</span><span class="desc">engine settings (read)</span></li>
 <li><span class="method">GET</span><span class="path">/cs-state</span><span class="desc">CS back-feed + state</span></li>
+<li><span class="method">GET</span><span class="path">/cs-feedback</span><span class="desc">CS back-feed (read)</span></li>
 <li><span class="method">GET</span><span class="path">/aea-notification</span><span class="desc">format_aea output for cursor bar</span></li>
-<li><span class="method">POST</span><span class="path">/step</span><span class="desc">seed step, x as Fraction</span></li>
+<li><span class="method">POST</span><span class="path">/step</span><span class="desc">seed step, {} — backend lifts x</span></li>
 <li><span class="method">POST</span><span class="path">/reset</span><span class="desc">reset AEEA + race + seed</span></li>
 <li><span class="method">POST</span><span class="path">/crawler-enqueue</span><span class="desc">enqueue crawler URL</span></li>
 <li><span class="method">POST</span><span class="path">/encode-syllable</span><span class="desc">encode A / U / M / AUM</span></li>
-<li><span class="method">POST</span><span class="path">/anchor</span><span class="desc">add anchor</span></li>
-<li><span class="method">POST</span><span class="path">/cs-feedback</span><span class="desc">CS back-feed, backend values only</span></li>
+<li><span class="method">POST</span><span class="path">/cs-feedback</span><span class="desc">CS back-feed, {kind, text, user}</span></li>
 <li><span class="method">POST</span><span class="path">/teach</span><span class="desc">teach</span></li>
 <li><span class="method">POST</span><span class="path">/say</span><span class="desc">say</span></li>
 <li><span class="method">POST</span><span class="path">/order</span><span class="desc">place order (singular)</span></li>
 <li><span class="method">POST</span><span class="path">/order/close</span><span class="desc">close order</span></li>
+<li><span class="method">POST</span><span class="path">/fvg</span><span class="desc">add FVG anchor</span></li>
+<li><span class="method">POST</span><span class="path">/projection/refresh</span><span class="desc">recompute P_arc</span></li>
 <li><span class="method">POST</span><span class="path">/settings</span><span class="desc">update engine settings</span></li>
 <li><span class="method">POST</span><span class="path">/symbol</span><span class="desc">change symbol</span></li>
 <li><span class="method">POST</span><span class="path">/notify-aea</span><span class="desc">send AEA notification</span></li>
 <li><span class="method">POST</span><span class="path">/handshake</span><span class="desc">Web App session registration</span></li>
+<li><span class="method">DELETE</span><span class="path">/fvg/&lt;id&gt;</span><span class="desc">remove one FVG anchor</span></li>
+<li><span class="method">DELETE</span><span class="path">/orders</span><span class="desc">close all open orders</span></li>
 </ul>
 </div>
 <div class="note">This page is served by the backend itself, so it fetches by same-origin relative path. No backend URL appears in this file. Auth: X-Telegram-Init-Data header on every endpoint except /health. WAITING means WAITING — no synthetic bars, no placeholder lattice, no local truth.</div>
@@ -170,16 +181,11 @@ async function probe() {
     setDot(true);
     if (health) {
         setText("version", health.version || "—");
-        setText("seedInit", String(health.seed_initialized), health.seed_initialized ? "ok" : "warn");
         setText("engInit", String(health.engine_initialized), health.engine_initialized ? "ok" : "warn");
-        setText("seedState", health.seed_state || "—", "proj");
-        setText("seedTick", String(health.seed_tick ?? "—"));
-        setText("seedGen", String(health.seed_generation ?? "—"));
-        setText("primeCount", String(health.prime_count ?? "—"));
-        setText("latticePoints", String(health.lattice_points ?? "—"));
-        setText("crawlerRunning", health.crawler_running ? "yes" : "no", health.crawler_running ? "ok" : "err");
-        setText("crawlerFrontier", String(health.crawler_frontier ?? "—"));
-        setText("crawlerVisited", String(health.crawler_visited ?? "—"));
+        setText("lastUpdate", health.last_price_update || "—");
+        setText("ageSeconds", (health.age_seconds !== undefined && health.age_seconds !== null) ? Number(health.age_seconds).toFixed(1) : "—");
+        setText("stale", (health.stale !== undefined ? String(health.stale) : "—"), health.stale ? "err" : "ok");
+        setText("provider", health.provider || "—");
     }
     if (state) {
         setText("state", state.status || "—");
@@ -190,13 +196,18 @@ async function probe() {
         var cs = state.cs || {};
         setText("aeeaSymbol", feed.symbol || aeea.symbol || "—", "proj");
         setText("aeeaPrice", (feed.price !== undefined ? feed.price : (aeea.last_price !== undefined ? aeea.last_price : "—")));
-        setText("aeeaOrdered", (state.ordered !== undefined ? state.ordered : (feed.ordered_index !== undefined ? feed.ordered_index : "—")));
+        setText("aeeaOrdered", (state.ordered !== undefined ? state.ordered : (feed.ordered_index !== undefined ? feed.ordered_index : (feed.ordered !== undefined ? feed.ordered : "—"))));
         var bars = aeea.bars || state.bars || [];
         setText("aeeaBars", Array.isArray(bars) ? String(bars.length) : "—");
         setText("aeeaDelta", (aeea.delta !== undefined ? aeea.delta : (ind.delta !== undefined ? ind.delta : "—")));
         setText("aeeaMN", ((aeea.m !== undefined ? aeea.m : ind.m) !== undefined ? (aeea.m !== undefined ? aeea.m : ind.m) + " / " + (aeea.n !== undefined ? aeea.n : ind.n) : "—"));
         setText("aeeaRegime", aeea.regime || ind.regime || "—");
         setText("aeeaSignal", aeea.current_signal || ind.signal || aeea.signal || "—");
+        setText("seedTick", (seed.tick !== undefined ? String(seed.tick) : "—"));
+        setText("seedGen", (seed.generation !== undefined ? String(seed.generation) : "—"));
+        setText("primeCount", (seed.prime_count !== undefined ? String(seed.prime_count) : "—"));
+        var lp = seed.lattice_points;
+        setText("latticePoints", (seed.lattice_count !== undefined ? String(seed.lattice_count) : (Array.isArray(lp) ? String(lp.length) : "—")));
         var s2 = (seed.s2 !== undefined ? seed.s2 : (seed.arc_sq !== undefined ? seed.arc_sq : cs.s2));
         var r2 = (seed.r2 !== undefined ? seed.r2 : (seed.radius_sq !== undefined ? seed.radius_sq : cs.r2));
         var dev = (seed.deviation_sq !== undefined ? seed.deviation_sq : (seed.deviation !== undefined ? seed.deviation : cs.deviation));
@@ -205,10 +216,15 @@ async function probe() {
         setText("r2", r2 !== undefined ? trunc(r2, 48) : "— WAITING", "proj");
         setText("deviation", dev !== undefined ? trunc(dev, 48) : "— WAITING");
         setText("coherence", coh !== undefined ? String(coh) : "— WAITING");
+        var cr = state.crawler || {};
+        setText("crawlerRunning", (cr.running !== undefined ? String(cr.running) : "—"), cr.running ? "ok" : "err");
+        setText("crawlerFrontier", (cr.frontier_size !== undefined ? String(cr.frontier_size) : (cr.frontier !== undefined ? String(cr.frontier) : "—")));
+        setText("crawlerVisited", (cr.visited !== undefined ? String(cr.visited) : "—"));
         var ac = state.acoustization || null;
-        setText("acBase", (ac && ac.base_freq !== null && ac.base_freq !== undefined) ? Number(ac.base_freq).toFixed(1) + " Hz" : "— WAITING");
-        setText("acFilter", (ac && ac.filter_freq !== null && ac.filter_freq !== undefined) ? Number(ac.filter_freq).toFixed(1) + " Hz" : "— WAITING");
-        setText("acNotes", (ac && ac.lattice_notes && ac.lattice_notes.length) ? ac.lattice_notes.map(function(n) { return Number(n).toFixed(0); }).join(", ") : "— WAITING");
+        setText("acFreq", (ac && ac.frequency !== null && ac.frequency !== undefined) ? String(ac.frequency) : "— WAITING");
+        setText("acAmp", (ac && ac.amplitude !== null && ac.amplitude !== undefined) ? String(ac.amplitude) : "— WAITING");
+        setText("acType", (ac && ac.type) ? String(ac.type) : "— WAITING");
+        setText("acSource", (ac && ac.source) ? String(ac.source) : "— WAITING");
     }
 }
 probe();
