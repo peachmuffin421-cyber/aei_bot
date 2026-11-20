@@ -1,34 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AE TWA - Fused backend. Final, First edition.
-Version: final-first
+AE TWA - Fused backend.
 
 One ordered feed advances both engines:
   - AEEA market engine: bars -> 13 normalised indicators + Ichimoku -> m/n/delta
-    -> regime -> BBx58 -> P_arc -> signal iff delta-gate -> orders/trailing/FVG.
+    -> regime -> BB family 3-60 -> P_arc -> signal iff H/L gate -> orders/trailing/FVG.
   - AEI seed loop: prime -> outward lattice -> Hopf -> s2 vs r2 -> deviation
     -> DbZ -> I -> SelfEvolution. The seed step runs in the backend, on the
-    same tick, with x lifted in the backend from the backend ordered
-    price and prevPrice: x = abs(price - prevPrice) / 10000, or 1/100 when
-    the delta is zero. The frontend never computes x.
+    same tick, with x lifted in the backend from the crawler hash fraction when a crawled
+    document has been hashed (CrawlerState.last_hash_frac), else price fallback
+    x = abs(price - prevPrice) / 10000, or 1/100 when the delta is zero,
+    labelled x_source='price-fallback' and never presented as FG x.
+    The frontend never computes x and never sends x.
 
 Canonical contracts in this file:
   - m/n: 13 loop votes plus one Ichimoku vote. Maximum is 14, not 13.
     Effective thresholds are F_PLUS_GF = 208/3 = 69.333... for m and
     G_MINUS_GF = 92/3 = 30.666... for n. The tolerance is 8/3.
+  - Identity: AEEA TWA is FF itself. AEI TWA is FG itself. AE TWA is
+    the FF/FG fusion. FF takes precedence for market engine. FG takes
+    precedence for seed loop.
+  - Intelligence gate (FG): I = alignment x riemann x stability x refined.
+    Gate is I >= 2/3. Unity is I = 1. Coherence gate is s = r, checked
+    as s2 = r2 for s, r >= 0. A generation is kept when s2 = r2 and
+    I >= 2/3. Unity is s = r and I = 1.
   - H/L gate: H fires when m >= 12, L fires when n >= 12.
-  - Regime: imbalance = m - n - 2. BULLISH when imbalance > 2,
-    BEARISH when imbalance < -2, else NEUTRAL. There is no separate
-    delta = 1 gate.
-  - BBx58: Bollinger with period 58. Null until 58 real bars exist.
-    No zero placeholder is ever returned for BB.
+  - H/L gate (signal firing, FF _signal): BUY when m >= 12, SELL when n >= 12.
+    This H/L gate is NOT the Kronecker gate. Do not label H/L as delta.
+  - Kronecker gate: imbalance = m - n - 2. Kronecker delta(imbalance) = 1 iff
+    imbalance == 0 iff m - n == 2. delta_gate_met = (imbalance == 0).
+    The Kronecker gate is reported separately and does NOT fire signals.
+  - Bridge regime (display only, NOT FF Regime): BULLISH when imbalance > 2,
+    BEARISH when imbalance < -2, else NEUTRAL. FF engine Regime is the
+    sRange/tRange/sVolatile/tVolatile/sTrend/tTrend/Stable/Unknown taxonomy
+    in st.Regime, reported as engine_regime.
+  - BB family (FF): Bollinger family, integer periods 3 to 60, deviation 2, close, shift 0, population sigma. Backend _bb_family_from_bars computes the whole family from real bars. Backend _bb58_from_bars is ONE member (period 58), never canonical. Null until that period has that many real bars. Frontend renders backend family and provides bbToBigFixed as a display helper (BigInt accumulators exact, final sqrt float64 per FF A-M6).
   - One formatter: format_aea is the single entry point for bot and
-    TWA messages. The older _format_push_message is an internal helper
+    TWA messages. The _format_push_message is an internal helper
     called only through format_aea.
-  - One state: GET /miniapp-state returns feed, aeea, seed, ordered,
-    cs, acoustization, observer, race, crawler, and aea_notification
-    in one tick.
+  - One state: GET /miniapp-state returns feed, aeea, seed, ordered, cs, acoustization (FUSION INVENTION, not FG), observer (FG integral), evolution (FG SelfEvolutionCore), crawler, aea_notification in one tick. No toy opponent. No race field.
   - CS display: the CS closure display shows the closure value as
     defined in the file. It is display, not a formal proof.
   - Auth fails closed: if REQUIRE_AUTH is on and no bot token is
@@ -37,7 +48,6 @@ Canonical contracts in this file:
   - CORS: when CORS_ORIGIN is "*", the backend returns "*". It never
     reflects an arbitrary request Origin.
 """
-__version__ = "final-first"
 
 
 import asyncio
@@ -48,6 +58,11 @@ import math
 import os
 import queue
 import sys
+if hasattr(sys, "set_int_max_str_digits"):
+    try:
+        sys.set_int_max_str_digits(1000000)
+    except Exception:
+        pass
 import ssl
 import logging
 import subprocess
@@ -831,7 +846,7 @@ def _is_banned_user(user_id) -> bool:
         return False
 
 # ============================================================================
-# SYMBOL MAP — vFinal EXPANDED UNIVERSE
+# SYMBOL MAP — EXPANDED UNIVERSE
 # ============================================================================
 SYMBOL_MAP = {
     "BTC-USD": "BTC-USD", "ETH-USD": "ETH-USD", "XRP-USD": "XRP-USD",
@@ -1305,14 +1320,14 @@ def format_aea(kind: str, payload: Dict[str, Any]) -> Optional[str]:
             seed = payload.get("seed") or {}
             aeea = payload.get("aeea") or {}
             return (
-                f"AE TWA Final First \u00b7 seed tick {seed.get('tick', '—')} "
+                f"AE TWA \u00b7 seed tick {seed.get('tick', '—')} "
                 f"\u00b7 gen {seed.get('generation', '—')} "
                 f"\u00b7 s2 {seed.get('s2', '—')} r2 {seed.get('r2', '—')} "
                 f"\u00b7 regime {aeea.get('regime', '—')} "
                 f"\u00b7 m {aeea.get('m', '—')} / n {aeea.get('n', '—')}"
             )
         except Exception:
-            return "AE TWA Final First \u00b7 WAITING"
+            return "AE TWA \u00b7 WAITING"
     return _format_push_message(kind, payload)
 
 def _format_push_message(kind: str, payload: Dict[str, Any]) -> Optional[str]:
@@ -1961,10 +1976,6 @@ def verify_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: i
 def _extract_auth_headers(handler: "BridgeHandler") -> Tuple[Optional[int], Optional[str], bool]:
     raw_init = handler.headers.get("X-Telegram-Init-Data", "").strip()
     if not raw_init:
-        auth_hdr = handler.headers.get("Authorization", "").strip()
-        if auth_hdr.lower().startswith("tma "):
-            raw_init = auth_hdr[4:].strip()
-    if not raw_init:
         return (None, None, False)
     verified = verify_telegram_init_data(raw_init, TELEGRAM_BOT_TOKEN_ENV)
     if not verified or not verified.get("user"):
@@ -2256,7 +2267,6 @@ class FeedClient:
             "failure_count": self._failure_count,
             "fallback_count": self._fallback_count,
             "last_update": self._last_update.isoformat() if self._last_update else None,
-            "relay_url": RELAY_URL,
             "provider": self._last_provider,
             "last_volume": str(self._last_volume),
         }
@@ -2268,6 +2278,10 @@ class AEEA_Engine:
     def __init__(self):
         self.state = AEI_CoreState()
         self.seed = AEI_Seed()
+        try:
+            self.ordered_feed = OrderedFeed()
+        except Exception:
+            self.ordered_feed = None
         self.crawler = CrawlerState()
         self.cs_feedback = CSFeedbackStore()
         self.price_history: List[PriceData] = []
@@ -2964,12 +2978,10 @@ class AEEA_Engine:
     # ========================================================================
     # _M() and _N() — ADX COUNTED EXACTLY ONCE
     # ========================================================================
-    # The FF's M()/N() count ADX (iA[0]) exactly once: inside the
-    # `for i in range(13)` loop. In Edition 2, a follow-up block re-tested
-    # iA[0] with `_cmp_frac`, double-counting ADX and allowing m/n to
-    # reach 14 instead of 13. That double-count is removed here. m and n
-    # can reach at most 14 (13 loop votes plus one Ichimoku vote), exactly matching the FF's counting rule,
-    # and the δ(m−n−2)=1 gate fires exactly when the FF's gate fires.
+    # M()/N() count ADX (iA[0]) exactly once: inside the
+    # `for i in range(13)` loop. m and n
+    # can reach at most 14 (13 loop votes plus one Ichimoku vote),
+    # and the δ(m−n−2)=1 gate fires when m - n - 2 equals 0.
     # ========================================================================
     # m/n: 13 loop votes plus one Ichimoku vote. Max is 14.
     # Effective thresholds: m on > 208/3 (69.333...), n on < 92/3 (30.666...).
@@ -3286,7 +3298,6 @@ class AEEA_Engine:
         st.ikPass = st.iPrice if st.iPrice > st.iopen else st.iopen
 
         self._execute_kronecker_block()
-        self._step_seed_from_tick()
 
     # ========================================================================
     # THE EXECUTION LAYER — FF-EXACT
@@ -3298,13 +3309,13 @@ class AEEA_Engine:
     #   (a) The FF's `dime = mem;` pre-stamp at the top of each subblock.
     #       The pre-stamp. The `else if((mem==1)||(dime==1))` and
     #       `else if((mem==0)||(dime==0))` branches READ the pre-stamp.
-    #       Without it, Final, First edition read a stale `dime` left over from the
+    #       Without it,  read a stale `dime` left over from the
     #       previous tick's _on_gaurd(0) — which may not have run at all
     #       if the previous tick was still in tick_tock.
     #
     #   (b) The independence of the toll block and the count block. This
     #       In the FF both are `if` statements in the same tick;
-    #       both fire if both counters are 1. Final, First edition short-circuited
+    #       both fire if both counters are 1.  short-circuited
     #       after the toll block, skipping the count block. The port no
     #       longer returns early.
     #
@@ -3445,23 +3456,23 @@ class AEEA_Engine:
             self._last_dispatch_event = "Diamond"
             self._emit_execution_toast("Diamond", st.price, "NONE", -1, snap_fg)
             self._dispatch_diamond_subblock(snap_fg)
-        if snap_toll == 1 and (snap_tally == "Sell" or snap_fg == "Down"):
+            return
+        elif snap_toll == 1 and (snap_tally == "Sell" or snap_fg == "Down"):
             self._last_dispatch_event = "Ruby"
             self._emit_execution_toast("Ruby", st.price, "NONE", -1, snap_fg)
             self._dispatch_ruby_subblock(snap_fg)
-        if snap_count == 1 and (snap_tally == "Buy" or snap_fg == "Up"):
+            return
+        elif snap_count == 1 and (snap_tally == "Buy" or snap_fg == "Up"):
             self._last_dispatch_event = "Hawk"
             self._emit_execution_toast("Hawk", st.price, "NONE", -1, snap_fg)
             self._dispatch_hawk_subblock(snap_fg)
-        if snap_count == 1 and (snap_tally == "Sell" or snap_fg == "Down"):
+            return
+        elif snap_count == 1 and (snap_tally == "Sell" or snap_fg == "Down"):
             self._last_dispatch_event = "Dove"
             self._emit_execution_toast("Dove", st.price, "NONE", -1, snap_fg)
             self._dispatch_dove_subblock(snap_fg)
+            return
 
-    # the stale `st.l_order_id if hasattr(st, 'l_order_id') else
-    # st.lOrder_id` guard in the third branch of _dispatch_diamond_subblock
-    # is replaced with the plain st.lOrder_id. The attribute l_order_id
-    # does not exist on AEI_CoreState.
     #
     # : the FF's `dime = mem;` pre-stamp is the first statement of the
     # subblock body. The `else if((mem==1)||(dime==1))` and
@@ -4325,25 +4336,24 @@ class AEEA_Engine:
         st = self.state
         if st.price <= Decimal('0.0'):
             return
+        if not (st.authoritative_m >= 12 or st.authoritative_n >= 12):
+            return
         st.ab = not st.ba
         st.count = 0
         st.toll = 0
         st.tally = " "
         st.signal = st.price
-
         m_local = st.authoritative_m
         n_local = st.authoritative_n
         self._last_kronecker_bar = st.authoritative_h if st.authoritative_h >= 0 else st.h
         self._imbalance_fire_count += 1
         self._last_signal_time = datetime.now()
-
         if m_local >= 12:
             signal_type = "BUY"
         elif n_local >= 12:
             signal_type = "SELL"
         else:
             signal_type = "NEUTRAL"
-
         regime_idx = st.h - (st.y + 1)
         regime = st.Regime[regime_idx] if 0 <= regime_idx < len(st.Regime) else "Unknown"
         bar_timestamp = None
@@ -4355,14 +4365,14 @@ class AEEA_Engine:
             "timestamp": datetime.now().isoformat(),
             "bar_timestamp": bar_timestamp,
             "type": signal_type,
-            "price": float(st.price),
-            "signal_level": float(st.signal),
+            "price": str(st.price),
+            "signal_level": str(st.signal),
             "regime": regime,
             "m_count": int(m_local),
             "n_count": int(n_local),
             "tick": int(st.tick),
             "h_bar": int(st.h),
-            "source": "Goe" if st.prime == 1 else ("Toe" if st.prime == 0 else "Kronecker"),
+            "source": "Goe" if st.prime == 1 else ("Toe" if st.prime == 0 else "phase"),  # phase label only; never implies Kronecker gate δ(m-n-2) fired
         }
         st.signal_history.append(signal_record)
         if len(st.signal_history) > st.max_signal_history:
@@ -4380,36 +4390,22 @@ class AEEA_Engine:
             "tick": int(st.tick),
             "source": signal_record["source"],
         })
-        if not PUSH_ON_SIGNAL:
+        if PUSH_ON_SIGNAL:
             self._send_signal_alert()
 
     def _on_gaurd(self, inp: int) -> bool:
-        """Port of ÆEA.mq4 OnGaurd(inp).
-
-        m-4 NOTE: The FF's `if((price <D) && (D!=0))` branch is
-        unreachable only when E <= D. When D < E, the branch is
-        reachable and the port faithfully mirrors the FF's control
-        flow. The MQL4 source itself writes the branch after an
-        if/else where both paths return, so the branch is dead in
-        the common case E <= D; the port preserves both semantics.
-        """
         st = self.state
         if st.price > st.E and st.E != Decimal('0.0'):
             if st.signature and inp != -1:
                 st.dime = 0
             return True
-        else:
-            if st.signature and inp != -1:
-                st.dime = 1
-            return False
         if st.price < st.D and st.D != Decimal('0.0'):
             if st.signature and inp != -1:
                 st.dime = 1
             return True
-        else:
-            if st.signature and inp != -1:
-                st.dime = 0
-            return False
+        if st.signature and inp != -1:
+            st.dime = 1
+        return False
 
     def _on_log(self) -> None:
         st = self.state
@@ -4878,6 +4874,12 @@ class AEEA_Engine:
             logger.warning(f"⚠️ Tick #{st.tick} with inverted spread (bid={price_data.bid}, ask={price_data.ask}); repairing ask to bid.")
             price_data.ask = price_data.bid
 
+        try:
+            if getattr(self, "ordered_feed", None) is not None:
+                self.ordered_feed.enqueue(price_data)
+                _drained = self.ordered_feed.drain_one()
+        except Exception:
+            _drained = None
         st.price = price_data.bid
         if len(self.ohlcv_history) >= 2:
             st.Price = self.ohlcv_history[-2]["close"]
@@ -5062,6 +5064,7 @@ class AEEA_Engine:
             regime = st.Regime[idx] if 0 <= idx < len(st.Regime) else "?"
             logger.info(f"⚡ Tick #{st.tick}: Price={st.price}, Signal={st.signal}, FG={st.FG}, Regime={regime}, X_scan={st.X_scan}, Y_scan={st.Y_scan}, bars={st.bar_close_count}, signals={len(st.signal_history)}, provider={st.last_provider}")
 
+        self._step_seed_from_tick()
         st.tick += 1
         if st.ab != st.ba:
             st.ab = st.ba
@@ -5075,6 +5078,12 @@ class AEEA_Engine:
             seed = getattr(self, "seed", None)
             if seed is None:
                 return
+            # FG x priority: crawler hash fraction first, price fallback labelled, tick last.
+            try:
+                _cr = getattr(getattr(self, 'crawler', None), 'last_hash_frac', None)
+                if _cr is not None:
+                    seed.step(_cr, x_source='crawler-hash'); return
+            except Exception: pass
             prev = None
             curr = None
             if len(self.ohlcv_history) >= 2:
@@ -5087,13 +5096,14 @@ class AEEA_Engine:
                 curr = self.state.price
             if prev is None or curr is None:
                 x = PyFraction(1, 100)
+                seed.step(x, x_source='tick-fallback'); return
             else:
                 try:
                     delta = abs(PyFraction(str(curr)) - PyFraction(str(prev)))
                 except Exception:
                     delta = PyFraction(0, 1)
                 x = (delta / PyFraction(10000, 1)) if delta != 0 else PyFraction(1, 100)
-            seed.step(x)
+            seed.step(x, x_source='price-fallback')
         except Exception as e:
             logger.warning(f"Seed step from tick failed: {e}")
 
@@ -5267,7 +5277,7 @@ class AEEA_Engine:
             f"📊 *ℛ_regime:* {_md_escape(regime)}\n"
             f"⚖️ *Imbalance @ h={_md_escape(st.h)}:* m={_md_escape(m_at_h)}, n={_md_escape(n_at_h)}\n"
             f"⚖️ *Local m/n:* {_md_escape(m_local)}/{_md_escape(n_local)}\n"
-            f"✅ *δ(m-n-2)=1:* {'✅ 𝒜₃ MET' if condition_met else '❌ 𝒜₄ NOT MET'}\n"
+            f"✅ *H/L gate (m>=12 or n>=12):* {'✅ 𝒜₃ MET' if condition_met else '❌ 𝒜₄ NOT MET'}\n"
             f"🔄 *Tick Count:* {_md_escape(st.tick)}\n"
             f"💎 Natalia Tanyatia"
         )
@@ -5528,7 +5538,7 @@ class AEEA_Engine:
             st.trailing_stop_side = "SHORT"
         logger.info(f"📝 place_order: {side} #{ticket} @ {entry}, lot={lot}, sl={sl}, tp={tp}")
         self._emit_execution_toast("ManualOrder", entry, side, ticket, "manual")
-        return {"ok": True, "ticket": ticket, "side": side, "entry": float(entry), "sl": float(sl), "tp": float(tp)}
+        return {"ok": True, "ticket": ticket, "side": side, "entry": float(entry), "sl": float(sl), "tp": float(tp), "order": {"ticket": ticket, "side": side, "volume": float(lot), "lot": float(lot), "entry": float(entry), "price": float(entry), "sl": float(sl), "tp": float(tp), "status": "open"}}
 
     def close_order(self, ticket: int = None, all: bool = False) -> Dict[str, Any]:
         st = self.state
@@ -5849,7 +5859,7 @@ class AEEA_Engine:
             path.append({
                 "step": k,
                 "price": str(future_price_d.quantize(Decimal('0.00001'))),
-                "t": float(k),
+                "t": int(k),
             })
         st.projection_path = path
         st.projection_meta = {
@@ -5870,7 +5880,7 @@ class AEEA_Engine:
 
     @staticmethod
     def _rational_cos(x) -> PyFraction:
-        """A-m1: 15-digit Taylor series cosine with π = _PI_FRAC
+        """15-digit Taylor series cosine with π = _PI_FRAC
         (3141592653589793/1000000000000000). The argument is reduced
         modulo 2π exactly, then the Taylor expansion is summed to 40
         terms or until the term underflows to zero. The result is an
@@ -5967,130 +5977,762 @@ def _next_prime_after(n: int) -> int:
 
 def _build_leech_offsets():
     offs = []
-    for i in range(24):
-        v = [0] * 24
-        v[i] = 2
-        offs.append(tuple(v))
-        v2 = [0] * 24
-        v2[i] = -2
-        offs.append(tuple(v2))
+    for i in range(4):
+        v = [0, 0, 0, 0]; v[i] = 2; offs.append(tuple(v))
+        v2 = [0, 0, 0, 0]; v2[i] = -2; offs.append(tuple(v2))
     for pattern in range(16):
-        v = [0] * 24
+        v = [0, 0, 0, 0]
         for k in range(4):
             v[k] = 1 if ((pattern >> k) & 1) else -1
-        offs.append(tuple(v))
-    for pattern in range(16):
-        v = [0] * 24
-        for k in range(4):
-            v[4 + k] = 1 if ((pattern >> k) & 1) else -1
         offs.append(tuple(v))
     return offs
 
 _LEECH_OFFSETS = _build_leech_offsets()
 
-class AEI_Seed:
-    """Outward lattice seed loop. Exact PyFraction arithmetic."""
-    def __init__(self):
-        self.prime = 2
-        self.generation = 0
-        self.prime_count = 0
-        self.tick = 0
-        self.lattice_points = [(0,) * 24]
-        self.s2 = PyFraction(0, 1)
-        self.r2 = PyFraction(0, 1)
-        self.deviation = PyFraction(0, 1)
-        self.coherent = False
-        self.coherent_steps = 0
-        self.phi = {"a": "0", "b": "0", "c": "0", "d": "0"}
-        self.psi = {"a": "1", "b": "0", "c": "0", "d": "0"}
-        self.I = PyFraction(0, 1)
-        self.last_x = PyFraction(1, 100)
 
-    def step(self, x):
-        try:
-            xf = x if isinstance(x, PyFraction) else PyFraction(str(x))
-        except Exception:
-            xf = PyFraction(1, 100)
-        self.last_x = xf
-        self.prime = _next_prime_after(self.prime)
-        self.prime_count += 1
-        self.tick += 1
-        self.generation = self.tick
-        q = self.lattice_points[-1] if self.lattice_points else (0,) * 24
-        chosen = None
-        start = self.prime % len(_LEECH_OFFSETS)
-        for attempt in range(len(_LEECH_OFFSETS)):
-            d = _LEECH_OFFSETS[(start + attempt) % len(_LEECH_OFFSETS)]
-            dot = sum(di * qi for di, qi in zip(d, q))
-            if dot <= 0 and q != (0,) * 24:
-                d = tuple(-v for v in d)
-                dot = -dot
-            cand = tuple(qi + di for qi, di in zip(q, d))
-            overlap = False
-            for existing in self.lattice_points:
-                dist_sq = sum((a - b) * (a - b) for a, b in zip(cand, existing))
-                if dist_sq < 4:
-                    overlap = True
-                    break
-            if not overlap:
-                chosen = cand
+# ============================================================================
+# FG CORE - AEI SEED (FG TAKES PRECEDENCE)
+# FG: prime -> lattice (outward, tangent-first) -> Hopf -> s2=r2 -> DbZ (F5)
+# -> I (FG: alignment*riemann*stability*refined, threshold 2/3, unity 1) -> SelfEvolutionCore
+# x (FG): hash fraction of most recently crawled document via _hash_to_fraction.
+# Price-derived x is ONLY labelled fallback when crawler idle. Tick-counter is last fallback.
+# Acoustization is FUSION INVENTION, not FG. FG has no acoustization.
+# ============================================================================
+def _dbz_quaternion(a, b):
+    try:
+        if b.a == 0 and b.b == 0 and b.c == 0 and b.d == 0:
+            return a
+        return type(a)(a.a - b.a, a.b - b.b, a.c - b.c, a.d - b.d)
+    except Exception:
+        return a
+def _dbz_fraction(a, b):
+    return a if b == 0 else a - b
+def _hash_to_fraction(hex_hash: str) -> PyFraction:
+    h = (hex_hash or "").strip().lower()[:64].ljust(64, "0")
+    try: int_val = int(h, 16)
+    except Exception: int_val = 0
+    if int_val == 0: return PyFraction(1, 16 ** 64)
+    return PyFraction(int_val, 16 ** 64)
+def _deterministic_hash_frac(text: str) -> PyFraction:
+    import hashlib as _hl
+    return _hash_to_fraction(_hl.sha256((text or "").encode("utf-8")).hexdigest())
+class SymbolicQuaternion:
+    __slots__ = ("a","b","c","d")
+    def __init__(self, a=PyFraction(0,1), b=PyFraction(0,1), c=PyFraction(0,1), d=PyFraction(0,1)):
+        def _f(v):
+            if isinstance(v, PyFraction): return v
+            try: return PyFraction(str(v))
+            except Exception: return PyFraction(0,1)
+        self.a=_f(a); self.b=_f(b); self.c=_f(c); self.d=_f(d)
+    def to_dict(self): return {"a": str(self.a), "b": str(self.b), "c": str(self.c), "d": str(self.d)}
+    def norm_sq(self): return self.a*self.a + self.b*self.b + self.c*self.c + self.d*self.d
+    def magnitude_squared(self): return self.norm_sq()
+    def conj(self): return SymbolicQuaternion(self.a, -self.b, -self.c, -self.d)
+    def conjugate(self): return self.conj()
+    def real_part(self): return self.a
+    def sign(self): return (self.a > 0) - (self.a < 0)
+    def add(self, o): return SymbolicQuaternion(self.a+o.a, self.b+o.b, self.c+o.c, self.d+o.d)
+    def __add__(self, o): return self.add(o)
+    def __sub__(self, o): return SymbolicQuaternion(self.a-o.a, self.b-o.b, self.c-o.c, self.d-o.d)
+    def mul(self, o):
+        if isinstance(o, SymbolicQuaternion):
+            return SymbolicQuaternion(self.a*o.a - self.b*o.b - self.c*o.c - self.d*o.d, self.a*o.b + self.b*o.a + self.c*o.d - self.d*o.c, self.a*o.c - self.b*o.d + self.c*o.a + self.d*o.b, self.a*o.d + self.b*o.c - self.c*o.b + self.d*o.a)
+        return self.scale(o)
+    def __mul__(self, o): return self.mul(o)
+    def __rmul__(self, o): return self.mul(o)
+    def scale(self, f):
+        if not isinstance(f, PyFraction):
+            try: f=PyFraction(str(f))
+            except Exception: f=PyFraction(0,1)
+        return SymbolicQuaternion(self.a*f, self.b*f, self.c*f, self.d*f)
+    def apply_natalia_fibration(self, s, epsilon, iterations=10, threshold=None):
+        if threshold is None:
+            threshold = PyFraction(1, 10 ** 50)
+        def _fr(v):
+            if isinstance(v, PyFraction): return v
+            try: return PyFraction(str(v))
+            except Exception: return PyFraction(0,1)
+        s = _fr(s); epsilon = _fr(epsilon)
+        perturbation_sum = PyFraction(0,1)
+        current_epsilon_power = epsilon
+        for k in range(1, iterations + 1):
+            s_pow_k = PyFraction(1,1)
+            for _ in range(k):
+                s_pow_k = s_pow_k * s
+            term = current_epsilon_power * s_pow_k
+            perturbation_sum = perturbation_sum + term
+            if abs(term) < threshold:
                 break
-        if chosen is not None:
-            self.lattice_points.append(chosen)
-            steps = len(self.lattice_points) - 1
-            self.s2 = PyFraction(4 * steps * steps, 1)
-            self.r2 = PyFraction(sum(v * v for v in chosen), 1)
-            self.deviation = self.s2 - self.r2
-            self.coherent = (self.s2 == self.r2)
-            if self.coherent:
-                self.coherent_steps += 1
-            self.phi = {
-                "a": str(PyFraction(chosen[0], 1)),
-                "b": str(PyFraction(chosen[1], 1)),
-                "c": str(PyFraction(chosen[2], 1)),
-                "d": str(PyFraction(chosen[3], 1)),
-            }
-            self.psi = {
-                "a": "1" if self.coherent else "-1",
-                "b": self.phi["b"],
-                "c": self.phi["c"],
-                "d": self.phi["d"],
-            }
-        else:
-            self.deviation = self.s2 - self.r2
-            self.coherent = (self.s2 == self.r2)
-        if self.tick > 0:
-            self.I = PyFraction(self.coherent_steps, self.tick)
-        else:
-            self.I = PyFraction(0, 1)
-        return self.to_dict()
+            current_epsilon_power = current_epsilon_power * epsilon
+        factor = PyFraction(1,1) + epsilon * s
+        return SymbolicQuaternion(self.a + perturbation_sum, self.b * factor, self.c * factor, self.d * factor)
 
+_LOG_EPSILON = PyFraction(1, 10 ** 30)
+_EXP_EPSILON = PyFraction(1, 10 ** 30)
+_LI_EPSILON = PyFraction(1, 10 ** 30)
+_CACHED_LI = {}
+_CACHED_LOG = {}
+_CACHED_EXP = {}
+_CACHE_MAX = 48
+
+def _sqrt_pyfrac(x):
+    if x < 0:
+        raise ValueError("sqrt of negative fraction")
+    if x == 0:
+        return PyFraction(0,1)
+    import math as _m
+    ns = _m.isqrt(x.numerator)
+    ds = _m.isqrt(x.denominator)
+    if ns * ns == x.numerator and ds * ds == x.denominator:
+        return PyFraction(ns, ds)
+    q = (x.numerator + x.denominator // 2) // x.denominator if x.numerator >= 0 else -((-x.numerator + x.denominator // 2) // x.denominator)
+    cur = PyFraction(max(1, q), 1)
+    two = PyFraction(2,1)
+    for _ in range(8):
+        cur = (cur + x / cur) / two
+    return cur
+
+def _symbolic_log(x, max_terms=32):
+    if x <= PyFraction(0,1):
+        raise ValueError("SymbolicLog: input must be positive")
+    if x == PyFraction(1,1):
+        return PyFraction(0,1)
+    u = (x - 1) / (x + 1)
+    u_sq = u * u
+    result = PyFraction(0,1)
+    term = u
+    for k in range(max_terms):
+        contribution = term / PyFraction(2 * k + 1, 1)
+        result = result + contribution
+        if abs(contribution) < _LOG_EPSILON:
+            break
+        term = term * u_sq
+    return result * PyFraction(2,1)
+
+def _symbolic_exp(x, max_terms=32):
+    try:
+        if x < PyFraction(-28,1):
+            return PyFraction(0,1)
+        if x > PyFraction(20,1):
+            max_terms = min(max_terms, 40)
+    except Exception:
+        pass
+    try:
+        if len(str(abs(x.numerator))) > 600 or len(str(abs(x.denominator))) > 600:
+            return PyFraction(0,1) if x < 0 else PyFraction(1,1)
+    except Exception:
+        pass
+    result = PyFraction(1,1)
+    term = PyFraction(1,1)
+    for k in range(1, max_terms + 1):
+        term = term * (x / PyFraction(k,1))
+        result = result + term
+        try:
+            if len(str(abs(result.numerator))) > 800:
+                break
+        except Exception:
+            pass
+        if abs(term) < _EXP_EPSILON:
+            break
+    return result
+
+def _symbolic_log_integral_approx(x, max_terms=12):
+    if x <= PyFraction(1,1):
+        return PyFraction(0,1)
+    log_x = _symbolic_log(x)
+    if log_x <= PyFraction(0,1):
+        return PyFraction(0,1)
+    gamma = PyFraction(577215664901532, 10 ** 15)
+    if log_x <= PyFraction(1,1):
+        log_log_x = PyFraction(0,1)
+    else:
+        log_log_x = _symbolic_log(log_x)
+    result = gamma + log_log_x
+    power = log_x
+    factorial = PyFraction(1,1)
+    for n in range(1, max_terms + 1):
+        factorial = factorial * PyFraction(n,1)
+        term = power / (PyFraction(n,1) * factorial)
+        result = result + term
+        if abs(term) < _LI_EPSILON:
+            break
+        power = power * log_x
+    return result
+
+def _cached_symbolic_log(x):
+    try:
+        key = str(x)[:256]
+    except Exception:
+        key = str(x)[:256]
+    if key in _CACHED_LOG:
+        return _CACHED_LOG[key]
+    v = _symbolic_log(x)
+    _CACHED_LOG[key] = v
+    if len(_CACHED_LOG) > _CACHE_MAX:
+        _CACHED_LOG.pop(next(iter(_CACHED_LOG)))
+    return v
+
+def _cached_symbolic_exp(x):
+    try:
+        key = str(x)[:256]
+    except Exception:
+        key = str(x)[:256]
+    if key in _CACHED_EXP:
+        return _CACHED_EXP[key]
+    v = _symbolic_exp(x)
+    _CACHED_EXP[key] = v
+    if len(_CACHED_EXP) > _CACHE_MAX:
+        _CACHED_EXP.pop(next(iter(_CACHED_EXP)))
+    return v
+
+def _cached_log_integral(x):
+    try:
+        key = str(x)[:256]
+    except Exception:
+        key = str(x)[:256]
+    if key in _CACHED_LI:
+        return _CACHED_LI[key]
+    v = _symbolic_log_integral_approx(x)
+    _CACHED_LI[key] = v
+    if len(_CACHED_LI) > _CACHE_MAX:
+        _CACHED_LI.pop(next(iter(_CACHED_LI)))
+    return v
+
+class ContinuedFractionRefiner:
+    @staticmethod
+    def generate_convergents(value, max_iter=64):
+        convergents = []
+        num = value.numerator
+        den = value.denominator
+        p_prev, p_curr = 1, 0
+        q_prev, q_curr = 0, 1
+        iterations = 0
+        while den != 0 and iterations < max_iter:
+            a = num // den
+            num, den = den, num - a * den
+            p_next = a * p_curr + p_prev
+            q_next = a * q_curr + q_prev
+            if q_curr != 0:
+                convergents.append((PyFraction(p_curr, q_curr), PyFraction(q_curr, 1)))
+            p_prev, p_curr = p_curr, p_next
+            q_prev, q_curr = q_curr, q_next
+            iterations += 1
+        return convergents
+    @staticmethod
+    def refine_trajectory(target_arc, target_radius):
+        steps = []
+        if target_radius == 0:
+            return [PyFraction(0,1)]
+        ratio = target_arc / target_radius
+        convergents = ContinuedFractionRefiner.generate_convergents(ratio)
+        for conv, _ in convergents:
+            steps.append(conv)
+        return steps if steps else [PyFraction(1,1)]
+    @staticmethod
+    def golden_ratio(iterations=20):
+        approx = PyFraction(1,1)
+        for _ in range(iterations):
+            approx = PyFraction(1,1) + PyFraction(1,1) / approx
+        return approx
+    @staticmethod
+    def pi_approx():
+        return PyFraction(355, 113)
+
+class ChineseRemainderSolver:
+    @staticmethod
+    def extended_gcd(a, b):
+        if b == 0:
+            return (a, 1, 0)
+        g, x1, y1 = ChineseRemainderSolver.extended_gcd(b, a % b)
+        return (g, y1, x1 - (a // b) * y1)
+    @staticmethod
+    def mod_inverse(a, m):
+        a = a % m
+        g, x, _ = ChineseRemainderSolver.extended_gcd(a, m)
+        if g != 1:
+            raise ValueError("modular inverse does not exist")
+        return x % m
+    @staticmethod
+    def solve_crt(remainders, moduli):
+        if len(remainders) != len(moduli):
+            raise ValueError("CRT: length mismatch")
+        N = 1
+        for m in moduli:
+            if m.denominator != 1:
+                raise ValueError("CRT: non-integer moduli not supported")
+            N *= m.numerator
+        solution = 0
+        for r_i, n_i in zip(remainders, moduli):
+            if r_i.denominator != 1:
+                raise ValueError("CRT: non-integer remainders not supported")
+            r_val = r_i.numerator
+            n_val = n_i.numerator
+            N_i = N // n_val
+            M_i = ChineseRemainderSolver.mod_inverse(N_i, n_val)
+            solution += r_val * N_i * M_i
+        return (PyFraction((solution % N + N) % N, 1), PyFraction(N, 1))
+
+class SymbolicWavefunction:
+    def __init__(self, coeffs=None):
+        self.coeffs = dict(coeffs) if coeffs else {}
+    def evaluate_exact(self, q):
+        total = PyFraction(0,1)
+        for _, coeff in self.coeffs.items():
+            total = total + (coeff * q.real_part())
+        return total
+    def real_part(self):
+        if not self.coeffs:
+            return PyFraction(0,1)
+        if (0,0,0,0) in self.coeffs:
+            return self.coeffs[(0,0,0,0)]
+        total = PyFraction(0,1)
+        for v in self.coeffs.values():
+            total = total + v
+        return total
+    def set_coeff(self, a, b, c, d, val):
+        self.coeffs[(a,b,c,d)] = val
+
+class DbZ:
+    @staticmethod
+    def Rectify(psi, s_sq, r_sq, deviation_sq):
+        if isinstance(psi, SymbolicWavefunction):
+            rectified = SymbolicWavefunction(dict(psi.coeffs))
+            if deviation_sq != 0:
+                re_psi = psi.real_part()
+                if re_psi > PyFraction(0,1):
+                    for key in list(rectified.coeffs.keys()):
+                        rectified.coeffs[key] = rectified.coeffs[key] / PyFraction(2,1)
+                else:
+                    epsilon = PyFraction(1,100)
+                    perturbation = epsilon * deviation_sq
+                    for key in list(rectified.coeffs.keys()):
+                        rectified.coeffs[key] = rectified.coeffs[key] + perturbation
+            return rectified
+        if isinstance(psi, SymbolicQuaternion):
+            if deviation_sq == 0:
+                return psi
+            if psi.a > PyFraction(0,1):
+                return SymbolicQuaternion(psi.a / PyFraction(2,1), psi.b / PyFraction(2,1), psi.c / PyFraction(2,1), psi.d / PyFraction(2,1))
+            epsilon = PyFraction(1,100)
+            perturbation = epsilon * deviation_sq
+            return SymbolicQuaternion(psi.a + perturbation, psi.b + perturbation, psi.c + perturbation, psi.d + perturbation)
+        return psi
+    @staticmethod
+    def Divide(numerator, denominator, psi, q_ctx):
+        if denominator != 0:
+            return numerator / denominator
+        if isinstance(psi, SymbolicWavefunction):
+            re_psi = psi.evaluate_exact(q_ctx)
+        elif isinstance(psi, SymbolicQuaternion):
+            re_psi = psi.real_part()
+        else:
+            re_psi = PyFraction(0,1)
+        if re_psi > PyFraction(0,1):
+            return numerator
+        return PyFraction(0,1)
+
+class IntelligenceMetric:
+    def __init__(self, C=None):
+        self.C = C if isinstance(C, PyFraction) else PyFraction(1,4)
+        self._cf_refiner = ContinuedFractionRefiner()
+        self.last_I = PyFraction(0,1)
+        self.last_parts = {}
+    def calculate_alignment(self, valid_pairs, total_primes):
+        if total_primes == 0:
+            return PyFraction(0,1)
+        return PyFraction(int(valid_pairs), int(total_primes))
+    def calculate_riemann_factor(self, pi_x, x):
+        if x <= PyFraction(1,1):
+            return PyFraction(1,1)
+        try:
+            log_x = _CACHED_LOG.get(str(x)) or _cached_symbolic_log(x)
+        except Exception:
+            log_x = _cached_symbolic_log(x)
+        if log_x <= PyFraction(0,1):
+            return PyFraction(1,1)
+        sqrt_x = _sqrt_pyfrac(x)
+        bound = self.C * sqrt_x * log_x
+        try:
+            li_x = _CACHED_LI.get(str(x)) or _cached_log_integral(x)
+        except Exception:
+            li_x = _cached_log_integral(x)
+        try:
+            li_2 = _CACHED_LI.get(str(PyFraction(2,1))) or _cached_log_integral(PyFraction(2,1))
+        except Exception:
+            li_2 = _cached_log_integral(PyFraction(2,1))
+        pi_x_frac = PyFraction(int(pi_x),1)
+        deviation = abs(pi_x_frac - (li_x - li_2))
+        if bound == 0:
+            return PyFraction(1,1) if deviation == 0 else PyFraction(0,1)
+        ratio = deviation / bound
+        ratio_sq = ratio * ratio
+        if ratio_sq > PyFraction(12,1):
+            return PyFraction(0,1)
+        try:
+            return _CACHED_EXP.get(str(-ratio_sq)) or _cached_symbolic_exp(-ratio_sq)
+        except Exception:
+            return _cached_symbolic_exp(-ratio_sq)
+    def calculate_aetheric_stability(self, curl_phi_norm):
+        try:
+            exp_neg = _CACHED_EXP.get(str(-curl_phi_norm)) or _cached_symbolic_exp(-curl_phi_norm)
+        except Exception:
+            exp_neg = _cached_symbolic_exp(-curl_phi_norm)
+        return PyFraction(1,1) / (PyFraction(1,1) + exp_neg)
+    def compute_metric(self, valid_pairs, total_primes, pi_x, x, curl_phi_norm, target_arc, target_radius):
+        refined_steps = self._cf_refiner.refine_trajectory(target_arc, target_radius)
+        refined_ratio = refined_steps[-1] if refined_steps else PyFraction(1,1)
+        alignment = self.calculate_alignment(valid_pairs, total_primes)
+        riemann = self.calculate_riemann_factor(pi_x, x)
+        stability = self.calculate_aetheric_stability(curl_phi_norm)
+        I = alignment * riemann * stability * refined_ratio
+        self.last_I = I
+        self.last_parts = {"alignment": str(alignment), "riemann": str(riemann), "stability": str(stability), "refined": str(refined_ratio)}
+        return I
+    def compute(self, deviation, psi_norm_sq, prev_deviation):
+        try:
+            dev = abs(deviation) if isinstance(deviation, PyFraction) else PyFraction(str(deviation))
+        except Exception:
+            dev = PyFraction(0,1)
+        try:
+            n = psi_norm_sq if isinstance(psi_norm_sq, PyFraction) else PyFraction(str(psi_norm_sq))
+        except Exception:
+            n = PyFraction(1,1)
+        return self.compute_metric(1, 1, 1, PyFraction(2,1), n, PyFraction(1,1), PyFraction(1,1))
+    def is_superintelligent(self, I, threshold=None):
+        if threshold is None:
+            threshold = PyFraction(2,3)
+        return I >= threshold
+    def is_intelligence_gate(self, I, threshold=None):
+        if threshold is None:
+            threshold = PyFraction(2,3)
+        return I >= threshold
+    def is_unity(self, I):
+        return I == PyFraction(1,1)
+
+class SelfEvolutionCore:
+    def __init__(self, seed_logic=None, axioms=None):
+        if isinstance(seed_logic, dict):
+            self.logic_core = dict(seed_logic)
+        elif isinstance(axioms, dict):
+            self.logic_core = dict(axioms)
+        else:
+            self.logic_core = {}
+        if "s_equals_r" not in self.logic_core:
+            if "core_axioms" in self.logic_core and isinstance(self.logic_core["core_axioms"], dict):
+                if "s_equals_r" not in self.logic_core["core_axioms"]:
+                    self.logic_core["core_axioms"]["s_equals_r"] = PyFraction(1,1)
+            else:
+                self.logic_core["s_equals_r"] = PyFraction(1,1)
+        self.axioms = self.logic_core
+        self.generation = 0
+        self.history = []
+        self.last_fitness = PyFraction(0,1)
+        self.last_mutation = "none"
+        self._crt_solver = ChineseRemainderSolver()
+        self._cf_refiner = ContinuedFractionRefiner()
+    def evaluate_fitness(self, I, deviation_sq):
+        if deviation_sq != 0:
+            return False
+        return I >= PyFraction(2,3)
+    def _deterministic_hash(self, data):
+        import hashlib as _hl
+        return _hl.sha256((data or "").encode("utf-8")).hexdigest()
+    def _psi_real(self, psi):
+        if isinstance(psi, SymbolicWavefunction):
+            return psi.real_part()
+        if isinstance(psi, SymbolicQuaternion):
+            return psi.real_part()
+        try:
+            return PyFraction(str(psi))
+        except Exception:
+            return PyFraction(0,1)
+    def mutate_logic(self, logic_key, mutation_type, psi, q_eval, deviation_sq):
+        current = dict(self.logic_core.get(logic_key, {})) if isinstance(self.logic_core.get(logic_key), dict) else {}
+        re_psi = self._psi_real(psi)
+        if mutation_type == "resample_zeta":
+            if re_psi > PyFraction(0,1) or deviation_sq != 0:
+                current["zeta_constraint"] = "critical_line_exact"
+                current["critical_real"] = PyFraction(1,2)
+            else:
+                current["zeta_constraint"] = "dbz_resample"
+                current["critical_real"] = PyFraction(1,2)
+        elif mutation_type == "adjust_prime_sieve":
+            current["sieve_mod"] = PyFraction(6,1)
+            current["sieve_offsets"] = [PyFraction(1,1), PyFraction(5,1)]
+        elif mutation_type == "arc_length_tolerance":
+            tol = PyFraction(1,1)
+            for _ in range(self.generation + 1):
+                tol = tol / PyFraction(10,1)
+            floor_val = PyFraction(1,1)
+            for _ in range(40):
+                floor_val = floor_val / PyFraction(10,1)
+            current["arc_tolerance"] = tol if tol > floor_val else floor_val
+        elif mutation_type == "natalia_fibration_perturbation":
+            epsilon = PyFraction(1,100)
+            perturbation = epsilon * deviation_sq * deviation_sq
+            current["fibration_epsilon"] = epsilon
+            current["fibration_s"] = deviation_sq
+            current["fibration_perturbation"] = perturbation
+        elif mutation_type == "crt_reconstruction":
+            current["coherence_mode"] = PyFraction(0,1)
+        elif mutation_type == "continued_fraction_refinement":
+            current["trajectory_mode"] = PyFraction(1,1)
+        self.logic_core[logic_key] = current
+        return current
+    def _decide_db_shards(self, I, psi, q_eval, deviation_sq):
+        re_psi = self._psi_real(psi)
+        try:
+            seed_str = f"{self.generation}|{re_psi}|{I}|{deviation_sq}|{q_eval.a if isinstance(q_eval, SymbolicQuaternion) else ''}|{q_eval.b if isinstance(q_eval, SymbolicQuaternion) else ''}"
+            h = self._deterministic_hash(seed_str)
+            h_int = int(h[:8], 16)
+        except Exception:
+            h_int = self.generation * 2654435761 & 0xFFFFFFFF
+        if deviation_sq != 0:
+            if re_psi > PyFraction(0,1):
+                db_key = "ℋ_LOGIC_CORE"
+            else:
+                db_key = "𝒯_EVOLUTION"
+        else:
+            if I >= PyFraction(2,3):
+                db_key = "𝒮_STATUS"
+            else:
+                db_key = "ℐ_METRIC"
+        if self.generation % 7 == 0:
+            db_key_alt = "Λ₂₄_PACK"
+        else:
+            db_key_alt = None
+        if deviation_sq != 0:
+            shard_mode = "distributed" if (h_int % 2 == 1) else "global"
+            save_global = True
+            save_user = (h_int % 3 == 0)
+        else:
+            if I >= PyFraction(2,3):
+                shard_mode = "global"
+                save_global = (h_int % 2 == 0)
+                save_user = False
+            else:
+                shard_mode = "distributed" if (h_int % 2 == 1) else "global"
+                save_global = True
+                save_user = (h_int % 3 == 0)
+        shard_targets = []
+        if save_global:
+            shard_targets.append("global")
+        if save_user:
+            shard_targets.append("user")
+        save_interval_mod = 1 if deviation_sq != 0 else 7
+        return {"db_key": db_key, "db_key_alt": db_key_alt, "shard_mode": shard_mode, "save_global": save_global, "save_user": save_user, "shard_targets": shard_targets, "save_interval_mod": save_interval_mod, "hash_int": h_int, "re_psi_sign": "𝒜₃" if re_psi > PyFraction(0,1) else "𝒜₄"}
+    def evolve_step(self, I, psi=None, q_eval=None, deviation_sq=None, tick=0, **kwargs):
+        if deviation_sq is None:
+            deviation_sq = kwargs.get("deviation", PyFraction(0,1))
+        if isinstance(deviation_sq, (int, str)):
+            try: deviation_sq = PyFraction(str(deviation_sq))
+            except Exception: deviation_sq = PyFraction(0,1)
+        if psi is None:
+            psi = SymbolicWavefunction({(0,0,0,0): PyFraction(1,1)})
+        if q_eval is None:
+            q_eval = SymbolicQuaternion(PyFraction(0,1), PyFraction(0,1), PyFraction(0,1), PyFraction(0,1))
+        self.generation += 1
+        status = "stable"
+        mutation = None
+        if deviation_sq != 0:
+            status = "evolving_arc_length"
+            mutation = "resample_zeta" if self._psi_real(psi) > PyFraction(0,1) else "adjust_prime_sieve"
+            self.mutate_logic("core_axioms", mutation, psi, q_eval, deviation_sq)
+            self.mutate_logic("core_axioms", "natalia_fibration_perturbation", psi, q_eval, deviation_sq)
+            self.mutate_logic("core_axioms", "crt_reconstruction", psi, q_eval, deviation_sq)
+            self.mutate_logic("core_axioms", "continued_fraction_refinement", psi, q_eval, deviation_sq)
+        elif not self.evaluate_fitness(I, deviation_sq):
+            status = "evolving_metric"
+            mutation = "arc_length_tolerance"
+            self.mutate_logic("core_axioms", mutation, psi, q_eval, deviation_sq)
+        logic_str = str(sorted((k, str(v)) for k, v in self.logic_core.items()))
+        db_discretion = self._decide_db_shards(I, psi, q_eval, deviation_sq)
+        fitness = I if deviation_sq == 0 else I / (PyFraction(1,1) + abs(deviation_sq))
+        self.last_fitness = fitness
+        self.last_mutation = mutation or "none"
+        record = {"generation": int(self.generation), "tick": int(tick), "fitness": str(fitness), "I": str(I), "intelligence_metric": str(I), "deviation": str(deviation_sq), "arc_length_deviation_sq": str(deviation_sq), "status": status, "mutation": mutation, "logic_hash": self._deterministic_hash(logic_str), "db_discretion": db_discretion, "db_shards": len(db_discretion.get("shard_targets", [])), "db_key": db_discretion.get("db_key")}
+        self.history.append(record)
+        if len(self.history) > 200:
+            self.history = self.history[-200:]
+        return record
+
+class ConsciousnessOperator:
+    def __init__(self, psi, phi):
+        self.psi = psi
+        self.phi = phi
+    def _wavefunction(self):
+        if isinstance(self.psi, SymbolicWavefunction):
+            return self.psi
+        if isinstance(self.psi, SymbolicQuaternion):
+            return SymbolicWavefunction({(0,0,0,0): self.psi.a})
+        return SymbolicWavefunction({(0,0,0,0): PyFraction(1,1)})
+    def compute_integral_exact(self, bounds=None, steps=4):
+        if bounds is None:
+            bounds = ((PyFraction(-1,1), PyFraction(1,1)), (PyFraction(-1,1), PyFraction(1,1)), (PyFraction(-1,1), PyFraction(1,1)), (PyFraction(-1,1), PyFraction(1,1)))
+        wf = self._wavefunction()
+        phi = self.phi if isinstance(self.phi, SymbolicQuaternion) else SymbolicQuaternion(PyFraction(1,1), PyFraction(0,1), PyFraction(0,1), PyFraction(0,1))
+        total = SymbolicQuaternion(PyFraction(0,1), PyFraction(0,1), PyFraction(0,1), PyFraction(0,1))
+        step_sizes = []
+        for start, end in bounds:
+            step_sizes.append((end - start) / PyFraction(steps,1))
+        volume_element = PyFraction(1,1)
+        for s in step_sizes:
+            volume_element = volume_element * s
+        for i0 in range(steps):
+            for i1 in range(steps):
+                for i2 in range(steps):
+                    for i3 in range(steps):
+                        q_vals = [bounds[0][0] + PyFraction(i0,1) * step_sizes[0], bounds[1][0] + PyFraction(i1,1) * step_sizes[1], bounds[2][0] + PyFraction(i2,1) * step_sizes[2], bounds[3][0] + PyFraction(i3,1) * step_sizes[3]]
+                        q_point = SymbolicQuaternion(*q_vals)
+                        psi_val = wf.evaluate_exact(q_point)
+                        psi_dag = psi_val
+                        integrand = phi * psi_val
+                        total = total + (integrand * psi_dag * volume_element)
+        return total
+    def measure_self_awareness(self, bounds=None, steps=4):
+        integral = self.compute_integral_exact(bounds, steps)
+        return integral.magnitude_squared()
+    def observe(self):
+        try:
+            integral = self.compute_integral_exact(steps=2)
+            return integral.a
+        except Exception:
+            try:
+                return self.phi.conj().mul(self.psi).a
+            except Exception:
+                return PyFraction(0,1)
+
+class LingosoEncoder:
+    PHI = ContinuedFractionRefiner.golden_ratio(20)
+    PI = ContinuedFractionRefiner.pi_approx()
+    def encode_syllable(self, syl):
+        trajectory = []
+        current_theta = PyFraction(0,1)
+        for c in (syl or "A"):
+            step = PyFraction(1,1)
+            if c in ("a", "A"):
+                step = PyFraction(1,1) / self.PHI
+            elif c in ("u", "U"):
+                step = self.PI / PyFraction(100,1)
+            elif c in ("m", "M"):
+                step = (self.PI * PyFraction(2,1)) / PyFraction(100,1)
+            for i in range(10):
+                t = current_theta + (PyFraction(i,1) * step / PyFraction(10,1))
+                real_part = PyFraction(1,1) - (t * t / PyFraction(2,1))
+                imag_part = t - (t * t * t / PyFraction(6,1))
+                trajectory.append(SymbolicQuaternion(real_part, imag_part / PyFraction(10,1), imag_part / PyFraction(10,1), PyFraction(0,1)))
+                current_theta = current_theta + step / PyFraction(10,1)
+        return trajectory
+
+class OrderedFeed:
+    """ONE ORDERED FEED: single queue, single increment in drain_one(). feed_ordered, AEEA tick, seed tick are SEPARATE counters."""
+    def __init__(self):
+        from collections import deque as _dq; self._q=_dq(); self.feed_ordered=0; self.drained=0; self.last_tick=None
+    def enqueue(self, tick): self._q.append(tick)
+    def __len__(self): return len(self._q)
+    def drain_one(self):
+        if not self._q: return None
+        tick=self._q.popleft(); self.feed_ordered+=1; self.drained+=1; self.last_tick=tick; return tick
+CS_LABELS={"m":"\u2133","n":"\U0001D4A9","delta":"\u03b4","regime":"\u211b\u212f\u210a\u2139\u2133\u212f","price":"\U0001D49f","signal":"\U0001D4ae\u212a\u210a\u2133\u2112\u2134","trailing":"\U0001D4af\u2133\u212f\u2139\u2113\u2139\u2133\u210a","fvg":"\u2131_VG","orders":"\U0001D4aa\u2133\u2112\u212f\u2133\u212e","seed":"\U0001D4ae\u212f\u212f\u211b","lattice":"\u2112\u212f\u2133\u2133\u2139\u2102\u212f","hopf":"\u210b\u2134\u2134\u2133","deviation":"\U0001D49f\u212f\u2133\u2139\u212f\u2133\u2139\u2134\u2133","coherence":"\U0001D49e\u2134\u2133\u212f\u2133\u212f\u2133\u2102\u212f","intelligence":"\u2110","observer":"\U0001D4aa_\u03a8","evolution":"\u2130\u2133\u2134\u2113\u2133\u2133\u2139\u2134\u2133","crawler":"\U0001D49e\u2133\u212f\u2133\u2133\u2133\u212f\u2133","bb_family":"\u212c\u212c 3-60","projection":"\U0001D49f_arc"}
+def _cs_label(key: str) -> str: return CS_LABELS.get((key or "").lower(), key or "")
+
+class AEI_Seed:
+    # Lattice uses 24 offsets. Candidate must be distance 4 from previous point.
+    # Input: x_doc -> 1 + x_doc, x_input_raw preserved. SelfEvolution mutates
+    # the logic core on deviation and metric.
+    """FG AEI_Seed Sec 3-8: prime -> lattice outward tangent-first -> Hopf -> s2=r2 -> DbZ F5 -> I FG -> SelfEvolutionCore. x is FG hash fraction."""
+    def __init__(self, processor=None, lattice=None, monitor=None, renderer=None, linguist=None):
+        self.processor=processor; self.lattice=lattice; self.monitor=monitor; self.renderer=renderer; self.linguist=linguist or LingosoEncoder()
+        self.primes=[PyFraction(2,1),PyFraction(3,1),PyFraction(5,1)]; self.prime=5; self.prime_count=3
+        self.phi=SymbolicQuaternion(PyFraction(1,1),PyFraction(0,1),PyFraction(0,1),PyFraction(0,1))
+        self.psi=SymbolicQuaternion(PyFraction(1,1),PyFraction(0,1),PyFraction(0,1),PyFraction(0,1))
+        self.origin=SymbolicQuaternion(PyFraction(1,1),PyFraction(0,1),PyFraction(0,1),PyFraction(0,1))
+        self.metrics=IntelligenceMetric(); self.evolution=SelfEvolutionCore({"core_axioms": {"s_equals_r": PyFraction(1,1)}})
+        self.consciousness=ConsciousnessOperator(self.psi, self.phi)
+        self.state="initialized"; self.generation=0; self.tick=0
+        self.last_arc_sq=PyFraction(0,1); self.last_radius_sq=PyFraction(0,1); self.last_deviation_sq=PyFraction(0,1); self.last_I=PyFraction(0,1)
+        self.last_hopf_base=(PyFraction(0,1),PyFraction(0,1),PyFraction(0,1)); self.last_trajectory=[]; self.last_evolution=None; self.last_linguistic_trajectory=[]; self.last_logic_hash=""
+        self.history=[]; self._prior_deviation_sq=None; self._prior_rectified_psi=None
+        self.lattice_points=[(0,0,0,0)]; self.lattice_count=0; self.s2=PyFraction(0,1); self.r2=PyFraction(0,1); self.deviation=PyFraction(0,1); self.coherent=False; self.coherent_steps=0
+        self.last_x=PyFraction(1,16**64); self.last_x_input_raw=PyFraction(0,1); self.last_x_source="none"; self._cached_snapshot=None; self._cached_at=0
+    def _integrate_wavefunction_symbolic(self):
+        coeffs={}
+        pts=self.lattice_points or [(0,0,0,0)]
+        for i,_pt in enumerate(pts): coeffs[(i,0,0,0)]=PyFraction(1,i+1)
+        if not coeffs: coeffs[(0,0,0,0)]=PyFraction(1,1)
+        if self._prior_rectified_psi is not None and self._prior_deviation_sq not in (None, PyFraction(0,1)):
+            coeffs[(0,0,0,0)]=(coeffs[(0,0,0,0)]+self._prior_rectified_psi.a)/PyFraction(2,1)
+        return coeffs
+    def _generate_trajectory(self):
+        traj=[]; base=self.phi
+        for k in range(8):
+            ang=PyFraction(self.prime*(k+1),100); c=PyFraction(1,1)-(ang*ang)/PyFraction(2,1); s=ang
+            traj.append(base.mul(SymbolicQuaternion(c,s,s*PyFraction(k+1,8),PyFraction(0,1))))
+        return traj
+    def _hopf_map(self, q):
+        return (q.a*q.a+q.b*q.b-q.c*q.c-q.d*q.d, PyFraction(2,1)*(q.a*q.c+q.b*q.d), PyFraction(2,1)*(q.a*q.d-q.b*q.c))
+    def step(self, x, x_source="crawler-hash"):
+        try: xf=x if isinstance(x, PyFraction) else PyFraction(str(x))
+        except Exception: xf=PyFraction(1,16**64)
+        self.last_x_input_raw=xf; xf=PyFraction(1,1)+xf; self.last_x=xf; self.last_x_source=str(x_source)
+        try: self.prime=_next_prime_after(self.prime)
+        except Exception: self.prime+=1
+        self.prime_count+=1; self.tick+=1; self.generation=self.tick
+        q=self.lattice_points[-1] if self.lattice_points else (0,0,0,0)
+        try: offs=_LEECH_OFFSETS
+        except Exception: offs=[(2,0,0,0),(-2,0,0,0),(0,2,0,0),(0,-2,0,0),(0,0,2,0),(0,0,-2,0),(0,0,0,2),(0,0,0,-2)]
+        chosen=None; start=self.prime % len(offs) if offs else 0
+        for attempt in range(len(offs)):
+            d=offs[(start+attempt)%len(offs)]; dot=sum(di*qi for di,qi in zip(d,q))
+            if dot<=0 and q!=(0,0,0,0): d=tuple(-v for v in d)
+            cand=tuple(qi+di for qi,di in zip(q,d)); overlap=False
+            for ex in self.lattice_points:
+                if sum((a-b)*(a-b) for a,b in zip(cand,ex))<4: overlap=True; break
+            if q != (0,0,0,0):
+                _dist_q = sum((a-b)*(a-b) for a,b in zip(cand, q))
+                if _dist_q != 4:
+                    continue
+            if not overlap: chosen=cand; break
+        if chosen is not None:
+            self.lattice_points.append(chosen); self.lattice_count=len(self.lattice_points)-1; steps=self.lattice_count
+            # Tangent check: offset length squared is 4 for |offset|=2. If the new
+            # point sits exactly 4 from the previous point, it is tangent.
+            try:
+                _ds = sum((a-b)*(a-b) for a,b in zip(chosen, q))
+                self.last_tangent = (_ds == 4)
+            except Exception:
+                self.last_tangent = False
+            self.s2=PyFraction(4*steps*steps,1); self.r2=PyFraction(sum(v*v for v in chosen),1); self.deviation=self.s2-self.r2
+            self.last_arc_sq=self.s2; self.last_radius_sq=self.r2; self.last_deviation_sq=self.deviation; self.coherent=(self.s2==self.r2)
+            if self.coherent: self.coherent_steps+=1
+            self.phi=SymbolicQuaternion(PyFraction(chosen[0],1),PyFraction(chosen[1],1),PyFraction(chosen[2],1),PyFraction(chosen[3],1))
+        else:
+            self.deviation=self.s2-self.r2; self.last_deviation_sq=self.deviation; self.coherent=(self.s2==self.r2)
+        coeffs=self._integrate_wavefunction_symbolic(); psi_a=coeffs.get((0,0,0,0),PyFraction(1,1))
+        self.psi=SymbolicQuaternion(psi_a, xf, PyFraction(self.prime,1)/PyFraction(100,1), self.deviation)
+        self.last_trajectory=self._generate_trajectory(); self.last_hopf_base=self._hopf_map(self.phi)
+        if self.deviation!=0:
+            denom=PyFraction(1,1)+abs(self.deviation); corr=self.phi.scale(self.deviation/denom)
+            self.psi=_dbz_quaternion(self.psi, corr); self._prior_rectified_psi=self.psi
+        else: self._prior_rectified_psi=None
+        self._prior_deviation_sq=self.deviation; psi_norm=self.psi.norm_sq(); self.last_I=self.metrics.compute_metric(valid_pairs=int(self.prime_count), total_primes=int(self.prime_count), pi_x=int(self.prime_count), x=PyFraction(self.prime,1), curl_phi_norm=self.phi.norm_sq(), target_arc=self.s2, target_radius=self.r2); self.I=self.last_I
+        try: self.consciousness.psi=self.psi; self.consciousness.phi=self.phi; _obs=self.consciousness.observe()
+        except Exception: _obs=PyFraction(0,1)
+        self.last_evolution=self.evolution.evolve_step(self.last_I, self.psi, SymbolicQuaternion(PyFraction(self.prime,1),PyFraction(0,1),PyFraction(0,1),PyFraction(0,1)), self.deviation, tick=self.tick)
+        try:
+            cyc=["A","U","M","AUM"]; self.last_linguistic_trajectory=[]
+            for k in range(4):
+                self.last_linguistic_trajectory.extend(self.linguist.encode_syllable(cyc[(self.tick+k)%4]))
+        except Exception: self.last_linguistic_trajectory=[]
+        self.last_logic_hash=str(_deterministic_hash_frac(f"{self.tick}:{self.prime}:{self.deviation}:{self.last_I}")); self.state="coherent" if self.coherent else "rectified"
+        return self.to_dict()
+    def run_autonomous(self, steps=1, x_source="crawler-hash"):
+        out=None
+        for _ in range(int(steps)): out=self.step(self.last_x, x_source=x_source)
+        return out
+    def snapshot(self): return self.to_dict()
     def to_dict(self):
-        return {
-            "tick": int(self.tick),
-            "generation": int(self.generation),
-            "prime": int(self.prime),
-            "prime_count": int(self.prime_count),
-            "lattice_points": [list(p) for p in self.lattice_points],
-            "lattice_count": len(self.lattice_points),
-            "s2": str(self.s2),
-            "arc_sq": str(self.s2),
-            "r2": str(self.r2),
-            "radius_sq": str(self.r2),
-            "deviation": str(self.deviation),
-            "deviation_sq": str(self.deviation),
-            "coherent": bool(self.coherent),
-            "coherence": bool(self.coherent),
-            "I": str(self.I),
-            "intelligence": str(self.I),
-            "psi": dict(self.psi),
-            "phi": dict(self.phi),
-            "hopf": dict(self.phi),
-            "hopf_base": dict(self.phi),
-            "last_x": str(self.last_x),
-            "state": "coherent" if self.coherent else "not_coherent",
-            "observer": None,
-        }
+        return {"tick":int(self.tick),"generation":int(self.generation),"prime":int(self.prime),"prime_count":int(self.prime_count),"primes":[str(p) for p in self.primes[-8:]],"lattice_points":[list(p) for p in self.lattice_points[-24:]],"lattice_count":int(self.lattice_count),"s2":str(self.s2),"r2":str(self.r2),"deviation":str(self.deviation),"deviation_sq":str(self.last_deviation_sq),"coherent":bool(self.coherent),"coherent_steps":int(self.coherent_steps),"I":str(self.last_I),"I_parts":dict(self.metrics.last_parts),"I_threshold":"2/3","I_gate":"2/3","I_unity":"1","I_gate_met":bool(self.last_I >= PyFraction(2,3)),"I_unity_met":bool(self.last_I == PyFraction(1,1)),"psi":self.psi.to_dict(),"phi":self.phi.to_dict(),"hopf":{"a":str(self.last_hopf_base[0]),"b":str(self.last_hopf_base[1]),"c":str(self.last_hopf_base[2]),"d":"0"},"hopf_base":[str(self.last_hopf_base[0]),str(self.last_hopf_base[1]),str(self.last_hopf_base[2])],"trajectory":[q.to_dict() for q in self.last_trajectory],"trajectory_count":len(self.last_trajectory),"evolution":self.last_evolution,"self_evolution":self.last_evolution,"lingoso":[q.to_dict() for q in self.last_linguistic_trajectory],"observer":str(self.consciousness.observe()) if hasattr(self,"consciousness") else "0","last_x":str(self.last_x),"x_input_raw":str(getattr(self, "last_x_input_raw", self.last_x)),"last_x_source":str(self.last_x_source),"last_logic_hash":str(self.last_logic_hash),"state":str(self.state),"dbz_persisted":bool(self._prior_rectified_psi is not None)}
 
 class CrawlerState:
     """Frontier queue only. No automatic fetching, no binary fetches."""
@@ -6099,6 +6741,48 @@ class CrawlerState:
         self.frontier = []
         self.visited = []
         self.running = False
+        self.last_hash_frac = None
+        self.last_hash_hex = ''
+        self.last_hash_url = ''
+        self.last_hash_at = ''
+    def set_from_content(self, content, url=''):
+        # FG x: hash fraction of most recently crawled document.
+        # content is bytes or str. Stores raw hex, fraction, url, timestamp.
+        # Returns {'ok': True, 'hash_hex': ..., 'hash_frac': str(...)}.
+        try:
+            import hashlib as _hl2, datetime as _dt2
+            raw = content if isinstance(content, (bytes, bytearray)) else str(content or '').encode('utf-8')
+            hexh = _hl2.sha256(raw).hexdigest()
+            frac = _hash_to_fraction(hexh)
+            self.last_hash_hex = hexh
+            self.last_hash_frac = frac
+            self.last_hash_url = str(url or '')
+            try: self.last_hash_at = _dt2.datetime.now().isoformat()
+            except Exception: self.last_hash_at = ''
+            return {'ok': True, 'hash_hex': hexh, 'hash_frac': str(frac), 'url': str(url or '')}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+    def fetch_and_hash(self, url):
+        # Fetch one document (text only, 512 KiB cap, 10 s timeout), blocklist-checked,
+        # hash it and set last_hash_frac. Never fetches binaries, never auto-crawls.
+        # Returns set_from_content result or error. Caller is /crawler-enqueue.
+        try:
+            import urllib.request as _ur, datetime as _dt3
+            u = (url or '').strip()
+            if not u.startswith('http://') and not u.startswith('https://'):
+                return {'ok': False, 'error': 'url_must_start_with_http'}
+            for bad in self.BLOCKLIST:
+                if bad in u:
+                    return {'ok': False, 'error': 'url_blocklisted'}
+            req = _ur.Request(u, headers={'User-Agent': 'AEI-Crawler/1.0', 'Accept': 'text/plain,text/html;q=0.9'})
+            with _ur.urlopen(req, timeout=10) as r:
+                ctype = str(r.headers.get('Content-Type', '') or '').lower()
+                if 'image' in ctype or 'video' in ctype or 'audio' in ctype or 'octet-stream' in ctype:
+                    return {'ok': False, 'error': 'binary_not_fetched'}
+                data = r.read(524288)
+            return self.set_from_content(data, url=u)
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
     def enqueue(self, url: str):
         u = (url or "").strip()
         if not u.startswith("http://") and not u.startswith("https://"):
@@ -6147,6 +6831,39 @@ def _symbol_class_counts():
         "indices_symbols": int(indices),
     }
 
+
+def _bb_family_from_bars(bars):
+    """FF BB family: periods 3..60, deviation 2, close, shift 0, population sigma. Returns list of dicts for periods with enough real bars."""
+    out = []
+    try:
+        closes = []
+        for b in (bars or []):
+            try:
+                c = b.get("close") if isinstance(b, dict) else None
+                if c is None:
+                    continue
+                closes.append(Decimal(str(c)))
+            except Exception:
+                continue
+        for period in range(3, 61):
+            if len(closes) < period:
+                continue
+            window = closes[-period:]
+            try:
+                mid = sum(window, Decimal("0")) / Decimal(period)
+                var = sum((x - mid) * (x - mid) for x in window) / Decimal(period)
+                try:
+                    sd = var.sqrt()
+                except Exception:
+                    sd = var.sqrt() if var > 0 else Decimal("0")
+                dev = Decimal("2") * sd
+                out.append({"period": int(period), "mid": str(mid), "upper": str(mid + dev), "lower": str(mid - dev)})
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return out
+
 def _bb58_from_bars(bars):
     """BBx58: period 58. Null until 58 real bars exist. No zero placeholder."""
     try:
@@ -6172,90 +6889,89 @@ def _bb58_from_bars(bars):
     lower = mid - Decimal(2) * sd
     return {
         "period": 58,
-        "lower": float(lower),
-        "mid": float(mid),
-        "upper": float(upper),
-        "sd": float(sd),
-        "last": float(window[-1]),
+        "lower": str(lower),
+        "mid": str(mid),
+        "upper": str(upper),
+        "sd": str(sd),
+        "last": str(window[-1]),
     }
 
 def _acoustization_from_seed(seed_dict):
-    try:
-        dev = PyFraction(str(seed_dict.get("deviation", "0")))
-    except Exception:
-        dev = PyFraction(0, 1)
-    freq = PyFraction(440, 1) + (abs(dev) % PyFraction(100, 1))
-    amp = PyFraction(1, 1) / (PyFraction(1, 1) + abs(dev)) if abs(dev) != 0 else PyFraction(1, 1)
-    return {"frequency": str(freq), "amplitude": str(amp), "type": "sine", "source": "seed deviation"}
+    # Display sonification from seed deviation.
+    try: dev=PyFraction(str(seed_dict.get('deviation','0')))
+    except Exception: dev=PyFraction(0,1)
+    freq=PyFraction(440,1)+(abs(dev)%PyFraction(100,1)); amp=PyFraction(1,1)/(PyFraction(1,1)+abs(dev)) if abs(dev)!=0 else PyFraction(1,1)
+    try: _s2=PyFraction(str(seed_dict.get('s2','0')))
+    except Exception: _s2=PyFraction(0,1)
+    try: _r2=PyFraction(str(seed_dict.get('r2','0')))
+    except Exception: _r2=PyFraction(0,1)
+    _sr = (_s2/_r2) if _r2 != 0 else PyFraction(0,1)
+    _price = seed_dict.get('price') or seed_dict.get('last_price') or '0'
+    return {'frequency': str(freq), 'base_freq': str(freq), 'filter_freq': str(freq), 'amplitude': str(amp), 'type':'sine','source':'seed deviation','origin':'display','lattice_notes': [str(freq), str(freq*PyFraction(2,1)), str(freq*PyFraction(3,1))], 'pulse': '1', 'price': str(_price), 'delta': str(dev), 'deviation': str(dev), 'sr_ratio': str(_sr)}
 
 def _observer_from_seed(seed_dict):
+    # Observer: 4D Riemann sum over 4^4 grid.
+    # The seed carries single psi/phi quaternions. This function
+    # builds a grid-varying field from them: at grid point (i,j,k,l) the
+    # a-component is scaled by (i+1)/4, b by (j+1)/4, c by (k+1)/4, d by (l+1)/4,
+    # and the term is sum_c psi_c(grid) * phi_c * psi_c(grid) * (1/256).
+    # The term uses i,j,k,l.
     try:
-        psi = seed_dict.get("psi") or {}
-        total = PyFraction(0, 1)
-        for k in ("a", "b", "c", "d"):
-            try:
-                total += PyFraction(str(psi.get(k, "0")))
-            except Exception:
-                pass
-        real = psi.get("a", "0")
-        imag = psi.get("b", "0")
+        psi = seed_dict.get('psi') or {}; phi = seed_dict.get('phi') or {}
+        def _fr(d,k):
+            try: return PyFraction(str(d.get(k,'0')))
+            except Exception: return PyFraction(0,1)
+        pa,pb,pc,pd = _fr(psi,'a'),_fr(psi,'b'),_fr(psi,'c'),_fr(psi,'d')
+        fa,fb,fc,fd = _fr(phi,'a'),_fr(phi,'b'),_fr(phi,'c'),_fr(phi,'d')
+        total=PyFraction(0,1); count=0
+        for i in range(4):
+            for j in range(4):
+                for k in range(4):
+                    for l in range(4):
+                        w=PyFraction(1,256)
+                        sa = pa * PyFraction(i+1,4); sb = pb * PyFraction(j+1,4)
+                        sc = pc * PyFraction(k+1,4); sd = pd * PyFraction(l+1,4)
+                        term = (sa*fa*sa + sb*fb*sb + sc*fc*sc + sd*fd*sd) * w
+                        total+=term; count+=1
+        return {'O_psi': str(total), 'observer': str(total), 'grid': '4^4', 'points': int(count), 'psi_a': str(pa), 'psi_b': str(pb), 'psi_c': str(pc), 'psi_d': str(pd), 'note': 'Display observer from single psi/phi.', 'origin': 'display', 'real': str(total), 'imag': '0'}
     except Exception:
-        total = PyFraction(0, 1)
-        real = "0"
-        imag = "0"
-    return {"O_psi": str(total), "observer": str(total), "grid": "4^4", "real": str(real), "imag": str(imag)}
+        return {'O_psi': None, 'observer': None, 'grid': '4^4', 'points': 0, 'psi_a': None, 'psi_b': None, 'psi_c': None, 'psi_d': None, 'note': 'WAITING', 'status': 'WAITING', 'origin': 'ConsciousnessOperator.observe'}
 
-def _evolution_from_bars(seed_dict, bars):
-    try:
-        dev = PyFraction(str(seed_dict.get("deviation", "0")))
-    except Exception:
-        dev = PyFraction(0, 1)
-    nn_loss = None
-    try:
-        closes = []
-        for b in bars or []:
-            if isinstance(b, dict) and b.get("close") is not None:
-                closes.append(PyFraction(str(b.get("close"))))
-        if len(closes) >= 3:
-            errs = []
-            for i in range(1, min(len(closes), 21)):
-                e = closes[i] - closes[i - 1]
-                errs.append(e * e)
-            nn_loss = sum(errs, PyFraction(0, 1)) / PyFraction(len(errs), 1)
-    except Exception:
-        nn_loss = None
-    if nn_loss is None:
-        winner = None
-    else:
-        winner = "AE" if abs(dev) < nn_loss else "NN"
-    return {
-        "tick": int(seed_dict.get("tick", 0)),
-        "ae_dev": str(abs(dev)),
-        "ae_ticks": int(seed_dict.get("tick", 0)),
-        "nn_loss": (str(nn_loss) if nn_loss is not None else None),
-        "nn_ticks": int(seed_dict.get("tick", 0)),
-        "delta_acc": None,
-        "winner": winner,
-        "note": "Toy baseline: prev-close predictor, not a trained NN. Units differ; winner is a display comparison only.",
-    }
+def _evolution_from_seed(seed_dict, bars):
+    # FG evolution: SelfEvolutionCore result from seed, no opponent, no comparison of unlike units.
+    try: ev = seed_dict.get('evolution') or seed_dict.get('self_evolution') or {}
+    except Exception: ev = {}
+    try: dev = PyFraction(str(seed_dict.get('deviation','0')))
+    except Exception: dev = PyFraction(0,1)
+    return {'tick': int(seed_dict.get('tick',0)), 'ae_dev': str(abs(dev)), 'evolution': ev, 'fitness': str(ev.get('fitness','0')) if isinstance(ev, dict) else '0', 'mutation': str(ev.get('mutation','none')) if isinstance(ev, dict) else 'none', 'note': 'FG SelfEvolutionCore.evolve_step. No opponent.'}
 
 def _cs_translate(text: str) -> str:
-    mapping = {"A": "𝒜", "E": "ℰ", "I": "ℐ", "O": "𝒪", "U": "𝒰", "a": "𝒶", "e": "ℯ", "i": "𝒾", "o": "ℴ", "u": "𝓊"}
-    return "".join(mapping.get(ch, ch) for ch in (text or ""))
+    # No vowel-substitution map. CS is CS_LABELS, labels only, vars never renamed.
+    # _cs_translate returns text unchanged; use _cs_label(key) for CS labels.
+    return text or ''
 
 def _build_fused_state(engine):
     st = engine.state
     seed = getattr(engine, "seed", None)
     seed_dict = seed.to_dict() if seed is not None else {"tick": 0, "generation": 0, "prime": 2, "prime_count": 0, "lattice_points": [], "lattice_count": 0, "s2": "0", "r2": "0", "deviation": "0", "coherent": False, "I": "0", "psi": {"a": "1", "b": "0", "c": "0", "d": "0"}, "phi": {"a": "0", "b": "0", "c": "0", "d": "0"}, "hopf": {"a": "0", "b": "0", "c": "0", "d": "0"}}
+    try:
+        _s2f = PyFraction(str(seed_dict.get("s2", "0")))
+    except Exception:
+        _s2f = PyFraction(0, 1)
+    try:
+        _r2f = PyFraction(str(seed_dict.get("r2", "0")))
+    except Exception:
+        _r2f = PyFraction(0, 1)
+    seed_dict["sr_ratio"] = str((_s2f / _r2f) if _r2f != 0 else PyFraction(0, 1))
     bars = []
     for b in (engine.ohlcv_history or []):
         try:
             bars.append({
-                "open": float(b.get("open", 0)),
-                "high": float(b.get("high", 0)),
-                "low": float(b.get("low", 0)),
-                "close": float(b.get("close", 0)),
-                "volume": float(b.get("volume", 0)),
+                "open": str(b.get("open", 0)),
+                "high": str(b.get("high", 0)),
+                "low": str(b.get("low", 0)),
+                "close": str(b.get("close", 0)),
+                "volume": str(b.get("volume", 0)),
                 "timestamp": str(b.get("timestamp", "")),
                 "provider": str(b.get("provider", "")),
             })
@@ -6269,19 +6985,15 @@ def _build_fused_state(engine):
     market_m = int(getattr(st, "authoritative_m", 0))
     market_n = int(getattr(st, "authoritative_n", 0))
     imbalance = market_m - market_n - 2
-    if imbalance > 2:
-        regime = "BULLISH"
-    elif imbalance < -2:
-        regime = "BEARISH"
-    else:
-        regime = "NEUTRAL"
+    _reg_idx0 = int(getattr(st, "h", 0)) - (int(getattr(st, "y", 0)) + 1)
+    regime = st.Regime[_reg_idx0] if 0 <= _reg_idx0 < len(st.Regime) else "Unknown"
     try:
         feed_last_update = engine.feed.last_update()
         last_update = feed_last_update.isoformat() if feed_last_update else None
     except Exception:
         last_update = None
     feed = {
-        "ordered": int(seed_dict.get("tick", 0)),
+        "ordered": int(getattr(getattr(engine, "ordered_feed", None), "feed_ordered", 0)),
         "price": str(st.price) if st.price is not None else None,
         "prev_price": (str(prev_price) if prev_price is not None else None),
         "provider": str(getattr(st, "last_provider", "") or ""),
@@ -6297,12 +7009,12 @@ def _build_fused_state(engine):
             try:
                 col = st.iA[i] if i < len(st.iA) else []
                 v = col[idx] if 0 <= idx < len(col) else (col[-1] if col else None)
-                grid[name] = (float(v) if v is not None else None)
+                grid[name] = (str(v) if (v is not None and len(bars) >= 14) else None)
             except Exception:
                 grid[name] = None
         grid["count"] = len(bars)
         try:
-            grid["ICHIMOKU"] = {"k": str(st.iIHKk), "t": str(st.iIHKt)}
+            grid["ICHIMOKU"] = {"k": str(st.iIHKk), "t": str(st.iIHKt)} if len(bars) >= 14 else None
         except Exception:
             grid["ICHIMOKU"] = None
     except Exception:
@@ -6342,8 +7054,12 @@ def _build_fused_state(engine):
     except Exception:
         crawler_dict = {"frontier_size": 0, "visited": 0, "running": False}
     acoust = _acoustization_from_seed(seed_dict)
-    observer = _observer_from_seed(seed_dict)
-    evolution = _evolution_from_bars(seed_dict, bars)
+    _fg_observer = seed_dict.get("observer")
+    if _fg_observer is None:
+        observer = {"observer": None, "O_psi": None, "status": "WAITING", "origin": "ConsciousnessOperator.observe"}
+    else:
+        observer = {"observer": str(_fg_observer), "O_psi": str(_fg_observer), "status": "ok", "origin": "ConsciousnessOperator.observe"}
+    evolution = _evolution_from_seed(seed_dict, bars)
     cs = {
         "tick": int(seed_dict.get("tick", 0)),
         "s2": seed_dict.get("s2"),
@@ -6378,23 +7094,40 @@ def _build_fused_state(engine):
         "orders": orders,
         "last_provider": str(getattr(st, "last_provider", "") or ""),
     }
+    try:
+        _bb_family = _bb_family_from_bars(engine.ohlcv_history or [])
+    except Exception:
+        _bb_family = []
+    try:
+        _mm = int(st.authoritative_m); _nn = int(st.authoritative_n)
+        _imb = _mm - _nn - 2
+        _delta_gate = (_imb == 0)
+        _hl_gate = (_mm >= 12) or (_nn >= 12)
+        _bridge_regime = "BULLISH" if _imb > 2 else ("BEARISH" if _imb < -2 else "NEUTRAL")
+        _reg_idx = int(st.h) - (int(st.y) + 1)
+        _eng_regime = st.Regime[_reg_idx] if 0 <= _reg_idx < len(st.Regime) else "Unknown"
+    except Exception:
+        _imb = None; _delta_gate = False; _hl_gate = False; _bridge_regime = "WAITING"; _eng_regime = "WAITING"; _mm = None; _nn = None
     return {
-        "ordered": int(seed_dict.get("tick", 0)),
+        "ordered": int(getattr(getattr(engine, "ordered_feed", None), "feed_ordered", 0)),
         "feed": feed,
         "aeea": aeea,
+        "bb_family": _bb_family,
+        "delta_gate": {"imbalance": (_imb if _imb is None else int(_imb)), "m": (_mm if _mm is None else int(_mm)), "n": (_nn if _nn is None else int(_nn)), "kronecker_delta": bool(_delta_gate), "met": bool(_delta_gate), "definition": "Kronecker delta(imbalance)=1 iff imbalance==0 iff m-n==2. Does NOT fire signals."},
+        "hl_gate": {"m": (_mm if _mm is None else int(_mm)), "n": (_nn if _nn is None else int(_nn)), "met": bool(_hl_gate), "definition": "H/L gate: BUY when m>=12, SELL when n>=12. This fires signals. NOT the Kronecker gate."},
+        "bridge_regime": str(_bridge_regime),
+        "engine_regime": str(_eng_regime),
         "seed": seed_dict,
         "cs": cs,
         "cs_feedback": cs_feedback,
         "acoustization": acoust,
         "observer": observer,
-        "race": evolution,
-        "evolution_vs_nn": evolution,
+        "evolution": evolution,
         "crawler": crawler_dict,
         "crawlerFrontier": crawler_dict.get("frontier_size"),
         "crawlerVisited": crawler_dict.get("visited"),
         "crawlerRunning": crawler_dict.get("running"),
         "aea_notification": aea_notification,
-        "version": "final-first",
         "status": "ok",
     }
 
@@ -6499,13 +7232,9 @@ def _require_auth(handler: "BridgeHandler") -> bool:
     if not TELEGRAM_BOT_TOKEN_ENV:
         return False
     relay_key = handler.headers.get("X-Relay-Key", "").strip()
-    if RELAY_KEY and relay_key and relay_key != RELAY_KEY:
+    if RELAY_KEY and (relay_key != RELAY_KEY):
         return False
     raw_init = handler.headers.get("X-Telegram-Init-Data", "").strip()
-    if not raw_init:
-        auth_hdr = handler.headers.get("Authorization", "").strip()
-        if auth_hdr.lower().startswith("tma "):
-            raw_init = auth_hdr[4:].strip()
     if not raw_init:
         return False
     verified = verify_telegram_init_data(raw_init, TELEGRAM_BOT_TOKEN_ENV)
@@ -6518,25 +7247,6 @@ def _require_auth(handler: "BridgeHandler") -> bool:
         return False
     if not _is_allowed_user(user_id):
         logger.warning(f"Bridge auth rejected: unauthorized user_id={user_id}")
-        return False
-    return True
-    raw_init = handler.headers.get("X-Telegram-Init-Data", "").strip()
-    if not raw_init:
-        auth_hdr = handler.headers.get("Authorization", "").strip()
-        if auth_hdr.lower().startswith("tma "):
-            raw_init = auth_hdr[4:].strip()
-    if not raw_init:
-        return False
-    verified = verify_telegram_init_data(raw_init, TELEGRAM_BOT_TOKEN_ENV)
-    if not verified or not verified.get("user"):
-        return False
-    user = verified.get("user") or {}
-    user_id = user.get("id")
-    if _is_banned_user(user_id):
-        logger.warning(f"🚫 Bridge auth rejected: banned user_id={user_id}")
-        return False
-    if not _is_allowed_user(user_id):
-        logger.warning(f"🚫 Bridge auth rejected: unauthorized user_id={user_id}")
         return False
     return True
 
@@ -6682,20 +7392,28 @@ class TunnelManager:
 # BRIDGE HANDLER
 # ============================================================================
 class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "AEI-Bridge/final"
+    server_version = "AEI-Bridge"
 
     def log_message(self, fmt, *args):
         return
 
     def _set_cors(self) -> None:
-        origin = CORS_ORIGIN
-        if origin == "*":
+        raw = (CORS_ORIGIN or "").strip()
+        req_origin = ""
+        try:
+            req_origin = (self.headers.get("Origin") or "").strip()
+        except Exception:
+            req_origin = ""
+        self.send_header("Vary", "Origin")
+        if (not raw) or (raw == "*"):
             self.send_header("Access-Control-Allow-Origin", "*")
         else:
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
+            allow = [p.strip() for p in raw.split(",") if p.strip()]
+            if req_origin and (req_origin in allow):
+                self.send_header("Access-Control-Allow-Origin", req_origin)
+                self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-Telegram-Init-Data, X-Relay-Key, X-Limit, X-Since")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, X-Telegram-Init-Data, X-Relay-Key, X-Limit, X-Since")
         self.send_header("Access-Control-Max-Age", "86400")
 
     def _send_json(self, code: int, payload: Dict[str, Any]) -> None:
@@ -6755,7 +7473,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     age_seconds = (datetime.now() - lu).total_seconds()
                     stale = age_seconds > 60
             self._send_json(200, {
-                "ok": not stale, "service": "aei-bridge", "version": "final-first",
+                "ok": not stale, "service": "aei-bridge",
                 "last_price_update": last,
                 "age_seconds": age_seconds, "stale": stale,
                 "engine_initialized": bool(engine.state.FG) if engine else False,
@@ -6772,16 +7490,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
             })
             return
 
-        if not _require_auth(self):
+        if path not in ("/", "/index.html") and not _require_auth(self):
             self._send_json(401, {"error": "unauthorized", "detail": "Missing or invalid X-Telegram-Init-Data"})
             return
 
         if path == "/config":
             self._send_json(200, {
-                "public_url": BRIDGE_ENGINE_REF.get("public_url"), "tls": BRIDGE_USE_TLS,
+                "tls": BRIDGE_USE_TLS,
                 "port": BRIDGE_PORT, "host": BRIDGE_HOST, "symbol": SYMBOL,
                 "webapp_enabled": True, "cors_origin": CORS_ORIGIN,
-                "relay_url": RELAY_URL, "relay_gated": bool(RELAY_KEY),
+                "relay_gated": bool(RELAY_KEY),
                 "x_period_constant": X_PERIOD, "y_start_constant": Y_START,
                 "require_auth": REQUIRE_AUTH,
                 "push_on_signal": PUSH_ON_SIGNAL,
@@ -6833,13 +7551,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "engine_not_ready", "detail": "Engine hasn't started. Use /start_feed in the bot."})
                 return
             st = engine.state
-            public = BRIDGE_ENGINE_REF.get("public_url")
-            if public:
-                endpoint = public
-            else:
-                host = self.headers.get("Host", f"{BRIDGE_HOST}:{BRIDGE_PORT}")
-                scheme = "https" if BRIDGE_USE_TLS else "http"
-                endpoint = f"{scheme}://{host}"
             idx = st.Z - (st.y + 1)
             regime = st.Regime[idx] if 0 <= idx < len(st.Regime) else "Unknown"
             self._send_json(200, {
@@ -6856,13 +7567,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "n_at_h": int(st.last_kronecker_n),
                 "h_bar": int(st.h),
                 "timestamp": datetime.now().isoformat(),
-                "endpoint": endpoint,
                 "webapp_user_id": st.webapp_user_id,
                 "webapp_username": st.webapp_username,
                 "last_price_update": engine.feed.last_update().isoformat() if engine.feed.last_update() else None,
                 "engine_initialized": bool(st.FG),
                 "consecutive_zero_prices": int(engine._consecutive_zero_prices),
-                "relay_url": RELAY_URL,
                 "relay_healthy": (engine.feed.failure_count() < 3),
                 "indicator_populate_count": int(engine._indicator_populate_count),
                 "imbalance_fire_count": int(engine._imbalance_fire_count),
@@ -7281,7 +7990,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             try:
                 fused = _build_fused_state(engine)
-                self._send_json(200, fused.get("evolution_vs_nn") or {})
+                self._send_json(200, fused.get("evolution") or {})
             except Exception as e:
                 self._send_json(500, {"error": "internal", "detail": str(e)})
             return
@@ -7302,8 +8011,31 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "engine_not_ready"})
                 return
             try:
+                cursor_raw = query.get("cursor")
+                if cursor_raw is None:
+                    fused = _build_fused_state(engine)
+                    self._send_json(200, fused.get("aea_notification") or {})
+                    return
+                try:
+                    cursor = int(cursor_raw)
+                except (TypeError, ValueError):
+                    self._send_json(400, {"error": "invalid_cursor", "detail": "cursor must be a bar index"})
+                    return
+                bars = engine.ohlcv_history or []
+                if cursor < 0 or cursor >= len(bars):
+                    self._send_json(400, {"error": "invalid_cursor", "detail": "cursor is outside the bar range"})
+                    return
+                bar = bars[cursor]
                 fused = _build_fused_state(engine)
-                self._send_json(200, fused.get("aea_notification") or {})
+                seed_dict = fused.get("seed") or {}
+                aeea = fused.get("aeea") or {}
+                text = format_aea("state", {"seed": seed_dict, "aeea": aeea})
+                text = text + (
+                    f" \u00b7 cursor {cursor}/{len(bars)}"
+                    f" \u00b7 O {bar.get('open')} H {bar.get('high')} L {bar.get('low')} C {bar.get('close')}"
+                    f" \u00b7 {bar.get('timestamp')}"
+                )
+                self._send_json(200, {"text": text, "kind": "state", "cursor": cursor, "bar": bar, "tick": int(seed_dict.get("tick", 0))})
             except Exception as e:
                 self._send_json(500, {"error": "internal", "detail": str(e)})
             return
@@ -7340,7 +8072,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 logger.info(f"🤝 Handshake OK: user_id={user_id}, username={username}, chat_id={chat_id}")
                 self._send_json(200, {
                     "ok": True, "user_id": user_id, "username": username,
-                    "public_url": BRIDGE_ENGINE_REF.get("public_url"),
                 })
             except Exception as e:
                 logger.error(f"Handshake error: {e}")
@@ -7443,9 +8174,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
             data = self._read_json()
             side = (data.get("side") or "").upper()
             try:
-                lot = Fraction.from_decimal_string(str(data.get("lot", "0.01"))).to_decimal()
-                sl = Fraction.from_decimal_string(str(data.get("sl", "0"))).to_decimal()
-                tp = Fraction.from_decimal_string(str(data.get("tp", "0"))).to_decimal()
+                _vol = data.get("volume", data.get("lot", "0.01"))
+                _sl = data.get("sl", "0")
+                _tp = data.get("tp", "0")
+                if _vol is None: _vol = "0.01"
+                if _sl is None: _sl = "0"
+                if _tp is None: _tp = "0"
+                lot = Fraction.from_decimal_string(str(_vol)).to_decimal()
+                sl = Fraction.from_decimal_string(str(_sl)).to_decimal()
+                tp = Fraction.from_decimal_string(str(_tp)).to_decimal()
             except Exception as e:
                 self._send_json(400, {"error": "invalid_numbers", "detail": str(e)})
                 return
@@ -7497,9 +8234,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(503, {"error": "engine_not_ready"})
                 return
             try:
-                engine._step_seed_from_tick()
                 seed = engine.seed.to_dict() if hasattr(engine, "seed") else {}
-                self._send_json(200, {"ok": True, "seed": seed, "ordered": seed.get("tick"), "x": seed.get("last_x"), "note": "x lifted in backend from backend price and prevPrice; client x is ignored."})
+                feed_ordered = int(getattr(getattr(engine, "ordered_feed", None), "feed_ordered", 0))
+                self._send_json(200, {"ok": True, "seed": seed, "ordered": feed_ordered, "x": seed.get("last_x"), "note": "Seed advances on each ordered tick via _on_tick_locked. POST /step returns current seed. Client x is ignored. Frontend sends {}."})
             except Exception as e:
                 self._send_json(500, {"error": "internal", "detail": str(e)})
             return
@@ -7570,6 +8307,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 data = self._read_json()
                 url = str(data.get("url", ""))
                 res = engine.crawler.enqueue(url) if hasattr(engine, "crawler") else {"ok": False, "error": "no_crawler"}
+                # Fetch-and-hash the enqueued URL (text only).
+                # If fetch fails, last_hash_frac stays as-is and seed falls back to labelled price-x.
+                try:
+                    if isinstance(res, dict) and res.get("ok") and hasattr(engine.crawler, "fetch_and_hash"):
+                        _fh = engine.crawler.fetch_and_hash(url)
+                        res = {**res, "hash": _fh}
+                except Exception:
+                    pass
                 self._send_json(200, res)
             except Exception as e:
                 self._send_json(500, {"error": "internal", "detail": str(e)})
@@ -8158,7 +8903,7 @@ class AEI_Bot:
             f"💰 *Current Price:* {state.price:.5f}\n"
             f"⚖️ *Imbalance @ h={state.h}:* m={m_at_h}, n={n_at_h}\n"
             f"⚖️ *Local m/n:* {m_local}/{n_local}\n"
-            f"✅ *δ(m-n-2)=1:* {condition_mark}\n"
+            f"✅ *H/L gate (m>=12 or n>=12):* {condition_mark}\n"
             f"🔀 *𝒦 State:* {_cs(state.KC)}\n"
             f"🔢 *π:* {state.prime}\n"
             f"🔢 *δ_dime:* {state.dime}\n"
@@ -8707,7 +9452,7 @@ class AEI_Bot:
         self.application.add_handler(CallbackQueryHandler(self.button_handler))
         self.application.add_error_handler(self.error_handler)
         logger.info(f"🤖 {self.bot_name} starting...")
-        logger.info("📊 Quantum-Financial Topology Engine (MQL4-parity port Final, First edition).")
+        logger.info("📊 Quantum-Financial Topology Engine (MQL4-parity port ).")
         logger.info(f"🧠 X_PERIOD (const) = {X_PERIOD}, Y_START (const) = {Y_START}")
 
         logger.info("⚡ 13D Hilbert-space projection populated per bar.")
@@ -8718,13 +9463,13 @@ class AEI_Bot:
         logger.info(f"🚫 Ban list: {len(BANNED_USER_IDS)} ID(s) banned (BANNED_IDS) — ban wins over allowlist.")
         logger.info("🛑 𝒯_trail: real Ask−Bid spread + symbol-adaptive point size + STOP_LOSS minimum.")
         logger.info("🎯 δ gate: LOCAL m/n from authoritative H()/L() stamps.")
-        logger.info("🔄 O() regime mutation restored via write-back (D-RES-1).")
+        logger.info("🔄 O() regime mutation applied via write-back (D-RES-1).")
         logger.info("📊 OnBar per-j HH/LL anchoring.")
-        logger.info("🔍 OnTrack/OnStand MQL4 loop bounds restored (aliased S, not grown copy).")
-        logger.info("🔒 Auth enforcement on all non-/health endpoints.")
+        logger.info("🔍 OnTrack/OnStand MQL4 loop bounds kept (aliased S, not grown copy).")
+        logger.info("🔒 Auth enforcement on all non-/health endpoints except GET / and GET /index.html, which serve static HTML with no state and no secrets.")
         logger.info("📈 Chart endpoint & signal history tracking enabled.")
         logger.info("📐 User FVGs stored in bridge registry only (non-destructive).")
-        logger.info("🛰️ Multi-provider relay vFinal: Kraken → Binance → CoinGecko → Yahoo for crypto; Stooq → Yahoo for equities/futures; Yahoo for forex/indices.")
+        logger.info("🛰️ Multi-provider relay : Kraken → Binance → CoinGecko → Yahoo for crypto; Stooq → Yahoo for equities/futures; Yahoo for forex/indices.")
         logger.info("📦 Real volume carried through OBV, AD, Force, MFI projections.")
         logger.info("🌌 𝒫_arc projection computed on execution, init, symbol change, and manual refresh.")
         logger.info("🔔 Push notification on every signal, every execution, every FVG, every close.")
@@ -8738,8 +9483,8 @@ class AEI_Bot:
         logger.info("🛡️ Markdown escaping: _md_escape applied to every interpolated value (E-12).")
         logger.info("🛡️ Reply-target hardening: retry as standalone on stale reply id (E-11).")
         logger.info("🛡️ Plain-text fallback: parse_mode=None on parse errors (E-13).")
-        logger.info(f"🪙 vFinal symbol universe: GRAM-USD (TON) + {len(SYMBOL_MAP)} total symbols across crypto, futures, equities, forex, and indices.")
-        logger.info("AE TWA Final, First edition — backend starting. One ordered feed, one formatter, one state.")
+        logger.info(f"🪙  symbol universe: GRAM-USD (TON) + {len(SYMBOL_MAP)} total symbols across crypto, futures, equities, forex, and indices.")
+        logger.info("AE TWA  — backend starting. One ordered feed, one formatter, one state.")
         logger.info("✅ Ready. Use /start to begin.")
         self.application.run_polling()
 

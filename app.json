@@ -1,6 +1,6 @@
 {
   "name": "AE TWA Unified, AEA Feed",
-  "description": "AE TWA Unified, AEA Feed. Lossless fusion of ÆI (GAIA/ÆI seed) and ÆEA (MT4-parity market engine) as a Telegram Mini App. One ordered market feed advances both engines: the ÆEA bar ring (13 normalised indicators + Ichimoku → m/n/δ → regime → BB×58 → 𝒫_arc → signal iff δ-gate → orders/trailing/FVG) and the ÆI seed (prime → outward Λ₂₄ → Hopf → s²=r² → DbZ → I → SelfEvolution), with x lifted from the same tick as abs(price-prevPrice)/10000 (or 1/100 on zero). Backend authoritative. Frontend view only. No synthetic bars. Lattice [] equals WAITING, never 0. One formatter for app and bot. CS feed back / forward: Bot / TWA feeds CS, CS feeds Bot / TWA. Final, First edition.",
+  "description": "AE TWA Unified, AEA Feed. Lossless fusion of ÆI (GAIA/ÆI seed) and ÆEA (MT4-parity market engine) as a Telegram Mini App. One ordered market feed advances both engines: the ÆEA bar ring (13 normalised indicators + Ichimoku → m/n/δ → regime → BB family 3–60 → 𝒫_arc → signal iff H/L gate (m>=12 or n>=12) → orders/trailing/FVG) and the ÆI seed (prime → outward Λ₂₄ → Hopf → s²=r² → DbZ → I → SelfEvolution), with x lifted from the same tick as abs(price-prevPrice)/10000 (or 1/100 on zero). Backend authoritative. Frontend view only. No synthetic bars. Lattice [] equals WAITING, never 0. One formatter for app and bot. CS feed back / forward: Bot / TWA feeds CS, CS feeds Bot / TWA.",
   "repository": "https://github.com/<OWNER>/<BACKEND-REPO>",
   "website": "<PAGES-ORIGIN>",
   "success_url": "/",
@@ -29,8 +29,7 @@
     "market-data",
     "kraken-primary",
     "bollinger-bands",
-    "fvg",
-    "final-first"
+    "fvg"
   ],
   "env": {
     "TELEGRAM_BOT_TOKEN": {

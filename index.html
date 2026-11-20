@@ -53,11 +53,10 @@ h1 { color: var(--text-bright); font-size: 1.4rem; letter-spacing: 2px; margin-b
 <body>
 <div class="container">
 <h1>Æ TWA Bridge</h1>
-<div class="subtitle">Backend fallback page · Final, First edition · Backend authoritative · WAITING means WAITING</div>
+<div class="subtitle">Backend fallback page ·  · Backend authoritative · WAITING means WAITING</div>
 <div class="panel">
 <div class="panel-title">Status</div>
 <div class="row"><span class="label">Bridge</span><span class="value" id="statusText"><span class="status-dot" id="dot"></span>WAITING</span></div>
-<div class="row"><span class="label">Version</span><span class="value" id="version">—</span></div>
 <div class="row"><span class="label">State</span><span class="value" id="state">—</span></div>
 <div class="row"><span class="label">Last price update</span><span class="value" id="lastUpdate">—</span></div>
 <div class="row"><span class="label">Age (s)</span><span class="value" id="ageSeconds">—</span></div>
@@ -94,7 +93,7 @@ h1 { color: var(--text-bright); font-size: 1.4rem; letter-spacing: 2px; margin-b
 <div class="row"><span class="label">Signal</span><span class="value" id="aeeaSignal">—</span></div>
 </div>
 <div class="panel">
-<div class="panel-title">Acoustization (backend-computed)</div>
+<div class="panel-title">Acoustization (FUSION INVENTION, NOT FG, backend-computed)</div>
 <div class="row"><span class="label">Frequency</span><span class="value" id="acFreq">— WAITING</span></div>
 <div class="row"><span class="label">Amplitude</span><span class="value" id="acAmp">— WAITING</span></div>
 <div class="row"><span class="label">Type</span><span class="value" id="acType">— WAITING</span></div>
@@ -113,7 +112,7 @@ h1 { color: var(--text-bright); font-size: 1.4rem; letter-spacing: 2px; margin-b
 <li><span class="method">GET</span><span class="path">/seed-state</span><span class="desc">lattice, s2, r2, deviation, seed</span></li>
 <li><span class="method">GET</span><span class="path">/fibration-state</span><span class="desc">Hopf fibration state</span></li>
 <li><span class="method">GET</span><span class="path">/observer-integral</span><span class="desc">observer integral state</span></li>
-<li><span class="method">GET</span><span class="path">/evolution-state</span><span class="desc">evolution vs NN state</span></li>
+<li><span class="method">GET</span><span class="path">/evolution-state</span><span class="desc">FG SelfEvolutionCore state</span></li>
 <li><span class="method">GET</span><span class="path">/toasts</span><span class="desc">toast ring buffer</span></li>
 <li><span class="method">GET</span><span class="path">/log</span><span class="desc">log ring buffer</span></li>
 <li><span class="method">GET</span><span class="path">/ohlcv</span><span class="desc">OHLCV bars</span></li>
@@ -129,8 +128,8 @@ h1 { color: var(--text-bright); font-size: 1.4rem; letter-spacing: 2px; margin-b
 <li><span class="method">GET</span><span class="path">/cs-state</span><span class="desc">CS back-feed + state</span></li>
 <li><span class="method">GET</span><span class="path">/cs-feedback</span><span class="desc">CS back-feed (read)</span></li>
 <li><span class="method">GET</span><span class="path">/aea-notification</span><span class="desc">format_aea output for cursor bar</span></li>
-<li><span class="method">POST</span><span class="path">/step</span><span class="desc">seed step, {} — backend lifts x</span></li>
-<li><span class="method">POST</span><span class="path">/reset</span><span class="desc">reset AEEA + race + seed</span></li>
+<li><span class="method">POST</span><span class="path">/step</span><span class="desc">seed step, {} — backend lifts x from crawler hash first</span></li>
+<li><span class="method">POST</span><span class="path">/reset</span><span class="desc">reset AEEA + evolution + seed</span></li>
 <li><span class="method">POST</span><span class="path">/crawler-enqueue</span><span class="desc">enqueue crawler URL</span></li>
 <li><span class="method">POST</span><span class="path">/encode-syllable</span><span class="desc">encode A / U / M / AUM</span></li>
 <li><span class="method">POST</span><span class="path">/cs-feedback</span><span class="desc">CS back-feed, {kind, text, user}</span></li>
@@ -180,7 +179,6 @@ async function probe() {
     if (!health && !state) { setDot(false); return; }
     setDot(true);
     if (health) {
-        setText("version", health.version || "—");
         setText("engInit", String(health.engine_initialized), health.engine_initialized ? "ok" : "warn");
         setText("lastUpdate", health.last_price_update || "—");
         setText("ageSeconds", (health.age_seconds !== undefined && health.age_seconds !== null) ? Number(health.age_seconds).toFixed(1) : "—");

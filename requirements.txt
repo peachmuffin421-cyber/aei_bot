@@ -1,6 +1,5 @@
 # ============================================================================
 # Æ TWA — FUSED BACKEND — PYTHON DEPENDENCIES
-# Version: Final, First edition
 # Platform: Heroku web dyno / Termux / any POSIX-compatible Python 3.10+
 # ============================================================================
 #
@@ -10,8 +9,8 @@
 #   from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 #
 # Those imports REQUIRE python-telegram-bot. Do not ship a stdlib-only
-# requirements.txt. That was the /start failure: the dyno booted, the
-# import failed, the bot never answered, and the failure was silent.
+# requirements.txt. A stdlib-only file causes the /start failure: the dyno boots, the
+# import fails, the bot never answers, and the failure is silent.
 #
 # Everything else in app.py is stdlib: http.server ThreadingHTTPServer,
 # fractions.Fraction, decimal.Decimal, sqlite3, urllib, ssl, threading,
