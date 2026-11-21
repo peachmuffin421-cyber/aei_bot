@@ -1197,6 +1197,55 @@ SYMBOL_MAP = {
     "^BVSP": "^BVSP", "^MXX": "^MXX", "^TWII": "^TWII", "^STI": "^STI",
 }
 
+# FIX (audit 2/4): pruned crypto universe = exact intersection with worker
+# CRYPTO_MAP (54 live triples). Backend SYMBOL_MAP previously carried dead
+# crypto entries with no worker triple (QNT-USD, GRAM-USD, TON-USD, INJ-USD,
+# TIA-USD, SEI-USD, ...). Picking one reached the worker and failed with
+# no_price_for_symbol instead of never being offered. Pruning happens here,
+# once, at import time, before SYMBOL_FALLBACKS is built, so fallbacks,
+# counts and the picker all see the same pruned universe. Non-crypto
+# sections (futures =F, equities, forex =X, indices ^) are unchanged.
+_WORKER_CRYPTO_UNIVERSE = {
+    "BTC-USD", "ETH-USD", "XRP-USD", "ADA-USD", "SOL-USD", "DOGE-USD",
+    "LTC-USD", "LINK-USD", "DOT-USD", "AVAX-USD", "MATIC-USD", "UNI-USD",
+    "ATOM-USD", "NEAR-USD", "FIL-USD", "ETC-USD", "ICP-USD", "XLM-USD",
+    "HBAR-USD", "ARB-USD", "OP-USD", "SUI-USD", "APT-USD", "PEPE-USD",
+    "SHIB-USD", "BCH-USD", "TRX-USD", "NEO-USD", "EOS-USD", "AAVE-USD",
+    "MKR-USD", "COMP-USD", "CRV-USD", "SNX-USD", "SUSHI-USD", "YFI-USD",
+    "WIF-USD", "BONK-USD", "FLOKI-USD", "TAO-USD", "JUP-USD", "PYTH-USD",
+    "FET-USD", "GRT-USD", "LDO-USD", "RNDR-USD", "WLD-USD", "USDT-USD",
+    "USDC-USD", "DAI-USD", "BNB-USD", "OKB-USD", "HT-USD", "KCS-USD",
+}
+def _prune_symbol_map(m):
+    out = {}
+    for _k, _v in (m or {}).items():
+        if isinstance(_k, str) and _k.endswith("-USD") and _k not in _WORKER_CRYPTO_UNIVERSE:
+            continue
+        if isinstance(_k, str) and _k.endswith("USDT") and _v not in _WORKER_CRYPTO_UNIVERSE:
+            continue
+        out[_k] = _v
+    return out
+SYMBOL_MAP = _prune_symbol_map(SYMBOL_MAP)
+
+def _build_picker():
+    # FIX (audit 2/4): backend-provided picker, 5 sections, pruned to live
+    # triples. Previously the backend sent no picker key at all, so the
+    # frontend fell back to a single static BTC/USD option. Canonical keys
+    # only: crypto -USD, futures =F, forex =X, indices ^, equities plain
+    # tickers where key == value. Aliases (BTCUSDT, EURUSD without =X) are
+    # excluded so each symbol appears once.
+    crypto = sorted([k for k in SYMBOL_MAP if isinstance(k, str) and k.endswith("-USD")])
+    futures = sorted([k for k in SYMBOL_MAP if isinstance(k, str) and k.endswith("=F")])
+    forex = sorted([k for k in SYMBOL_MAP if isinstance(k, str) and k.endswith("=X")])
+    indices = sorted([k for k in SYMBOL_MAP if isinstance(k, str) and k.startswith("^")])
+    equities = sorted([
+        k for k, v in SYMBOL_MAP.items()
+        if isinstance(k, str) and k == v
+        and not k.endswith(("-USD", "=F", "=X"))
+        and not k.startswith("^") and not k.endswith("USDT")
+    ])
+    return {"Crypto": crypto, "Futures": futures, "Equities": equities, "Forex": forex, "Indices": indices}
+
 def _crypto_fallback(sym: str) -> List[str]:
     if sym.endswith("-USD"):
         base = sym[:-4]
@@ -4261,75 +4310,49 @@ class AEEA_Engine:
                         st.Regime[idx] = "sTrend"
 
     def _on_goe(self) -> None:
+        # FIX: collapsed duplicated C/c branches. Both inner branches did the
+        # identical fire (prime=1, _G, _signal, tick_tock, tag=1); only the
+        # log label differed (Sig. vs Sign., swapped inconsistently). The
+        # C/c distinction was dead. One fire per matched condition now.
         st = self.state
         if st.signal != Decimal('0.0'):
             return
         if self._on_gaurd(0) and st.KC:
             if ((st.h == st.io and st.z > st.o) or (st.h == st.iO and st.Z > st.O) or (st.h == st.iz and st.Z > st.z) or (st.h == st.iZ and st.Z < st.z)):
-                if (not st.C) and (not st.c):
-                    st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
-                    logger.info(f"🟥 Sign. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
-                else:
-                    st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
-                    logger.info(f"🟥 Sig. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
+                st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
+                logger.info(f"🟥 Sig. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
             elif (st.h == st.io) or (st.h == st.iZ) or (st.h == st.iz) or (st.h == st.iO):
-                if (not st.C) and (not st.c):
-                    st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
-                    logger.info(f"🟥 Sig. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
-                else:
-                    st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
-                    logger.info(f"🟥 Sign. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
+                st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
+                logger.info(f"🟥 Sig. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
         elif self._on_gaurd(0) != st.KC:
             if ((st.h == st.io and st.z > st.o) or (st.h == st.iO and st.Z > st.O) or (st.h == st.iz and st.Z > st.z) or (st.h == st.iZ and st.Z < st.z)):
-                if (not st.C) or (not st.c):
-                    st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
-                    logger.info(f"🟥 Sign. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
-                else:
-                    st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
-                    logger.info(f"🟥 Sig. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
+                st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
+                logger.info(f"🟥 Sig. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
             elif (st.h == st.io) or (st.h == st.iZ) or (st.h == st.iz) or (st.h == st.iO):
-                if (not st.C) or (not st.c):
-                    st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
-                    logger.info(f"🟥 Sig. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
-                else:
-                    st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
-                    logger.info(f"🟥 Sign. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
+                st.prime = 1; self._G(); self._signal(); st.tick_tock = True; st.tag = 1
+                logger.info(f"🟥 Sig. (Goe) price={st.price} h={st.h} Z={st.iZ} z={st.iz} O={st.iO} o={st.io}")
             self._KC()
 
     def _on_toe(self) -> None:
+        # FIX: collapsed duplicated C/c branches, same as _on_goe. Both inner
+        # branches did the identical fire; only the log label differed.
         st = self.state
         if st.signal != Decimal('0.0'):
             return
         if self._on_gaurd(0) and st.KC:
             if ((st.h == st.io and st.w > st.o) or (st.h == st.iO and st.W > st.O) or (st.h == st.iw and st.W > st.w) or (st.h == st.iW and st.W < st.w)):
-                if (not st.C) and (not st.c):
-                    st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
-                    logger.info(f"🟩 Sig. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
-                else:
-                    st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
-                    logger.info(f"🟩 Sign. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
+                st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
+                logger.info(f"🟩 Sig. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
             elif (st.h == st.io) or (st.h == st.iW) or (st.h == st.iw) or (st.h == st.iO):
-                if (not st.C) and (not st.c):
-                    st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
-                    logger.info(f"🟩 Sign. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
-                else:
-                    st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
-                    logger.info(f"🟩 Sig. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
+                st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
+                logger.info(f"🟩 Sig. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
         elif self._on_gaurd(0) != st.KC:
             if ((st.h == st.io and st.w > st.o) or (st.h == st.iO and st.W > st.O) or (st.h == st.iw and st.W > st.w) or (st.h == st.iW and st.W < st.w)):
-                if (not st.C) or (not st.c):
-                    st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
-                    logger.info(f"🟩 Sig. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
-                else:
-                    st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
-                    logger.info(f"🟩 Sign. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
+                st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
+                logger.info(f"🟩 Sig. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
             elif (st.h == st.io) or (st.h == st.iW) or (st.h == st.iw) or (st.h == st.iO):
-                if (not st.C) or (not st.c):
-                    st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
-                    logger.info(f"🟩 Sign. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
-                else:
-                    st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
-                    logger.info(f"🟩 Sig. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
+                st.prime = 0; self._G(); self._signal(); st.tick_tock = True; st.tag = 0
+                logger.info(f"🟩 Sig. (Toe) price={st.price} h={st.h} W={st.iW} w={st.iw} O={st.iO} o={st.io}")
             self._KC()
 
     def _signal(self) -> None:
@@ -4348,12 +4371,10 @@ class AEEA_Engine:
         self._last_kronecker_bar = st.authoritative_h if st.authoritative_h >= 0 else st.h
         self._imbalance_fire_count += 1
         self._last_signal_time = datetime.now()
-        if m_local >= 12:
-            signal_type = "BUY"
-        elif n_local >= 12:
-            signal_type = "SELL"
-        else:
-            signal_type = "NEUTRAL"
+        # FIX: NEUTRAL was unreachable. The gate above returns unless
+        # m >= 12 or n >= 12, so one of BUY/SELL always holds. m wins on tie,
+        # as before. No NEUTRAL signal is ever emitted.
+        signal_type = "BUY" if m_local >= 12 else "SELL"
         regime_idx = st.h - (st.y + 1)
         regime = st.Regime[regime_idx] if 0 <= regime_idx < len(st.Regime) else "Unknown"
         bar_timestamp = None
@@ -6585,16 +6606,33 @@ class ConsciousnessOperator:
                         q_vals = [bounds[0][0] + PyFraction(i0,1) * step_sizes[0], bounds[1][0] + PyFraction(i1,1) * step_sizes[1], bounds[2][0] + PyFraction(i2,1) * step_sizes[2], bounds[3][0] + PyFraction(i3,1) * step_sizes[3]]
                         q_point = SymbolicQuaternion(*q_vals)
                         psi_val = wf.evaluate_exact(q_point)
-                        psi_dag = psi_val
+                        # FIX: psi-dagger is the conjugate of psi. evaluate_exact()
+                        # returns a real PyFraction here, whose conjugate is
+                        # itself, so this is identity for the current scalar
+                        # wavefunction. The hasattr guard keeps the conj call
+                        # correct if a future quaternion-valued wavefunction
+                        # ever returns a quaternion, and avoids calling
+                        # .conj() on a Fraction (which has no such method and
+                        # would throw, hiding behind observe()'s fallback).
+                        psi_dag = psi_val.conj() if hasattr(psi_val, "conj") else psi_val
                         integrand = phi * psi_val
                         total = total + (integrand * psi_dag * volume_element)
         return total
     def measure_self_awareness(self, bounds=None, steps=4):
         integral = self.compute_integral_exact(bounds, steps)
         return integral.magnitude_squared()
+    def observe_full(self):
+        # FIX: single canonical observer path. 4^4 = 256 cells, volume
+        # element (2/steps)^4 = (1/2)^4 = 1/16 per cell, psi-dagger = conj
+        # (identity for the current real-scalar wavefunction).
+        # Returns the full quaternion, not just its a-component.
+        return self.compute_integral_exact(steps=4)
     def observe(self):
         try:
-            integral = self.compute_integral_exact(steps=2)
+            # FIX: was steps=2 (16 cells). Spec is 4^4 = 256 cells.
+            # observe() keeps returning the a-component for backward compat;
+            # observe_full() is the full quaternion. Both share one path.
+            integral = self.observe_full()
             return integral.a
         except Exception:
             try:
@@ -6732,10 +6770,21 @@ class AEI_Seed:
         return out
     def snapshot(self): return self.to_dict()
     def to_dict(self):
-        return {"tick":int(self.tick),"generation":int(self.generation),"prime":int(self.prime),"prime_count":int(self.prime_count),"primes":[str(p) for p in self.primes[-8:]],"lattice_points":[list(p) for p in self.lattice_points[-24:]],"lattice_count":int(self.lattice_count),"s2":str(self.s2),"r2":str(self.r2),"deviation":str(self.deviation),"deviation_sq":str(self.last_deviation_sq),"coherent":bool(self.coherent),"coherent_steps":int(self.coherent_steps),"I":str(self.last_I),"I_parts":dict(self.metrics.last_parts),"I_threshold":"2/3","I_gate":"2/3","I_unity":"1","I_gate_met":bool(self.last_I >= PyFraction(2,3)),"I_unity_met":bool(self.last_I == PyFraction(1,1)),"psi":self.psi.to_dict(),"phi":self.phi.to_dict(),"hopf":{"a":str(self.last_hopf_base[0]),"b":str(self.last_hopf_base[1]),"c":str(self.last_hopf_base[2]),"d":"0"},"hopf_base":[str(self.last_hopf_base[0]),str(self.last_hopf_base[1]),str(self.last_hopf_base[2])],"trajectory":[q.to_dict() for q in self.last_trajectory],"trajectory_count":len(self.last_trajectory),"evolution":self.last_evolution,"self_evolution":self.last_evolution,"lingoso":[q.to_dict() for q in self.last_linguistic_trajectory],"observer":str(self.consciousness.observe()) if hasattr(self,"consciousness") else "0","last_x":str(self.last_x),"x_input_raw":str(getattr(self, "last_x_input_raw", self.last_x)),"last_x_source":str(self.last_x_source),"last_logic_hash":str(self.last_logic_hash),"state":str(self.state),"dbz_persisted":bool(self._prior_rectified_psi is not None)}
+        # FIX (audit): external lattice never contains the internal origin
+        # (0,0,0,0). Before the first step the external lattice is [] (WAITING),
+        # and s2 / r2 / deviation / I are None (WAITING), never "0".
+        # Internal lattice_points keeps the origin for step math; only the
+        # published shape is filtered.
+        _ext_lattice = [list(p) for p in self.lattice_points if tuple(p) != (0, 0, 0, 0)][-24:]
+        _waiting = (int(self.tick) == 0)
+        return {"tick":int(self.tick),"generation":int(self.generation),"prime":int(self.prime),"prime_count":int(self.prime_count),"primes":[str(p) for p in self.primes[-8:]],"lattice_points":_ext_lattice,"lattice_count":int(len(_ext_lattice)),"s2":(None if _waiting else str(self.s2)),"r2":(None if _waiting else str(self.r2)),"deviation":(None if _waiting else str(self.deviation)),"deviation_sq":(None if _waiting else str(self.last_deviation_sq)),"coherent":bool(self.coherent),"coherent_steps":int(self.coherent_steps),"I":(None if _waiting else str(self.last_I)),"I_parts":dict(self.metrics.last_parts),"I_threshold":"2/3","I_gate":"2/3","I_unity":"1","I_gate_met":bool((self.last_I >= PyFraction(2,3)) if not _waiting else False),"I_unity_met":bool((self.last_I == PyFraction(1,1)) if not _waiting else False),"psi":self.psi.to_dict(),"phi":self.phi.to_dict(),"hopf":{"a":str(self.last_hopf_base[0]),"b":str(self.last_hopf_base[1]),"c":str(self.last_hopf_base[2]),"d":"0"},"hopf_base":[str(self.last_hopf_base[0]),str(self.last_hopf_base[1]),str(self.last_hopf_base[2])],"trajectory":[q.to_dict() for q in self.last_trajectory],"trajectory_count":len(self.last_trajectory),"evolution":self.last_evolution,"self_evolution":self.last_evolution,"lingoso":[q.to_dict() for q in self.last_linguistic_trajectory],"observer":str(self.consciousness.observe()) if hasattr(self,"consciousness") else "0","last_x":str(self.last_x),"x_input_raw":str(getattr(self, "last_x_input_raw", self.last_x)),"last_x_source":str(self.last_x_source),"last_logic_hash":str(self.last_logic_hash),"state":str(self.state),"dbz_persisted":bool(self._prior_rectified_psi is not None)}
 
 class CrawlerState:
-    """Frontier queue only. No automatic fetching, no binary fetches."""
+    """Frontier queue + one relay fetch per enqueue. enqueue() only queues.
+    fetch_and_hash() fetches exactly once via the worker FG crawler relay
+    (RELAY_URL/?url=...). No direct fetch from the backend host, no binary
+    fetches, no auto-crawling of links. /crawler-enqueue does enqueue +
+    one relay fetch by design, so its response carries the hash."""
     BLOCKLIST = ("meta.wikimedia.org", "wikimedia.org/w/api", "thumb.wikimedia.org", "upload.wikimedia.org", "featuredfeed")
     def __init__(self):
         self.frontier = []
@@ -6763,26 +6812,48 @@ class CrawlerState:
         except Exception as e:
             return {'ok': False, 'error': str(e)}
     def fetch_and_hash(self, url):
-        # Fetch one document (text only, 512 KiB cap, 10 s timeout), blocklist-checked,
-        # hash it and set last_hash_frac. Never fetches binaries, never auto-crawls.
-        # Returns set_from_content result or error. Caller is /crawler-enqueue.
+        # FIX: fetch via the worker FG crawler relay (RELAY_URL/?url=...),
+        # not by direct urllib from the backend host. Was a direct fetch,
+        # so the worker handleCrawlerRelay path was dead, backend egress was
+        # Heroku not Cloudflare, and the worker RELAY_KEY gate was bypassed.
+        # The relay returns {ok, content_hash, title, links, ...} and enforces
+        # its own blocklist, binary/content-type and 512 KiB cap. The backend
+        # keeps its own blocklist check too, then stores the relay hash.
+        # No direct fetch fallback: if RELAY_URL is unset, this fails closed
+        # with relay_not_configured. Never fetches binaries, never auto-crawls.
+        # Returns set_from_content-compatible result or error. Caller is /crawler-enqueue.
         try:
-            import urllib.request as _ur, datetime as _dt3
+            import urllib.request as _ur, urllib.parse as _up, json as _js, datetime as _dt3
             u = (url or '').strip()
             if not u.startswith('http://') and not u.startswith('https://'):
                 return {'ok': False, 'error': 'url_must_start_with_http'}
             for bad in self.BLOCKLIST:
                 if bad in u:
                     return {'ok': False, 'error': 'url_blocklisted'}
-            req = _ur.Request(u, headers={'User-Agent': 'AEI-Crawler/1.0', 'Accept': 'text/plain,text/html;q=0.9'})
-            with _ur.urlopen(req, timeout=10) as r:
-                ctype = str(r.headers.get('Content-Type', '') or '').lower()
-                if 'image' in ctype or 'video' in ctype or 'audio' in ctype or 'octet-stream' in ctype:
-                    return {'ok': False, 'error': 'binary_not_fetched'}
-                data = r.read(524288)
-            return self.set_from_content(data, url=u)
+            relay = (RELAY_URL or '').strip()
+            if not relay:
+                return {'ok': False, 'error': 'relay_not_configured'}
+            qs = _up.urlencode({'url': u})
+            _headers = {'User-Agent': 'AEI-Crawler/1.0', 'Accept': 'application/json'}
+            if RELAY_KEY:
+                _headers['X-Relay-Key'] = RELAY_KEY
+            req = _ur.Request(relay + '/?' + qs, headers=_headers)
+            with _ur.urlopen(req, timeout=RELAY_TIMEOUT) as r:
+                payload = _js.loads(r.read(524288).decode('utf-8', errors='ignore'))
+            if not isinstance(payload, dict) or not payload.get('ok') or not payload.get('content_hash'):
+                return {'ok': False, 'error': str((payload or {}).get('error') or 'relay_fetch_failed')}
+            hexh = str(payload.get('content_hash') or '')
+            frac = _hash_to_fraction(hexh)
+            self.last_hash_hex = hexh
+            self.last_hash_frac = frac
+            self.last_hash_url = u
+            try: self.last_hash_at = _dt3.datetime.now().isoformat()
+            except Exception: self.last_hash_at = ''
+            return {'ok': True, 'hash_hex': hexh, 'hash_frac': str(frac), 'url': u,
+                    'title': payload.get('title'), 'links': payload.get('links'), 'via': 'worker_crawler_relay'}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
+
     def enqueue(self, url: str):
         u = (url or "").strip()
         if not u.startswith("http://") and not u.startswith("https://"):
@@ -6814,21 +6885,21 @@ class CSFeedbackStore:
         return list(self.entries)
 
 def _symbol_class_counts():
+    # FIX: counts come from the same pruned picker the frontend receives,
+    # so /health counts and picker lengths cannot drift. Was counting raw
+    # SYMBOL_MAP keys with wrong predicates (futures looked for "-F" while
+    # real futures keys end "=F", equities looked for "EQ:" which never
+    # occurs), so futures/equities counts were 0.
     try:
-        keys = list(SYMBOL_MAP.keys())
+        _p = _build_picker()
     except Exception:
-        keys = []
-    crypto = len([k for k in keys if k.endswith("-USD")])
-    futures = len([k for k in keys if "FUT" in k or k.endswith("-F")])
-    equities = len([k for k in keys if k.startswith("EQ:")])
-    forex = len([k for k in keys if k.endswith("=X") or "FOREX" in k])
-    indices = len([k for k in keys if k.startswith("^") or "INDEX" in k])
+        _p = {"Crypto": [], "Futures": [], "Equities": [], "Forex": [], "Indices": []}
     return {
-        "crypto_pairs": int(crypto),
-        "futures_symbols": int(futures),
-        "equities_symbols": int(equities),
-        "forex_pairs": int(forex),
-        "indices_symbols": int(indices),
+        "crypto_pairs": int(len(_p.get("Crypto", []))),
+        "futures_symbols": int(len(_p.get("Futures", []))),
+        "equities_symbols": int(len(_p.get("Equities", []))),
+        "forex_pairs": int(len(_p.get("Forex", []))),
+        "indices_symbols": int(len(_p.get("Indices", []))),
     }
 
 
@@ -6898,42 +6969,48 @@ def _bb58_from_bars(bars):
 
 def _acoustization_from_seed(seed_dict):
     # Display sonification from seed deviation.
-    try: dev=PyFraction(str(seed_dict.get('deviation','0')))
+    # FIX (audit): deviation None means WAITING. Never synthesise 440 Hz / amp 1
+    # from a zero placeholder. sr_ratio is None when s2 / r2 are missing or r2 is 0.
+    _dev_raw = seed_dict.get('deviation')
+    if _dev_raw is None:
+        return {'frequency': None, 'base_freq': None, 'filter_freq': None, 'amplitude': None, 'type': 'sine', 'source': 'seed deviation', 'origin': 'display', 'lattice_notes': [], 'pulse': '1', 'price': None, 'delta': None, 'deviation': None, 'sr_ratio': None, 'status': 'WAITING'}
+    try: dev=PyFraction(str(_dev_raw))
     except Exception: dev=PyFraction(0,1)
     freq=PyFraction(440,1)+(abs(dev)%PyFraction(100,1)); amp=PyFraction(1,1)/(PyFraction(1,1)+abs(dev)) if abs(dev)!=0 else PyFraction(1,1)
-    try: _s2=PyFraction(str(seed_dict.get('s2','0')))
-    except Exception: _s2=PyFraction(0,1)
-    try: _r2=PyFraction(str(seed_dict.get('r2','0')))
-    except Exception: _r2=PyFraction(0,1)
-    _sr = (_s2/_r2) if _r2 != 0 else PyFraction(0,1)
-    _price = seed_dict.get('price') or seed_dict.get('last_price') or '0'
-    return {'frequency': str(freq), 'base_freq': str(freq), 'filter_freq': str(freq), 'amplitude': str(amp), 'type':'sine','source':'seed deviation','origin':'display','lattice_notes': [str(freq), str(freq*PyFraction(2,1)), str(freq*PyFraction(3,1))], 'pulse': '1', 'price': str(_price), 'delta': str(dev), 'deviation': str(dev), 'sr_ratio': str(_sr)}
+    _s2_raw = seed_dict.get('s2'); _r2_raw = seed_dict.get('r2')
+    try: _s2=PyFraction(str(_s2_raw)) if _s2_raw is not None else None
+    except Exception: _s2=None
+    try: _r2=PyFraction(str(_r2_raw)) if _r2_raw is not None else None
+    except Exception: _r2=None
+    _sr = ((_s2/_r2) if (_s2 is not None and _r2 is not None and _r2 != 0) else None)
+    _price = seed_dict.get('price') or seed_dict.get('last_price') or None
+    return {'frequency': str(freq), 'base_freq': str(freq), 'filter_freq': str(freq), 'amplitude': str(amp), 'type':'sine','source':'seed deviation','origin':'display','lattice_notes': [str(freq), str(freq*PyFraction(2,1)), str(freq*PyFraction(3,1))], 'pulse': '1', 'price': (str(_price) if _price is not None else None), 'delta': str(dev), 'deviation': str(dev), 'sr_ratio': (str(_sr) if _sr is not None else None)}
 
 def _observer_from_seed(seed_dict):
-    # Observer: 4D Riemann sum over 4^4 grid.
-    # The seed carries single psi/phi quaternions. This function
-    # builds a grid-varying field from them: at grid point (i,j,k,l) the
-    # a-component is scaled by (i+1)/4, b by (j+1)/4, c by (k+1)/4, d by (l+1)/4,
-    # and the term is sum_c psi_c(grid) * phi_c * psi_c(grid) * (1/256).
-    # The term uses i,j,k,l.
+    # FIX: single observer path. Was a second, competing Riemann-sum formula
+    # (grid-varying psi scaled by (i+1)/4, weight 1/256, scalar only) that was
+    # never called, while ConsciousnessOperator.observe() used steps=2.
+    # Both are replaced by one path:
+    # ConsciousnessOperator.observe_full() at steps=4, psi-dagger = conj,
+    # volume element (2/4)^4 = 1/16 per cell, 256 cells. This function is
+    # now a thin adapter that builds that operator from seed psi/phi and
+    # returns its result. No second formula lives here anymore.
     try:
         psi = seed_dict.get('psi') or {}; phi = seed_dict.get('phi') or {}
         def _fr(d,k):
             try: return PyFraction(str(d.get(k,'0')))
             except Exception: return PyFraction(0,1)
-        pa,pb,pc,pd = _fr(psi,'a'),_fr(psi,'b'),_fr(psi,'c'),_fr(psi,'d')
-        fa,fb,fc,fd = _fr(phi,'a'),_fr(phi,'b'),_fr(phi,'c'),_fr(phi,'d')
-        total=PyFraction(0,1); count=0
-        for i in range(4):
-            for j in range(4):
-                for k in range(4):
-                    for l in range(4):
-                        w=PyFraction(1,256)
-                        sa = pa * PyFraction(i+1,4); sb = pb * PyFraction(j+1,4)
-                        sc = pc * PyFraction(k+1,4); sd = pd * PyFraction(l+1,4)
-                        term = (sa*fa*sa + sb*fb*sb + sc*fc*sc + sd*fd*sd) * w
-                        total+=term; count+=1
-        return {'O_psi': str(total), 'observer': str(total), 'grid': '4^4', 'points': int(count), 'psi_a': str(pa), 'psi_b': str(pb), 'psi_c': str(pc), 'psi_d': str(pd), 'note': 'Display observer from single psi/phi.', 'origin': 'display', 'real': str(total), 'imag': '0'}
+        psi_q = SymbolicQuaternion(_fr(psi,'a'), _fr(psi,'b'), _fr(psi,'c'), _fr(psi,'d'))
+        phi_q = SymbolicQuaternion(_fr(phi,'a'), _fr(phi,'b'), _fr(phi,'c'), _fr(phi,'d'))
+        op = ConsciousnessOperator(psi_q, phi_q)
+        full = op.observe_full()
+        return {'O_psi': str(full.a), 'observer': str(full.a),
+                'full': {'a': str(full.a), 'b': str(full.b), 'c': str(full.c), 'd': str(full.d)},
+                'grid': '4^4', 'points': 256,
+                'psi_a': str(psi_q.a), 'psi_b': str(psi_q.b), 'psi_c': str(psi_q.c), 'psi_d': str(psi_q.d),
+                'note': 'ConsciousnessOperator.observe_full() at steps=4, psi-dagger = conj (identity for real-scalar wavefunction).',
+                'origin': 'ConsciousnessOperator.observe', 'real': str(full.a),
+                'imag': '0', 'volume_element': '1/16'}
     except Exception:
         return {'O_psi': None, 'observer': None, 'grid': '4^4', 'points': 0, 'psi_a': None, 'psi_b': None, 'psi_c': None, 'psi_d': None, 'note': 'WAITING', 'status': 'WAITING', 'origin': 'ConsciousnessOperator.observe'}
 
@@ -6941,6 +7018,10 @@ def _evolution_from_seed(seed_dict, bars):
     # FG evolution: SelfEvolutionCore result from seed, no opponent, no comparison of unlike units.
     try: ev = seed_dict.get('evolution') or seed_dict.get('self_evolution') or {}
     except Exception: ev = {}
+    # FIX (audit): deviation None means WAITING. ae_dev / fitness / mutation
+    # are None, never '0' / 'none' placeholders.
+    if seed_dict.get('deviation') is None:
+        return {'tick': int(seed_dict.get('tick',0)), 'ae_dev': None, 'evolution': (ev if isinstance(ev, dict) else {}), 'fitness': None, 'mutation': None, 'note': 'FG SelfEvolutionCore.evolve_step. No opponent.', 'status': 'WAITING'}
     try: dev = PyFraction(str(seed_dict.get('deviation','0')))
     except Exception: dev = PyFraction(0,1)
     return {'tick': int(seed_dict.get('tick',0)), 'ae_dev': str(abs(dev)), 'evolution': ev, 'fitness': str(ev.get('fitness','0')) if isinstance(ev, dict) else '0', 'mutation': str(ev.get('mutation','none')) if isinstance(ev, dict) else 'none', 'note': 'FG SelfEvolutionCore.evolve_step. No opponent.'}
@@ -6953,16 +7034,21 @@ def _cs_translate(text: str) -> str:
 def _build_fused_state(engine):
     st = engine.state
     seed = getattr(engine, "seed", None)
-    seed_dict = seed.to_dict() if seed is not None else {"tick": 0, "generation": 0, "prime": 2, "prime_count": 0, "lattice_points": [], "lattice_count": 0, "s2": "0", "r2": "0", "deviation": "0", "coherent": False, "I": "0", "psi": {"a": "1", "b": "0", "c": "0", "d": "0"}, "phi": {"a": "0", "b": "0", "c": "0", "d": "0"}, "hopf": {"a": "0", "b": "0", "c": "0", "d": "0"}}
-    try:
-        _s2f = PyFraction(str(seed_dict.get("s2", "0")))
-    except Exception:
-        _s2f = PyFraction(0, 1)
-    try:
-        _r2f = PyFraction(str(seed_dict.get("r2", "0")))
-    except Exception:
-        _r2f = PyFraction(0, 1)
-    seed_dict["sr_ratio"] = str((_s2f / _r2f) if _r2f != 0 else PyFraction(0, 1))
+    # FIX (audit): missing seed means WAITING. s2 / r2 / deviation / I are
+    # None, never "0". psi / phi / hopf are None so the observer below is WAITING.
+    seed_dict = seed.to_dict() if seed is not None else {"tick": 0, "generation": 0, "prime": 2, "prime_count": 0, "lattice_points": [], "lattice_count": 0, "s2": None, "r2": None, "deviation": None, "coherent": False, "I": None, "psi": None, "phi": None, "hopf": None}
+    # FIX (audit): sr_ratio is None when s2 / r2 are missing or r2 is 0.
+    # Never "0" from a zero placeholder.
+    def _frac_or_none(v):
+        if v is None:
+            return None
+        try:
+            return PyFraction(str(v))
+        except Exception:
+            return None
+    _s2f = _frac_or_none(seed_dict.get("s2"))
+    _r2f = _frac_or_none(seed_dict.get("r2"))
+    seed_dict["sr_ratio"] = (str((_s2f / _r2f)) if (_s2f is not None and _r2f is not None and _r2f != 0) else None)
     bars = []
     for b in (engine.ohlcv_history or []):
         try:
@@ -7054,11 +7140,21 @@ def _build_fused_state(engine):
     except Exception:
         crawler_dict = {"frontier_size": 0, "visited": 0, "running": False}
     acoust = _acoustization_from_seed(seed_dict)
-    _fg_observer = seed_dict.get("observer")
-    if _fg_observer is None:
-        observer = {"observer": None, "O_psi": None, "status": "WAITING", "origin": "ConsciousnessOperator.observe"}
+    # FIX: observer comes from the single canonical path
+    # _observer_from_seed -> ConsciousnessOperator.observe_full(). Was
+    # seed_dict.get("observer"), a stale scalar from a different (steps=2)
+    # computation. Now fused state, /observer-integral and /fibration-state
+    # all share one definition.
+    # FIX (audit): no seed, or no step yet, means observer WAITING.
+    # Never publish an observer value computed from initial placeholder psi/phi.
+    if seed is None or int(seed_dict.get("tick", 0)) == 0:
+        observer = {"O_psi": None, "observer": None, "grid": "4^4", "points": 0, "psi_a": None, "psi_b": None, "psi_c": None, "psi_d": None, "note": "WAITING", "status": "WAITING", "origin": "ConsciousnessOperator.observe"}
     else:
-        observer = {"observer": str(_fg_observer), "O_psi": str(_fg_observer), "status": "ok", "origin": "ConsciousnessOperator.observe"}
+        _fg_observer = _observer_from_seed(seed_dict)
+        if _fg_observer.get("O_psi") is None:
+            observer = dict(_fg_observer); observer.update({"status": "WAITING"})
+        else:
+            observer = dict(_fg_observer); observer.update({"status": "ok"})
     evolution = _evolution_from_seed(seed_dict, bars)
     cs = {
         "tick": int(seed_dict.get("tick", 0)),
@@ -7077,6 +7173,9 @@ def _build_fused_state(engine):
     aeea = {
         "symbol": str(SYMBOL),
         "timeframe": str(INTERVAL),
+        # FIX: backend-provided picker. Frontend reads aeea.picker verbatim;
+        # previously this key did not exist.
+        "picker": _build_picker(),
         "last_price": str(st.price) if st.price is not None else None,
         "delta": int(imbalance),
         "m": int(market_m),
@@ -7115,7 +7214,9 @@ def _build_fused_state(engine):
         "bb_family": _bb_family,
         "delta_gate": {"imbalance": (_imb if _imb is None else int(_imb)), "m": (_mm if _mm is None else int(_mm)), "n": (_nn if _nn is None else int(_nn)), "kronecker_delta": bool(_delta_gate), "met": bool(_delta_gate), "definition": "Kronecker delta(imbalance)=1 iff imbalance==0 iff m-n==2. Does NOT fire signals."},
         "hl_gate": {"m": (_mm if _mm is None else int(_mm)), "n": (_nn if _nn is None else int(_nn)), "met": bool(_hl_gate), "definition": "H/L gate: BUY when m>=12, SELL when n>=12. This fires signals. NOT the Kronecker gate."},
-        "bridge_regime": str(_bridge_regime),
+        # FIX (audit): single regime. bridge_regime removed; engine_regime
+        # is the only regime. A second BULLISH/BEARISH/NEUTRAL derivation
+        # from imbalance must not compete with it.
         "engine_regime": str(_eng_regime),
         "seed": seed_dict,
         "cs": cs,
@@ -8253,10 +8354,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": "internal", "detail": str(e)})
             return
         if path == "/say":
+            # FIX (audit): Say persists to cs_feedback as kind "say", like Teach
+            # persists as kind "teach", so Say appears in CS Back-Feed.
+            # Response shape is unchanged apart from the added entry field.
             try:
                 data = self._read_json()
                 text = str(data.get("text", ""))[:2000]
-                self._send_json(200, {"ok": True, "text": text, "say": _cs_translate(text)})
+                _entry = {}
+                try:
+                    _eng = BRIDGE_ENGINE_REF.get("engine")
+                    if _eng is not None and hasattr(_eng, "cs_feedback"):
+                        _entry = _eng.cs_feedback.add({"kind": "say", "text": text, "user": str(data.get("user", ""))[:200]})
+                except Exception:
+                    _entry = {}
+                self._send_json(200, {"ok": True, "text": text, "say": _cs_translate(text), "entry": _entry})
             except Exception as e:
                 self._send_json(500, {"error": "internal", "detail": str(e)})
             return
@@ -8307,7 +8418,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 data = self._read_json()
                 url = str(data.get("url", ""))
                 res = engine.crawler.enqueue(url) if hasattr(engine, "crawler") else {"ok": False, "error": "no_crawler"}
-                # Fetch-and-hash the enqueued URL (text only).
+                # FIX: enqueue + one relay fetch by design (see CrawlerState).
+                # Fetch-and-hash the enqueued URL via worker relay (text only).
                 # If fetch fails, last_hash_frac stays as-is and seed falls back to labelled price-x.
                 try:
                     if isinstance(res, dict) and res.get("ok") and hasattr(engine.crawler, "fetch_and_hash"):
@@ -9158,7 +9270,7 @@ class AEI_Bot:
             await self._safe_reply(update,
                 f"📈 *Current Symbol:* `{SYMBOL}`\n"
                 "Use `/symbol <PAIR>` to change.\n"
-                "Example: `/symbol GRAM-USD` or `/symbol TONUSDT` or `/symbol AAPL`\n\n"
+                "Example: `/symbol BTC-USD` or `/symbol BTCUSDT` or `/symbol AAPL`\n\n"
                 f"*Supported Symbols:*\n{supported}\n(and {len(SYMBOL_MAP) - 10} more)")
             return
         new_symbol = args[0].upper()
@@ -9212,7 +9324,7 @@ class AEI_Bot:
             "  ➡️ Scroll-ahead viewport to the projected take-profit level\n"
             "  🔔 Toast + Telegram push notifications on every execution\n"
             "  🔄 Live state polling\n"
-            "  🪙 GRAM / TON and the full expanded symbol universe\n"
+            "  🪙 Pruned crypto universe (54 live triples) and the full symbol universe\n"
             "  📊 Crypto / Futures / Equities / Forex / Indices sections",
             reply_markup=keyboard)
 
@@ -9483,7 +9595,7 @@ class AEI_Bot:
         logger.info("🛡️ Markdown escaping: _md_escape applied to every interpolated value (E-12).")
         logger.info("🛡️ Reply-target hardening: retry as standalone on stale reply id (E-11).")
         logger.info("🛡️ Plain-text fallback: parse_mode=None on parse errors (E-13).")
-        logger.info(f"🪙  symbol universe: GRAM-USD (TON) + {len(SYMBOL_MAP)} total symbols across crypto, futures, equities, forex, and indices.")
+        logger.info(f"🪙  symbol universe: pruned crypto (54 live triples) + {len(SYMBOL_MAP)} total symbols across crypto, futures, equities, forex, and indices.")
         logger.info("AE TWA  — backend starting. One ordered feed, one formatter, one state.")
         logger.info("✅ Ready. Use /start to begin.")
         self.application.run_polling()
